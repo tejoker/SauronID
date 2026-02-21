@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Identity Verification</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #08090c;
+      --surface: #111318;
+      --surface2: #1a1d24;
+      --border: #1f232e;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59,130,246,0.15);
+      --success: #22c55e;
+      --success-glow: rgba(34,197,94,0.12);
+      --warning: #f59e0b;
+      --warning-glow: rgba(245,158,11,0.12);
+      --danger: #ef4444;
+      --danger-glow: rgba(239,68,68,0.12);
+      --text: #f1f5f9;
+      --text2: #94a3b8;
+      --text3: #475569;
+      --radius: 16px;
+      --radius-sm: 10px;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 0 60px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      width: 100%;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .logo-mark {
+      width: 28px;
+      height: 28px;
+      background: var(--accent);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .logo-mark svg { width: 16px; height: 16px; fill: #fff; }
+
+    .logo-name {
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+
+    .logo-badge {
+      margin-left: auto;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-glow);
+      border: 1px solid rgba(59,130,246,0.2);
+      padding: 3px 8px;
+      border-radius: 20px;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Progress stepper ── */
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      padding: 28px 24px 0;
+      width: 100%;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      flex: 1;
+      position: relative;
+    }
+
+    .step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 15px;
+      left: calc(50% + 18px);
+      right: calc(-50% + 18px);
+      height: 1px;
+      background: var(--border);
+      transition: background 0.5s;
+    }
+
+    .step.done:not(:last-child)::after { background: var(--accent); }
+
+    .step-num {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text3);
+      z-index: 1;
+      transition: all 0.3s;
+      position: relative;
+    }
+
+    .step.active .step-num {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+      color: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-glow);
+    }
+
+    .step.done .step-num {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .step-name {
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--text3);
+      white-space: nowrap;
+      letter-spacing: 0.02em;
+    }
+
+    .step.active .step-name { color: var(--accent); }
+    .step.done .step-name { color: var(--text2); }
+
+    /* ── Main wrapper ── */
+    .main {
+      width: 100%;
+      max-width: 480px;
+      padding: 28px 20px 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Step header ── */
+    .step-header { margin-bottom: 20px; }
+
+    .step-eyebrow {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+
+    .step-header h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.25;
+      color: var(--text);
+    }
+
+    .step-header p {
+      margin-top: 6px;
+      font-size: 0.875rem;
+      color: var(--text2);
+      line-height: 1.5;
+    }
+
+    /* ── Camera viewport ── */
+    .viewport {
+      position: relative;
+      width: 100%;
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #000;
+      aspect-ratio: 4/3;
+    }
+
+    .viewport video,
+    .viewport canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .viewport canvas { display: none; }
+
+    /* ID card guide overlay */
+    .overlay-id {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .overlay-id::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.42);
+    }
+
+    .id-cutout {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 78%;
+      height: 56%;
+      border-radius: 10px;
+      box-shadow: 0 0 0 1000px rgba(0,0,0,0.42);
+      border: 2px solid rgba(59,130,246,0.8);
+    }
+
+    .id-cutout.scanning {
+      animation: scanPulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes scanPulse {
+      0%, 100% { border-color: rgba(59,130,246,0.6); box-shadow: 0 0 0 1000px rgba(0,0,0,0.42), 0 0 0 0 rgba(59,130,246,0); }
+      50% { border-color: rgba(59,130,246,1); box-shadow: 0 0 0 1000px rgba(0,0,0,0.42), 0 0 12px 2px rgba(59,130,246,0.4); }
+    }
+
+    /* Corner decorations */
+    .id-corner {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border-color: rgba(59,130,246,1);
+      border-style: solid;
+    }
+
+    .id-corner.tl { top: -2px; left: -2px; border-width: 3px 0 0 3px; border-radius: 4px 0 0 0; }
+    .id-corner.tr { top: -2px; right: -2px; border-width: 3px 3px 0 0; border-radius: 0 4px 0 0; }
+    .id-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 3px 3px; border-radius: 0 0 0 4px; }
+    .id-corner.br { bottom: -2px; right: -2px; border-width: 0 3px 3px 0; border-radius: 0 0 4px 0; }
+
+    /* Scan line */
+    .scan-line {
+      position: absolute;
+      left: 4px; right: 4px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(59,130,246,0.8), transparent);
+      animation: scanLine 2s ease-in-out infinite;
+      border-radius: 2px;
+    }
+
+    @keyframes scanLine {
+      0% { top: 8px; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { top: calc(100% - 10px); opacity: 0; }
+    }
+
+    /* Hint label inside viewport */
+    .viewport-hint {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(8px);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 500;
+      padding: 5px 12px;
+      border-radius: 20px;
+      white-space: nowrap;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    /* Face guide overlay */
+    .overlay-face {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .face-cutout {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -52%);
+      width: 52%;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      box-shadow: 0 0 0 1000px rgba(0,0,0,0.42);
+      border: 2px solid rgba(59,130,246,0.8);
+      animation: facePulse 2s ease-in-out infinite;
+    }
+
+    @keyframes facePulse {
+      0%, 100% { border-color: rgba(59,130,246,0.6); }
+      50% { border-color: rgba(59,130,246,1); box-shadow: 0 0 0 1000px rgba(0,0,0,0.42), 0 0 16px 2px rgba(59,130,246,0.35); }
+    }
+
+    /* ── Captured preview ── */
+    .preview-wrap {
+      display: none;
+      position: relative;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .preview-wrap img {
+      width: 100%;
+      aspect-ratio: 4/3;
+      object-fit: cover;
+      display: block;
+    }
+
+    .preview-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(34,197,94,0.9);
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .preview-badge::before {
+      content: "";
+      width: 6px; height: 6px;
+      background: #fff;
+      border-radius: 50%;
+    }
+
+    /* ── Tips row ── */
+    .tips {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .tip {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      font-size: 0.72rem;
+      color: var(--text2);
+      line-height: 1.4;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tip-icon { font-size: 1rem; }
+    .tip-text { color: var(--text3); }
+
+    /* ── Actions ── */
+    .actions {
+      margin-top: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+      letter-spacing: -0.01em;
+    }
+
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(59,130,246,0.3);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      box-shadow: 0 4px 28px rgba(59,130,246,0.45);
+    }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--text2);
+      border: 1px solid var(--border);
+    }
+
+    .btn-outline:hover { border-color: var(--text3); color: var(--text); }
+
+    /* ── Loading screen ── */
+    #screen-loading {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 60px 24px;
+      text-align: center;
+    }
+
+    .loading-ring {
+      position: relative;
+      width: 64px;
+      height: 64px;
+    }
+
+    .loading-ring svg {
+      width: 64px; height: 64px;
+      animation: spin 1.2s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .loading-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      max-width: 300px;
+    }
+
+    .loading-step {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.82rem;
+      color: var(--text3);
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--surface2);
+      transition: all 0.4s;
+    }
+
+    .loading-step.active { color: var(--text); background: var(--accent-glow); }
+    .loading-step.done { color: var(--success); }
+
+    .lstep-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+
+    .loading-step.active .lstep-dot { background: var(--accent); animation: dotPulse 0.8s ease-in-out infinite; }
+    .loading-step.done .lstep-dot { background: var(--success); animation: none; }
+
+    @keyframes dotPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.4); }
+    }
+
+    /* ── Result screen ── */
+    #screen-result { display: none; flex-direction: column; gap: 16px; }
+
+    .verdict-card {
+      border-radius: var(--radius);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 10px;
+    }
+
+    .verdict-card.pass { background: var(--success-glow); border: 1px solid rgba(34,197,94,0.25); }
+    .verdict-card.review { background: var(--warning-glow); border: 1px solid rgba(245,158,11,0.25); }
+    .verdict-card.fail { background: var(--danger-glow); border: 1px solid rgba(239,68,68,0.25); }
+
+    .verdict-icon-wrap {
+      width: 60px; height: 60px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+    }
+
+    .pass .verdict-icon-wrap { background: rgba(34,197,94,0.15); }
+    .review .verdict-icon-wrap { background: rgba(245,158,11,0.15); }
+    .fail .verdict-icon-wrap { background: rgba(239,68,68,0.15); }
+
+    .verdict-label {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .pass .verdict-label { color: var(--success); }
+    .review .verdict-label { color: var(--warning); }
+    .fail .verdict-label { color: var(--danger); }
+
+    .verdict-desc { font-size: 0.85rem; color: var(--text2); line-height: 1.5; }
+
+    /* Score pill */
+    .score-pill {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+    }
+
+    .score-pill-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .score-pill-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text3);
+    }
+
+    .score-pill-value {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .score-track {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .score-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
+      width: 0%;
+    }
+
+    .score-fill.high { background: var(--success); }
+    .score-fill.medium { background: var(--warning); }
+    .score-fill.low, .score-fill.no_face_detected { background: var(--danger); }
+
+    .score-note { font-size: 0.78rem; color: var(--text3); line-height: 1.4; }
+
+    /* Fields panel */
+    .fields-panel {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .fields-panel-header {
+      padding: 12px 20px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text3);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .field-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 11px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+
+    .field-row:last-child { border-bottom: none; }
+    .field-key { color: var(--text3); }
+    .field-val { font-weight: 500; color: var(--text); text-align: right; max-width: 60%; }
+
+    /* ── QR screen ── */
+    #screen-qr {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 20px;
+      padding: 8px 0 0;
+    }
+
+    .qr-box {
+      background: #fff;
+      border-radius: var(--radius);
+      padding: 16px;
+      display: inline-block;
+    }
+
+    .qr-box img { width: 200px; height: 200px; display: block; }
+
+    .qr-title { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.02em; }
+    .qr-sub { font-size: 0.875rem; color: var(--text2); line-height: 1.5; max-width: 320px; }
+
+    .qr-waiting {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 30px;
+      padding: 10px 18px;
+      font-size: 0.83rem;
+      color: var(--text2);
+    }
+
+    .qr-dot {
+      width: 8px; height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: dotPulse 1s ease-in-out infinite;
+    }
+
+    .qr-timer {
+      font-size: 0.78rem;
+      color: var(--text3);
+    }
+
+    .qr-expired {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      color: var(--danger);
+      font-size: 0.9rem;
+    }
+
+    /* ── "Or" divider ── */
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      margin: 4px 0;
+    }
+
+    .divider::before, .divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .divider span {
+      font-size: 0.72rem;
+      color: var(--text3);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    /* Error banner */
+    .error-banner {
+      display: none;
+      background: var(--danger-glow);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      font-size: 0.83rem;
+      color: #fca5a5;
+      margin-top: 12px;
+      line-height: 1.4;
+    }
+
+    /* ── Sauron quick-verify flow ── */
+    .sauron-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+    .sauron-eye-icon {
+      width: 56px;
+      height: 56px;
+      background: linear-gradient(135deg, #7c3aed, #a855f7);
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+    }
+    .sauron-eye-icon svg { width: 30px; height: 30px; fill: #fff; }
+    .sauron-brand-title { font-size: 1.15rem; font-weight: 700; }
+    .sauron-brand-sub { font-size: 0.85rem; color: var(--text2); margin-top: 4px; }
+    .choice-btns { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+    .btn-sauron {
+      background: linear-gradient(135deg, #7c3aed, #a855f7);
+      color: #fff; border: none; border-radius: 12px;
+      padding: 14px; font-size: 0.93rem; font-weight: 600;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; gap: 8px; transition: opacity 0.15s;
+      width: 100%;
+    }
+    .btn-sauron:hover { opacity: 0.88; }
+    .sauron-id-input {
+      width: 100%; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 16px; color: var(--text); font-size: 0.93rem;
+      outline: none; margin-bottom: 4px; text-align: center;
+    }
+    .sauron-id-input:focus { border-color: #7c3aed; }
+    .sauron-id-input::placeholder { color: var(--text3); }
+    .claim-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+    .claim-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; border-radius: 10px; font-size: 0.85rem;
+    }
+    .claim-item.shared {
+      background: rgba(34,197,94,0.07);
+      border: 1px solid rgba(34,197,94,0.2); color: var(--text);
+    }
+    .claim-item.private {
+      background: rgba(71,85,105,0.08);
+      border: 1px solid var(--border); color: var(--text3);
+      text-decoration: line-through;
+    }
+    .claim-check { font-size: 1rem; flex-shrink: 0; }
+    .claim-note {
+      font-size: 0.72rem; color: var(--text2); margin-top: 10px;
+      text-align: center; line-height: 1.5;
+    }
+    .zkp-step {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 0; font-size: 0.85rem; color: var(--text3);
+    }
+    .zkp-step.active { color: var(--text); }
+    .zkp-step.done { color: var(--success); }
+    .zkp-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--surface2); flex-shrink: 0;
+    }
+    .zkp-step.active .zkp-dot { background: #7c3aed; box-shadow: 0 0 0 3px rgba(124,58,237,0.2); }
+    .zkp-step.done .zkp-dot { background: var(--success); }
+    .sauron-result-claims {
+      border: 1px solid var(--border); border-radius: 12px;
+      overflow: hidden; margin: 16px 0;
+    }
+    .src-row {
+      display: flex; justify-content: space-between;
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      font-size: 0.83rem;
+    }
+    .src-row:last-child { border: none; }
+    .src-key { color: var(--text2); }
+    .src-val { color: var(--text); font-weight: 500; }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="logo-mark">
+    <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+  </div>
+  <span class="logo-name">TrustID</span>
+  <span class="logo-badge">SECURE</span>
+</div>
+
+<!-- Stepper -->
+<div class="stepper">
+  <div class="step active" id="dot-1">
+    <div class="step-num">1</div>
+    <span class="step-name">ID Document</span>
+  </div>
+  <div class="step" id="dot-2">
+    <div class="step-num">2</div>
+    <span class="step-name">Selfie</span>
+  </div>
+  <div class="step" id="dot-3">
+    <div class="step-num">3</div>
+    <span class="step-name">Result</span>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ══ SCREEN 0: Sauron account check ══ -->
+  <div id="screen-sauron-check">
+    <div class="sauron-brand">
+      <div class="sauron-eye-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+      </div>
+      <div class="sauron-brand-title">Identity Verification</div>
+      <div class="sauron-brand-sub">Do you already have a Sauron account?</div>
+    </div>
+    <div class="choice-btns">
+      <button class="btn-sauron" onclick="useSauron()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+        Yes, connect my Sauron account
+      </button>
+      <button class="btn btn-outline" onclick="useTrustId()">No, verify with ID document</button>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN sauron-login ══ -->
+  <div id="screen-sauron-login" style="display:none">
+    <div class="sauron-brand">
+      <div class="sauron-eye-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+      </div>
+      <div class="sauron-brand-title">Connect Sauron</div>
+      <div class="sauron-brand-sub">Enter your Sauron ID or email to continue</div>
+    </div>
+    <input class="sauron-id-input" id="sauron-id-input" type="email" placeholder="sauron-id or email@example.com" autocomplete="off" />
+    <div class="error-banner" id="sauron-login-error">Please enter your Sauron ID</div>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="goToConsent()">Continue</button>
+      <button class="btn btn-outline" onclick="goBackToCheck()">Back</button>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN sauron-consent ══ -->
+  <div id="screen-sauron-consent" style="display:none">
+    <div class="step-header">
+      <div class="step-eyebrow">Step 2 of 2</div>
+      <h2>Authorize data sharing</h2>
+      <p>The following ZKP-attested claims will be shared with the client. Your personal data stays private.</p>
+    </div>
+    <div class="claim-list">
+      <div class="claim-item shared"><span class="claim-check">✓</span>Age verified (18+)</div>
+      <div class="claim-item shared"><span class="claim-check">✓</span>Identity confirmed</div>
+      <div class="claim-item shared"><span class="claim-check">✓</span>Nationality (country only)</div>
+      <div class="claim-item shared"><span class="claim-check">✓</span>AML status: Clear</div>
+      <div class="claim-item private"><span class="claim-check">✗</span>Full name</div>
+      <div class="claim-item private"><span class="claim-check">✗</span>Date of birth</div>
+      <div class="claim-item private"><span class="claim-check">✗</span>Document number</div>
+    </div>
+    <p class="claim-note">A zero-knowledge proof will be generated locally. The client receives only attested claims — not your personal data. No logs linking you to this platform are created.</p>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="authorizeConsent()">Authorize — Generate ZKP Proof</button>
+      <button class="btn btn-outline" onclick="cancelSauron()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN sauron-zkp ══ -->
+  <div id="screen-sauron-zkp" style="display:none">
+    <div class="loading-ring">
+      <svg viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#1f232e" stroke-width="5"/>
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#7c3aed" stroke-width="5"
+          stroke-dasharray="40 124" stroke-linecap="round" transform="rotate(-90 32 32)"/>
+      </svg>
+    </div>
+    <div class="loading-title">Generating zero-knowledge proof</div>
+    <div class="loading-steps">
+      <div class="zkp-step" id="zkp-s1"><div class="zkp-dot"></div>Fetching Sauron identity claims</div>
+      <div class="zkp-step" id="zkp-s2"><div class="zkp-dot"></div>Generating ZKP proof circuit</div>
+      <div class="zkp-step" id="zkp-s3"><div class="zkp-dot"></div>Verifying proof integrity</div>
+      <div class="zkp-step" id="zkp-s4"><div class="zkp-dot"></div>Transmitting attested claims</div>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN 1: ID Card ══ -->
+  <div id="screen-id" style="display:none">
+    <div class="step-header">
+      <div class="step-eyebrow">Step 1 of 2</div>
+      <h2>Show your ID document</h2>
+      <p>Hold your ID card, passport, or driver's license flat in front of the camera.</p>
+    </div>
+
+    <!-- Viewport -->
+    <div class="viewport" id="id-viewport">
+      <video id="id-video" autoplay playsinline muted></video>
+      <canvas id="id-canvas"></canvas>
+      <div class="overlay-id">
+        <div class="id-cutout scanning" id="id-cutout">
+          <div class="id-corner tl"></div>
+          <div class="id-corner tr"></div>
+          <div class="id-corner bl"></div>
+          <div class="id-corner br"></div>
+          <div class="scan-line"></div>
+        </div>
+      </div>
+      <div class="viewport-hint" id="id-hint">Align your document in the frame</div>
+    </div>
+
+    <!-- Preview (hidden until captured) -->
+    <div class="preview-wrap" id="id-preview-wrap">
+      <img id="id-preview" alt="ID document" />
+      <div class="preview-badge">Captured</div>
+    </div>
+
+    <div class="error-banner" id="id-error"></div>
+
+    <!-- Tips -->
+    <div class="tips" id="id-tips">
+      <div class="tip">
+        <span class="tip-icon">💡</span>
+        <span class="tip-text">Lay it flat on a dark surface</span>
+      </div>
+      <div class="tip">
+        <span class="tip-icon">☀️</span>
+        <span class="tip-text">Avoid glare &amp; reflections</span>
+      </div>
+      <div class="tip">
+        <span class="tip-icon">📋</span>
+        <span class="tip-text">All text must be visible</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="id-capture-btn" onclick="captureId()">Take Photo of ID</button>
+      <button class="btn btn-outline" id="id-retake-btn" style="display:none" onclick="retakeId()">Retake</button>
+      <button class="btn btn-primary" id="id-next-btn" style="display:none" onclick="goToSelfie()">Looks good — Continue</button>
+      <div class="divider"><span>or</span></div>
+      <button class="btn btn-outline" onclick="startQR()">Use your phone instead</button>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN QR: waiting for phone ══ -->
+  <div id="screen-qr">
+    <div class="step-header" style="text-align:center">
+      <div class="step-eyebrow">Mobile handoff</div>
+      <h2>Scan with your phone</h2>
+      <p class="qr-sub">Your phone's camera is better suited for this. Scan the QR code below to complete verification on your device.</p>
+    </div>
+
+    <div class="qr-box">
+      <img id="qr-img" src="" alt="QR code" />
+    </div>
+
+    <div class="qr-waiting" id="qr-waiting">
+      <div class="qr-dot"></div>
+      Waiting for your phone...
+    </div>
+
+    <div class="qr-timer" id="qr-timer"></div>
+
+    <div class="qr-expired" id="qr-expired">
+      <span>QR code expired</span>
+      <button class="btn btn-outline" style="width:auto;padding:10px 20px" onclick="startQR()">Generate a new code</button>
+    </div>
+
+    <button class="btn btn-outline" style="width:100%;margin-top:4px" onclick="cancelQR()">Go back</button>
+  </div>
+
+  <!-- ══ SCREEN 2: Selfie ══ -->
+  <div id="screen-selfie" style="display:none">
+    <div class="step-header">
+      <div class="step-eyebrow">Step 2 of 2</div>
+      <h2>Now take a selfie</h2>
+      <p>Look directly at the camera. Keep your face within the circle and stay still.</p>
+    </div>
+
+    <div class="viewport" id="selfie-viewport">
+      <video id="selfie-video" autoplay playsinline muted></video>
+      <canvas id="selfie-canvas"></canvas>
+      <div class="overlay-face">
+        <div class="face-cutout"></div>
+      </div>
+      <div class="viewport-hint">Center your face in the circle</div>
+    </div>
+
+    <div class="preview-wrap" id="selfie-preview-wrap">
+      <img id="selfie-preview" alt="Selfie" />
+      <div class="preview-badge">Captured</div>
+    </div>
+
+    <div class="error-banner" id="selfie-error"></div>
+
+    <div class="tips" id="selfie-tips">
+      <div class="tip">
+        <span class="tip-icon">👁️</span>
+        <span class="tip-text">Look straight at the camera</span>
+      </div>
+      <div class="tip">
+        <span class="tip-icon">🕶️</span>
+        <span class="tip-text">Remove glasses if possible</span>
+      </div>
+      <div class="tip">
+        <span class="tip-icon">🌤️</span>
+        <span class="tip-text">Good lighting on your face</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="selfie-capture-btn" onclick="captureSelfie()">Take Selfie</button>
+      <button class="btn btn-outline" id="selfie-retake-btn" style="display:none" onclick="retakeSelfie()">Retake</button>
+      <button class="btn btn-primary" id="submit-btn" style="display:none" onclick="submitKYC()">Verify My Identity</button>
+      <button class="btn btn-outline" onclick="goBack()">Back</button>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN 3: Loading ══ -->
+  <div id="screen-loading">
+    <div class="loading-ring">
+      <svg viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#1f232e" stroke-width="5"/>
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#3b82f6" stroke-width="5"
+          stroke-dasharray="40 124" stroke-linecap="round" transform="rotate(-90 32 32)"/>
+      </svg>
+    </div>
+    <div class="loading-title">Verifying your identity</div>
+    <div class="loading-steps">
+      <div class="loading-step active" id="lstep-1">
+        <div class="lstep-dot"></div>
+        Reading ID document
+      </div>
+      <div class="loading-step" id="lstep-2">
+        <div class="lstep-dot"></div>
+        Extracting information
+      </div>
+      <div class="loading-step" id="lstep-3">
+        <div class="lstep-dot"></div>
+        Comparing faces
+      </div>
+      <div class="loading-step" id="lstep-4">
+        <div class="lstep-dot"></div>
+        Finalizing result
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ SCREEN 4: Result ══ -->
+  <div id="screen-result">
+
+    <!-- Verdict -->
+    <div class="verdict-card" id="verdict-card">
+      <div class="verdict-icon-wrap" id="verdict-icon"></div>
+      <div class="verdict-label" id="verdict-label"></div>
+      <div class="verdict-desc" id="verdict-desc"></div>
+    </div>
+
+    <!-- Face match score -->
+    <div class="score-pill">
+      <div class="score-pill-header">
+        <span class="score-pill-label">Face Match</span>
+        <span class="score-pill-value" id="score-value"></span>
+      </div>
+      <div class="score-track">
+        <div class="score-fill" id="score-fill"></div>
+      </div>
+      <div class="score-note" id="score-note"></div>
+    </div>
+
+    <!-- Extracted fields -->
+    <div class="fields-panel">
+      <div class="fields-panel-header">Extracted from document</div>
+      <div id="fields-body"></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-outline" onclick="restart()">Start a new verification</button>
+    </div>
+
+  </div>
+
+</div><!-- /main -->
+
+<script>
+  let idImageData = null;
+  let selfieImageData = null;
+  let idStream = null;
+  let selfieStream = null;
+
+  // ── Camera ──────────────────────────────────────────────
+  async function startCamera(videoEl, facingMode) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false,
+      });
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      return stream;
+    } catch (_) {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      return stream;
+    }
+  }
+
+  function stopStream(s) { if (s) s.getTracks().forEach(t => t.stop()); }
+
+  function captureFrame(video, canvas) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  }
+
+  // ── Step 1: ID ──────────────────────────────────────────
+  async function initIdCamera() {
+    idStream = await startCamera(document.getElementById("id-video"), "environment");
+  }
+
+  function captureId() {
+    idImageData = captureFrame(
+      document.getElementById("id-video"),
+      document.getElementById("id-canvas")
+    );
+
+    document.getElementById("id-viewport").style.display = "none";
+    document.getElementById("id-tips").style.display = "none";
+    document.getElementById("id-hint").style.display = "none";
+
+    const pw = document.getElementById("id-preview-wrap");
+    document.getElementById("id-preview").src = idImageData;
+    pw.style.display = "block";
+
+    document.getElementById("id-capture-btn").style.display = "none";
+    document.getElementById("id-retake-btn").style.display = "block";
+    document.getElementById("id-next-btn").style.display = "block";
+
+    stopStream(idStream);
+  }
+
+  function retakeId() {
+    idImageData = null;
+    document.getElementById("id-viewport").style.display = "block";
+    document.getElementById("id-tips").style.display = "flex";
+    document.getElementById("id-preview-wrap").style.display = "none";
+    document.getElementById("id-capture-btn").style.display = "block";
+    document.getElementById("id-retake-btn").style.display = "none";
+    document.getElementById("id-next-btn").style.display = "none";
+    document.getElementById("id-error").style.display = "none";
+    initIdCamera();
+  }
+
+  // ── Step 2: Selfie ──────────────────────────────────────
+  async function goToSelfie() {
+    document.getElementById("screen-id").style.display = "none";
+    document.getElementById("screen-selfie").style.display = "block";
+    setStep(2);
+    selfieStream = await startCamera(document.getElementById("selfie-video"), "user");
+  }
+
+  function captureSelfie() {
+    selfieImageData = captureFrame(
+      document.getElementById("selfie-video"),
+      document.getElementById("selfie-canvas")
+    );
+
+    document.getElementById("selfie-viewport").style.display = "none";
+    document.getElementById("selfie-tips").style.display = "none";
+
+    const pw = document.getElementById("selfie-preview-wrap");
+    document.getElementById("selfie-preview").src = selfieImageData;
+    pw.style.display = "block";
+
+    document.getElementById("selfie-capture-btn").style.display = "none";
+    document.getElementById("selfie-retake-btn").style.display = "block";
+    document.getElementById("submit-btn").style.display = "block";
+
+    stopStream(selfieStream);
+  }
+
+  function retakeSelfie() {
+    selfieImageData = null;
+    document.getElementById("selfie-viewport").style.display = "block";
+    document.getElementById("selfie-tips").style.display = "flex";
+    document.getElementById("selfie-preview-wrap").style.display = "none";
+    document.getElementById("selfie-capture-btn").style.display = "block";
+    document.getElementById("selfie-retake-btn").style.display = "none";
+    document.getElementById("submit-btn").style.display = "none";
+    document.getElementById("selfie-error").style.display = "none";
+    startCamera(document.getElementById("selfie-video"), "user").then(s => selfieStream = s);
+  }
+
+  function goBack() {
+    stopStream(selfieStream);
+    document.getElementById("screen-selfie").style.display = "none";
+    document.getElementById("screen-id").style.display = "block";
+    setStep(1);
+    if (!idImageData) initIdCamera();
+  }
+
+  // ── Step 3: Submit ──────────────────────────────────────
+  let loadingTimer = null;
+
+  function animateLoadingSteps() {
+    const steps = [1, 2, 3, 4];
+    let i = 0;
+    // step 1 already active
+    loadingTimer = setInterval(() => {
+      if (i > 0) {
+        document.getElementById(`lstep-${steps[i - 1]}`).className = "loading-step done";
+      }
+      if (i < steps.length) {
+        document.getElementById(`lstep-${steps[i]}`).className = "loading-step active";
+        i++;
+      } else {
+        clearInterval(loadingTimer);
+      }
+    }, 1200);
+  }
+
+  async function submitKYC() {
+    document.getElementById("screen-selfie").style.display = "none";
+    document.getElementById("screen-loading").style.display = "flex";
+    setStep(3);
+
+    // Reset loading steps
+    [1,2,3,4].forEach(n => {
+      document.getElementById(`lstep-${n}`).className = "loading-step" + (n === 1 ? " active" : "");
+    });
+    animateLoadingSteps();
+
+    try {
+      const res = await fetch("/api/kyc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_image: idImageData, selfie: selfieImageData }),
+      });
+
+      clearInterval(loadingTimer);
+      // Mark all done
+      [1,2,3,4].forEach(n => document.getElementById(`lstep-${n}`).className = "loading-step done");
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Server error");
+      }
+
+      const data = await res.json();
+      await new Promise(r => setTimeout(r, 400)); // brief pause for UX
+      showResult(data);
+
+    } catch (e) {
+      clearInterval(loadingTimer);
+      document.getElementById("screen-loading").style.display = "none";
+      showErrorResult(e.message);
+    }
+  }
+
+  function showResult(data) {
+    document.getElementById("screen-loading").style.display = "none";
+    const el = document.getElementById("screen-result");
+    el.style.display = "flex";
+
+    // Verdict
+    const map = {
+      pass:   { icon: "✓", label: "Identity Verified", desc: data.decision_reason },
+      review: { icon: "!", label: "Manual Review Needed", desc: data.decision_reason },
+      fail:   { icon: "✕", label: "Verification Failed", desc: data.decision_reason },
+    };
+    const v = map[data.decision] || { icon: "?", label: data.decision, desc: "" };
+    document.getElementById("verdict-card").className = `verdict-card ${data.decision}`;
+    document.getElementById("verdict-icon").textContent = v.icon;
+    document.getElementById("verdict-label").textContent = v.label;
+    document.getElementById("verdict-desc").textContent = v.desc;
+
+    // Score
+    const pct = Math.round(data.face_match_score * 100);
+    document.getElementById("score-value").textContent = `${pct}%`;
+    const fill = document.getElementById("score-fill");
+    fill.className = `score-fill ${data.face_match_label}`;
+    setTimeout(() => { fill.style.width = `${pct}%`; }, 80);
+    document.getElementById("score-note").textContent = data.face_match_reasoning || "";
+
+    // Fields
+    const f = data.extracted_fields;
+    const rows = [
+      ["Document type",   f.document_type],
+      ["Full name",       f.full_name],
+      ["Date of birth",   f.date_of_birth],
+      ["Nationality",     f.nationality],
+      ["Document number", f.document_number],
+      ["Expiry date",     f.expiry_date],
+      ["Gender",          f.gender],
+    ];
+
+    document.getElementById("fields-body").innerHTML = rows.map(([k, v]) => `
+      <div class="field-row">
+        <span class="field-key">${k}</span>
+        <span class="field-val">${fmt(v)}</span>
+      </div>
+    `).join("");
+  }
+
+  function showErrorResult(msg) {
+    const el = document.getElementById("screen-result");
+    el.style.display = "flex";
+    document.getElementById("verdict-card").className = "verdict-card fail";
+    document.getElementById("verdict-icon").textContent = "✕";
+    document.getElementById("verdict-label").textContent = "Error";
+    document.getElementById("verdict-desc").textContent = msg;
+    document.getElementById("score-value").textContent = "—";
+    document.getElementById("score-fill").style.width = "0%";
+    document.getElementById("score-note").textContent = "";
+    document.getElementById("fields-body").innerHTML = "";
+  }
+
+  function fmt(val) {
+    if (val === null || val === undefined || val === "") return '<span style="color:var(--text3)">—</span>';
+    return String(val).replace(/_/g, " ");
+  }
+
+  // ── Stepper ─────────────────────────────────────────────
+  function setStep(n) {
+    [1, 2, 3].forEach(i => {
+      const el = document.getElementById(`dot-${i}`);
+      el.className = "step" + (i < n ? " done" : i === n ? " active" : "");
+    });
+  }
+
+  // ── Restart ─────────────────────────────────────────────
+  function restart() {
+    idImageData = null;
+    selfieImageData = null;
+    stopStream(idStream);
+    stopStream(selfieStream);
+    clearInterval(qrPollInterval);
+    clearInterval(qrTimerInterval);
+    document.getElementById("screen-qr").style.display = "none";
+
+    document.getElementById("screen-result").style.display = "none";
+    document.getElementById("screen-loading").style.display = "none";
+    document.getElementById("screen-selfie").style.display = "none";
+    document.getElementById("screen-id").style.display = "none";
+    document.getElementById("screen-sauron-zkp").style.display = "none";
+    document.getElementById("screen-sauron-consent").style.display = "none";
+    document.getElementById("screen-sauron-login").style.display = "none";
+    document.getElementById("screen-sauron-check").style.display = "block";
+
+    document.getElementById("id-viewport").style.display = "block";
+    document.getElementById("id-tips").style.display = "flex";
+    document.getElementById("id-preview-wrap").style.display = "none";
+    document.getElementById("id-capture-btn").style.display = "block";
+    document.getElementById("id-retake-btn").style.display = "none";
+    document.getElementById("id-next-btn").style.display = "none";
+    document.getElementById("id-error").style.display = "none";
+
+    document.getElementById("selfie-viewport").style.display = "block";
+    document.getElementById("selfie-tips").style.display = "flex";
+    document.getElementById("selfie-preview-wrap").style.display = "none";
+    document.getElementById("selfie-capture-btn").style.display = "block";
+    document.getElementById("selfie-retake-btn").style.display = "none";
+    document.getElementById("submit-btn").style.display = "none";
+
+    updateStepLabels(["ID Document", "Selfie", "Result"]);
+    showSauronCheck();
+  }
+
+  // ── QR / Mobile handoff ─────────────────────────────────
+  let qrSessionId = null;
+  let qrPollInterval = null;
+  let qrTimerInterval = null;
+  let qrExpiresAt = null;
+
+  async function startQR() {
+    // Stop desktop camera, hide id screen
+    stopStream(idStream);
+    document.getElementById("screen-id").style.display = "none";
+    document.getElementById("screen-qr").style.display = "flex";
+    document.getElementById("qr-waiting").style.display = "flex";
+    document.getElementById("qr-expired").style.display = "none";
+    document.getElementById("qr-img").src = "";
+
+    const res = await fetch("/api/session", { method: "POST" });
+    const data = await res.json();
+    qrSessionId = data.session_id;
+    qrExpiresAt = Date.now() + data.expires_in * 1000;
+
+    document.getElementById("qr-img").src = data.qr;
+
+    // Countdown timer
+    clearInterval(qrTimerInterval);
+    qrTimerInterval = setInterval(() => {
+      const remaining = Math.max(0, Math.round((qrExpiresAt - Date.now()) / 1000));
+      const m = Math.floor(remaining / 60);
+      const s = String(remaining % 60).padStart(2, "0");
+      document.getElementById("qr-timer").textContent = `Expires in ${m}:${s}`;
+      if (remaining === 0) {
+        clearInterval(qrTimerInterval);
+        clearInterval(qrPollInterval);
+        document.getElementById("qr-waiting").style.display = "none";
+        document.getElementById("qr-expired").style.display = "flex";
+        document.getElementById("qr-timer").textContent = "";
+      }
+    }, 1000);
+
+    // Poll for completion
+    clearInterval(qrPollInterval);
+    qrPollInterval = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/session/${qrSessionId}`);
+        if (r.status === 404) {
+          // expired server-side
+          clearInterval(qrPollInterval);
+          clearInterval(qrTimerInterval);
+          document.getElementById("qr-waiting").style.display = "none";
+          document.getElementById("qr-expired").style.display = "flex";
+          document.getElementById("qr-timer").textContent = "";
+          return;
+        }
+        const s = await r.json();
+        if (s.status === "done") {
+          clearInterval(qrPollInterval);
+          clearInterval(qrTimerInterval);
+          document.getElementById("screen-qr").style.display = "none";
+          setStep(3);
+          showResult(s.result);
+          document.getElementById("screen-result").style.display = "flex";
+        }
+      } catch (_) {}
+    }, 2000);
+  }
+
+  function cancelQR() {
+    clearInterval(qrPollInterval);
+    clearInterval(qrTimerInterval);
+    qrSessionId = null;
+    document.getElementById("screen-qr").style.display = "none";
+    document.getElementById("screen-id").style.display = "block";
+    setStep(1);
+    initIdCamera();
+  }
+
+  // ── Sauron quick-verify flow ─────────────────────────────
+  function showSauronCheck() {
+    updateStepLabels(["ID Document", "Selfie", "Result"]);
+    setStep(1);
+    document.getElementById("screen-sauron-check").style.display = "block";
+  }
+
+  function useSauron() {
+    updateStepLabels(["Connect", "Authorize", "Done"]);
+    setStep(1);
+    document.getElementById("screen-sauron-check").style.display = "none";
+    document.getElementById("screen-sauron-login").style.display = "block";
+  }
+
+  function useTrustId() {
+    document.getElementById("screen-sauron-check").style.display = "none";
+    document.getElementById("screen-id").style.display = "block";
+    setStep(1);
+    initIdCamera();
+  }
+
+  function goBackToCheck() {
+    document.getElementById("screen-sauron-login").style.display = "none";
+    document.getElementById("screen-sauron-consent").style.display = "none";
+    updateStepLabels(["ID Document", "Selfie", "Result"]);
+    document.getElementById("screen-sauron-check").style.display = "block";
+    setStep(1);
+  }
+
+  function goToConsent() {
+    const val = document.getElementById("sauron-id-input").value.trim();
+    document.getElementById("sauron-login-error").style.display = val ? "none" : "block";
+    if (!val) return;
+    document.getElementById("screen-sauron-login").style.display = "none";
+    document.getElementById("screen-sauron-consent").style.display = "block";
+    setStep(2);
+  }
+
+  function cancelSauron() {
+    document.getElementById("screen-sauron-consent").style.display = "none";
+    document.getElementById("screen-sauron-login").style.display = "block";
+    setStep(1);
+  }
+
+  let zkpTimer = null;
+  function authorizeConsent() {
+    document.getElementById("screen-sauron-consent").style.display = "none";
+    document.getElementById("screen-sauron-zkp").style.display = "flex";
+    setStep(3);
+    ["zkp-s1","zkp-s2","zkp-s3","zkp-s4"].forEach(id => {
+      document.getElementById(id).className = "zkp-step";
+    });
+    clearInterval(zkpTimer);
+    const steps = ["zkp-s1","zkp-s2","zkp-s3","zkp-s4"];
+    let i = 0;
+    zkpTimer = setInterval(() => {
+      if (i > 0) document.getElementById(steps[i-1]).className = "zkp-step done";
+      if (i < steps.length) {
+        document.getElementById(steps[i]).className = "zkp-step active";
+        i++;
+      } else {
+        clearInterval(zkpTimer);
+        setTimeout(showSauronResult, 600);
+      }
+    }, 900);
+  }
+
+  function showSauronResult() {
+    document.getElementById("screen-sauron-zkp").style.display = "none";
+    const el = document.getElementById("screen-result");
+    el.style.display = "flex";
+    document.getElementById("verdict-card").className = "verdict-card pass";
+    document.getElementById("verdict-icon").textContent = "✓";
+    document.getElementById("verdict-label").textContent = "Identity Verified via Sauron";
+    document.getElementById("verdict-desc").textContent = "ZKP-attested claims shared with the client. Your personal data remains private — no logs created.";
+    document.getElementById("score-value").textContent = "100%";
+    const fill = document.getElementById("score-fill");
+    fill.className = "score-fill strong";
+    setTimeout(() => { fill.style.width = "100%"; }, 80);
+    document.getElementById("score-note").textContent = "Sauron identity token verified — zero user data disclosed";
+    document.getElementById("fields-body").innerHTML = `
+      <div class="sauron-result-claims">
+        <div class="src-row"><span class="src-key">Age verified</span><span class="src-val" style="color:var(--success)">18+</span></div>
+        <div class="src-row"><span class="src-key">Identity status</span><span class="src-val" style="color:var(--success)">Confirmed</span></div>
+        <div class="src-row"><span class="src-key">Nationality</span><span class="src-val" style="color:var(--success)">Verified</span></div>
+        <div class="src-row"><span class="src-key">AML status</span><span class="src-val" style="color:var(--success)">Clear</span></div>
+        <div class="src-row"><span class="src-key">Personal data disclosed</span><span class="src-val" style="color:var(--success)">None — ZKP proof only</span></div>
+      </div>`;
+  }
+
+  function updateStepLabels(labels) {
+    document.querySelectorAll(".step-name").forEach((el, i) => {
+      if (labels[i]) el.textContent = labels[i];
+    });
+  }
+
+  // ── Init ────────────────────────────────────────────────
+  showSauronCheck();
+</script>
+</body>
+</html>

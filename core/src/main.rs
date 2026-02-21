@@ -359,6 +359,10 @@ struct DevRegisterRequest {
     first_name: String,
     last_name: String,
     country: String,
+    #[serde(default)]
+    date_of_birth: String,
+    #[serde(default)]
+    nationality: String,
 }
 
 #[derive(Serialize)]
@@ -405,7 +409,14 @@ async fn dev_register_user(
         }
     }
 
-    let profile = UserData::new(&payload.first_name, &payload.last_name, &payload.email, &payload.country);
+    let profile = UserData {
+        first_name: payload.first_name.clone(),
+        last_name:  payload.last_name.clone(),
+        email:      payload.email.clone(),
+        country:    payload.country.clone(),
+        date_of_birth: payload.date_of_birth.clone(),
+        nationality:   payload.nationality.clone(),
+    };
     let pk_point = user_identity.public;
 
     let signed_token_a = {

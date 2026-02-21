@@ -8,6 +8,10 @@ pub struct UserData {
     pub last_name: String,
     pub email: String,
     pub country: String,
+    #[serde(default)]
+    pub date_of_birth: String,
+    #[serde(default)]
+    pub nationality: String,
 }
 
 impl UserData {
@@ -17,6 +21,8 @@ impl UserData {
             last_name: last_name.to_string(),
             email: email.to_string(),
             country: country.to_string(),
+            date_of_birth: String::new(),
+            nationality: String::new(),
         }
     }
 }

@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Identity Verification — Mobile</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #08090c;
+      --surface: #111318;
+      --surface2: #1a1d24;
+      --border: #1f232e;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59,130,246,0.15);
+      --success: #22c55e;
+      --success-glow: rgba(34,197,94,0.12);
+      --warning: #f59e0b;
+      --warning-glow: rgba(245,158,11,0.12);
+      --danger: #ef4444;
+      --danger-glow: rgba(239,68,68,0.12);
+      --text: #f1f5f9;
+      --text2: #94a3b8;
+      --text3: #475569;
+      --radius: 16px;
+      --radius-sm: 10px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 0 60px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .topbar {
+      width: 100%;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .logo-mark {
+      width: 26px; height: 26px;
+      background: var(--accent);
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    .logo-mark svg { width: 15px; height: 15px; fill: #fff; }
+    .logo-name { font-size: 0.9rem; font-weight: 700; }
+
+    .logo-badge {
+      margin-left: auto;
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-glow);
+      border: 1px solid rgba(59,130,246,0.2);
+      padding: 2px 7px;
+      border-radius: 20px;
+    }
+
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 22px 20px 0;
+      width: 100%;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .step {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 6px; flex: 1; position: relative;
+    }
+
+    .step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 14px; left: calc(50% + 16px); right: calc(-50% + 16px);
+      height: 1px; background: var(--border);
+      transition: background 0.5s;
+    }
+
+    .step.done:not(:last-child)::after { background: var(--accent); }
+
+    .step-num {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.72rem; font-weight: 700; color: var(--text3);
+      z-index: 1; transition: all 0.3s; position: relative;
+    }
+
+    .step.active .step-num { border-color: var(--accent); background: var(--accent-glow); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-glow); }
+    .step.done .step-num { border-color: var(--accent); background: var(--accent); color: #fff; }
+
+    .step-name { font-size: 0.65rem; font-weight: 500; color: var(--text3); white-space: nowrap; }
+    .step.active .step-name { color: var(--accent); }
+    .step.done .step-name { color: var(--text2); }
+
+    .main {
+      width: 100%; max-width: 420px;
+      padding: 22px 16px 0;
+      flex: 1; display: flex; flex-direction: column;
+    }
+
+    .step-header { margin-bottom: 16px; }
+    .step-eyebrow { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent); margin-bottom: 5px; }
+    .step-header h2 { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em; }
+    .step-header p { margin-top: 5px; font-size: 0.85rem; color: var(--text2); line-height: 1.5; }
+
+    .viewport {
+      position: relative; width: 100%;
+      border-radius: var(--radius); overflow: hidden;
+      background: #000; aspect-ratio: 4/3;
+    }
+
+    .viewport video, .viewport canvas {
+      position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    }
+
+    .viewport canvas { display: none; }
+
+    .overlay-id { position: absolute; inset: 0; pointer-events: none; }
+    .overlay-id::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,0.42); }
+
+    .id-cutout {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 78%; height: 56%;
+      border-radius: 10px;
+      box-shadow: 0 0 0 1000px rgba(0,0,0,0.42);
+      border: 2px solid rgba(59,130,246,0.8);
+      animation: scanPulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes scanPulse {
+      0%, 100% { border-color: rgba(59,130,246,0.6); box-shadow: 0 0 0 1000px rgba(0,0,0,0.42); }
+      50% { border-color: rgba(59,130,246,1); box-shadow: 0 0 0 1000px rgba(0,0,0,0.42), 0 0 12px 2px rgba(59,130,246,0.4); }
+    }
+
+    .id-corner { position: absolute; width: 16px; height: 16px; border-color: rgba(59,130,246,1); border-style: solid; }
+    .id-corner.tl { top: -2px; left: -2px; border-width: 3px 0 0 3px; border-radius: 4px 0 0 0; }
+    .id-corner.tr { top: -2px; right: -2px; border-width: 3px 3px 0 0; border-radius: 0 4px 0 0; }
+    .id-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 3px 3px; border-radius: 0 0 0 4px; }
+    .id-corner.br { bottom: -2px; right: -2px; border-width: 0 3px 3px 0; border-radius: 0 0 4px 0; }
+
+    .scan-line {
+      position: absolute; left: 4px; right: 4px; height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(59,130,246,0.8), transparent);
+      animation: scanLine 2s ease-in-out infinite;
+      border-radius: 2px;
+    }
+
+    @keyframes scanLine {
+      0% { top: 8px; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: calc(100% - 10px); opacity: 0; }
+    }
+
+    .viewport-hint {
+      position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.65); backdrop-filter: blur(8px);
+      color: #fff; font-size: 0.72rem; font-weight: 500;
+      padding: 4px 12px; border-radius: 20px; white-space: nowrap;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .overlay-face { position: absolute; inset: 0; pointer-events: none; }
+    .face-cutout {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -52%);
+      width: 52%; aspect-ratio: 1; border-radius: 50%;
+      box-shadow: 0 0 0 1000px rgba(0,0,0,0.42);
+      border: 2px solid rgba(59,130,246,0.8);
+      animation: facePulse 2s ease-in-out infinite;
+    }
+
+    @keyframes facePulse {
+      0%, 100% { border-color: rgba(59,130,246,0.6); }
+      50% { border-color: rgba(59,130,246,1); box-shadow: 0 0 0 1000px rgba(0,0,0,0.42), 0 0 16px 2px rgba(59,130,246,0.35); }
+    }
+
+    .preview-wrap { display: none; position: relative; border-radius: var(--radius); overflow: hidden; }
+    .preview-wrap img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+    .preview-badge {
+      position: absolute; top: 10px; right: 10px;
+      background: rgba(34,197,94,0.9); color: #fff;
+      font-size: 0.7rem; font-weight: 700; padding: 3px 10px;
+      border-radius: 20px; display: flex; align-items: center; gap: 5px;
+    }
+    .preview-badge::before { content: ""; width: 5px; height: 5px; background: #fff; border-radius: 50%; }
+
+    .tips { display: flex; gap: 8px; margin-top: 12px; }
+    .tip {
+      flex: 1; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 8px 10px; font-size: 0.7rem; color: var(--text2);
+      line-height: 1.4; display: flex; flex-direction: column; gap: 3px;
+    }
+    .tip-icon { font-size: 0.95rem; }
+    .tip-text { color: var(--text3); }
+
+    .actions { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+
+    .btn {
+      width: 100%; padding: 14px; border-radius: var(--radius-sm);
+      font-size: 0.93rem; font-weight: 600; cursor: pointer; border: none;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 4px 20px rgba(59,130,246,0.3); }
+    .btn-outline { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+
+    /* Loading */
+    #screen-loading {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; gap: 18px; padding: 50px 20px; text-align: center;
+    }
+
+    .loading-ring { position: relative; width: 56px; height: 56px; }
+    .loading-ring svg { width: 56px; height: 56px; animation: spin 1.2s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-title { font-size: 1rem; font-weight: 600; }
+
+    .loading-steps { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 280px; }
+    .loading-step {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 0.8rem; color: var(--text3);
+      padding: 7px 12px; border-radius: 8px; background: var(--surface2);
+    }
+    .loading-step.active { color: var(--text); background: var(--accent-glow); }
+    .loading-step.done { color: var(--success); }
+    .lstep-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .loading-step.active .lstep-dot { background: var(--accent); animation: dotPulse 0.8s ease-in-out infinite; }
+    .loading-step.done .lstep-dot { background: var(--success); }
+    @keyframes dotPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.4); } }
+
+    /* Done screen */
+    #screen-done {
+      display: none; flex-direction: column; align-items: center;
+      text-align: center; gap: 16px; padding: 32px 16px 0;
+    }
+
+    .done-icon {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: var(--success-glow);
+      border: 1px solid rgba(34,197,94,0.3);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2rem;
+    }
+
+    .done-title { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+    .done-sub { font-size: 0.875rem; color: var(--text2); line-height: 1.5; max-width: 280px; }
+
+    .done-card {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 20px;
+      width: 100%; display: flex; align-items: center; gap: 12px;
+    }
+
+    .done-card-icon { font-size: 1.4rem; }
+    .done-card-text { font-size: 0.83rem; color: var(--text2); line-height: 1.4; text-align: left; }
+    .done-card-text strong { color: var(--text); display: block; margin-bottom: 2px; }
+
+    /* Error banner */
+    .error-banner {
+      display: none; background: var(--danger-glow);
+      border: 1px solid rgba(239,68,68,0.3); border-radius: var(--radius-sm);
+      padding: 10px 14px; font-size: 0.82rem; color: #fca5a5;
+      margin-top: 10px; line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo-mark">
+    <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+  </div>
+  <span class="logo-name">TrustID</span>
+  <span class="logo-badge">MOBILE</span>
+</div>
+
+<div class="stepper" id="stepper">
+  <div class="step active" id="dot-1">
+    <div class="step-num">1</div>
+    <span class="step-name">ID Document</span>
+  </div>
+  <div class="step" id="dot-2">
+    <div class="step-num">2</div>
+    <span class="step-name">Selfie</span>
+  </div>
+  <div class="step" id="dot-3">
+    <div class="step-num">3</div>
+    <span class="step-name">Done</span>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Step 1: ID card -->
+  <div id="screen-id">
+    <div class="step-header">
+      <div class="step-eyebrow">Step 1 of 2</div>
+      <h2>Show your ID document</h2>
+      <p>Hold your ID flat in front of the camera. All text must be clearly visible.</p>
+    </div>
+
+    <div class="viewport" id="id-viewport">
+      <video id="id-video" autoplay playsinline muted></video>
+      <canvas id="id-canvas"></canvas>
+      <div class="overlay-id">
+        <div class="id-cutout">
+          <div class="id-corner tl"></div><div class="id-corner tr"></div>
+          <div class="id-corner bl"></div><div class="id-corner br"></div>
+          <div class="scan-line"></div>
+        </div>
+      </div>
+      <div class="viewport-hint">Align your document in the frame</div>
+    </div>
+
+    <div class="preview-wrap" id="id-preview-wrap">
+      <img id="id-preview" alt="ID" />
+      <div class="preview-badge">Captured</div>
+    </div>
+
+    <div class="error-banner" id="id-error"></div>
+
+    <div class="tips" id="id-tips">
+      <div class="tip"><span class="tip-icon">💡</span><span class="tip-text">Lay flat on dark surface</span></div>
+      <div class="tip"><span class="tip-icon">☀️</span><span class="tip-text">No glare or reflections</span></div>
+      <div class="tip"><span class="tip-icon">📋</span><span class="tip-text">All text visible</span></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="id-capture-btn" onclick="captureId()">Take Photo of ID</button>
+      <button class="btn btn-outline" id="id-retake-btn" style="display:none" onclick="retakeId()">Retake</button>
+      <button class="btn btn-primary" id="id-next-btn" style="display:none" onclick="goToSelfie()">Looks good — Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Selfie -->
+  <div id="screen-selfie" style="display:none">
+    <div class="step-header">
+      <div class="step-eyebrow">Step 2 of 2</div>
+      <h2>Now take a selfie</h2>
+      <p>Look straight at the camera. Keep your face in the circle and stay still.</p>
+    </div>
+
+    <div class="viewport" id="selfie-viewport">
+      <video id="selfie-video" autoplay playsinline muted></video>
+      <canvas id="selfie-canvas"></canvas>
+      <div class="overlay-face"><div class="face-cutout"></div></div>
+      <div class="viewport-hint">Center your face in the circle</div>
+    </div>
+
+    <div class="preview-wrap" id="selfie-preview-wrap">
+      <img id="selfie-preview" alt="Selfie" />
+      <div class="preview-badge">Captured</div>
+    </div>
+
+    <div class="error-banner" id="selfie-error"></div>
+
+    <div class="tips" id="selfie-tips">
+      <div class="tip"><span class="tip-icon">👁️</span><span class="tip-text">Look straight ahead</span></div>
+      <div class="tip"><span class="tip-icon">🕶️</span><span class="tip-text">Remove glasses</span></div>
+      <div class="tip"><span class="tip-icon">🌤️</span><span class="tip-text">Good lighting</span></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="selfie-capture-btn" onclick="captureSelfie()">Take Selfie</button>
+      <button class="btn btn-outline" id="selfie-retake-btn" style="display:none" onclick="retakeSelfie()">Retake</button>
+      <button class="btn btn-primary" id="submit-btn" style="display:none" onclick="submitKYC()">Verify My Identity</button>
+      <button class="btn btn-outline" onclick="goBack()">Back</button>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div id="screen-loading">
+    <div class="loading-ring">
+      <svg viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#1f232e" stroke-width="5"/>
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#3b82f6" stroke-width="5"
+          stroke-dasharray="40 124" stroke-linecap="round" transform="rotate(-90 32 32)"/>
+      </svg>
+    </div>
+    <div class="loading-title">Verifying your identity</div>
+    <div class="loading-steps">
+      <div class="loading-step active" id="lstep-1"><div class="lstep-dot"></div>Reading ID document</div>
+      <div class="loading-step" id="lstep-2"><div class="lstep-dot"></div>Extracting information</div>
+      <div class="loading-step" id="lstep-3"><div class="lstep-dot"></div>Comparing faces</div>
+      <div class="loading-step" id="lstep-4"><div class="lstep-dot"></div>Finalizing result</div>
+    </div>
+  </div>
+
+  <!-- Done -->
+  <div id="screen-done">
+    <div class="done-icon">✓</div>
+    <div class="done-title">Verification complete</div>
+    <div class="done-sub">Your identity has been submitted. You can now return to your computer to see the result.</div>
+    <div class="done-card">
+      <div class="done-card-icon">💻</div>
+      <div class="done-card-text">
+        <strong>Check your computer</strong>
+        The result is now displayed on the screen where you scanned the QR code.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Extract session_id from URL path: /mobile/{session_id}
+  const SESSION_ID = location.pathname.split("/").pop();
+
+  let idImageData = null;
+  let selfieImageData = null;
+  let idStream = null;
+  let selfieStream = null;
+
+  async function startCamera(videoEl, facingMode) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false,
+      });
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      return stream;
+    } catch (_) {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      return stream;
+    }
+  }
+
+  function stopStream(s) { if (s) s.getTracks().forEach(t => t.stop()); }
+
+  function captureFrame(video, canvas) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  }
+
+  function setStep(n) {
+    [1, 2, 3].forEach(i => {
+      const el = document.getElementById(`dot-${i}`);
+      el.className = "step" + (i < n ? " done" : i === n ? " active" : "");
+    });
+  }
+
+  // Step 1: ID
+  async function initIdCamera() {
+    idStream = await startCamera(document.getElementById("id-video"), "environment");
+  }
+
+  function captureId() {
+    idImageData = captureFrame(document.getElementById("id-video"), document.getElementById("id-canvas"));
+    document.getElementById("id-viewport").style.display = "none";
+    document.getElementById("id-tips").style.display = "none";
+    document.getElementById("id-preview").src = idImageData;
+    document.getElementById("id-preview-wrap").style.display = "block";
+    document.getElementById("id-capture-btn").style.display = "none";
+    document.getElementById("id-retake-btn").style.display = "block";
+    document.getElementById("id-next-btn").style.display = "block";
+    stopStream(idStream);
+  }
+
+  function retakeId() {
+    idImageData = null;
+    document.getElementById("id-viewport").style.display = "block";
+    document.getElementById("id-tips").style.display = "flex";
+    document.getElementById("id-preview-wrap").style.display = "none";
+    document.getElementById("id-capture-btn").style.display = "block";
+    document.getElementById("id-retake-btn").style.display = "none";
+    document.getElementById("id-next-btn").style.display = "none";
+    document.getElementById("id-error").style.display = "none";
+    initIdCamera();
+  }
+
+  // Step 2: Selfie
+  async function goToSelfie() {
+    document.getElementById("screen-id").style.display = "none";
+    document.getElementById("screen-selfie").style.display = "block";
+    setStep(2);
+    selfieStream = await startCamera(document.getElementById("selfie-video"), "user");
+  }
+
+  function captureSelfie() {
+    selfieImageData = captureFrame(document.getElementById("selfie-video"), document.getElementById("selfie-canvas"));
+    document.getElementById("selfie-viewport").style.display = "none";
+    document.getElementById("selfie-tips").style.display = "none";
+    document.getElementById("selfie-preview").src = selfieImageData;
+    document.getElementById("selfie-preview-wrap").style.display = "block";
+    document.getElementById("selfie-capture-btn").style.display = "none";
+    document.getElementById("selfie-retake-btn").style.display = "block";
+    document.getElementById("submit-btn").style.display = "block";
+    stopStream(selfieStream);
+  }
+
+  function retakeSelfie() {
+    selfieImageData = null;
+    document.getElementById("selfie-viewport").style.display = "block";
+    document.getElementById("selfie-tips").style.display = "flex";
+    document.getElementById("selfie-preview-wrap").style.display = "none";
+    document.getElementById("selfie-capture-btn").style.display = "block";
+    document.getElementById("selfie-retake-btn").style.display = "none";
+    document.getElementById("submit-btn").style.display = "none";
+    startCamera(document.getElementById("selfie-video"), "user").then(s => selfieStream = s);
+  }
+
+  function goBack() {
+    stopStream(selfieStream);
+    document.getElementById("screen-selfie").style.display = "none";
+    document.getElementById("screen-id").style.display = "block";
+    setStep(1);
+    if (!idImageData) initIdCamera();
+  }
+
+  // Step 3: Submit
+  let loadingTimer = null;
+
+  function animateLoadingSteps() {
+    const steps = [1, 2, 3, 4];
+    let i = 0;
+    loadingTimer = setInterval(() => {
+      if (i > 0) document.getElementById(`lstep-${steps[i - 1]}`).className = "loading-step done";
+      if (i < steps.length) {
+        document.getElementById(`lstep-${steps[i]}`).className = "loading-step active";
+        i++;
+      } else {
+        clearInterval(loadingTimer);
+      }
+    }, 1200);
+  }
+
+  async function submitKYC() {
+    document.getElementById("screen-selfie").style.display = "none";
+    document.getElementById("screen-loading").style.display = "flex";
+    document.getElementById("stepper").style.display = "none";
+    [1,2,3,4].forEach(n => {
+      document.getElementById(`lstep-${n}`).className = "loading-step" + (n === 1 ? " active" : "");
+    });
+    animateLoadingSteps();
+
+    try {
+      const res = await fetch(`/api/kyc/${SESSION_ID}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_image: idImageData, selfie: selfieImageData }),
+      });
+
+      clearInterval(loadingTimer);
+      [1,2,3,4].forEach(n => document.getElementById(`lstep-${n}`).className = "loading-step done");
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Server error");
+      }
+
+      await new Promise(r => setTimeout(r, 400));
+      document.getElementById("screen-loading").style.display = "none";
+      document.getElementById("screen-done").style.display = "flex";
+
+    } catch (e) {
+      clearInterval(loadingTimer);
+      document.getElementById("screen-loading").style.display = "none";
+      document.getElementById("screen-selfie").style.display = "block";
+      document.getElementById("stepper").style.display = "flex";
+      const banner = document.getElementById("selfie-error");
+      banner.textContent = e.message;
+      banner.style.display = "block";
+    }
+  }
+
+  // Init
+  initIdCamera();
+</script>
+</body>
+</html>
