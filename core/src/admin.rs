@@ -1,67 +1,106 @@
 use axum::{
     extract::{State, Request},
-    http::{StatusCode, HeaderMap, Method}, // Ajout de Method ici
-    response::{IntoResponse, Json},
+    http::StatusCode,
     middleware::Next,
+    response::{IntoResponse, Json},
 };
 use std::sync::{Arc, RwLock};
 use serde::Serialize;
-use curve25519_dalek::ristretto::RistrettoPoint;
 use crate::state::{ServerState, VerificationRecord};
-use crate::identity::UserData;
 
-const ADMIN_API_KEY: &str = "super_secret_hackathon_key";
+// ─────────────────────────────────────────────────────
+//  Middleware d'authentification admin
+// ─────────────────────────────────────────────────────
 
 pub async fn auth_middleware(
-    headers: HeaderMap, 
-    request: Request, 
-    next: Next
+    request: Request,
+    next: Next,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Laisse passer la requête de test (Preflight) du navigateur (CORS)
-    if request.method() == Method::OPTIONS {
-        return Ok(next.run(request).await);
-    }
+    let key = request
+        .headers()
+        .get("x-admin-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
 
-    // Vérification de la clé d'API pour les vraies requêtes GET/POST
-    if let Some(key) = headers.get("x-admin-key") {
-        if key == ADMIN_API_KEY {
-            return Ok(next.run(request).await);
-        }
+    if key != "super_secret_hackathon_key" {
+        return Err(StatusCode::UNAUTHORIZED);
     }
-    
-    println!("[SECURITY] Blocked unauthorized admin access attempt");
-    Err(StatusCode::UNAUTHORIZED)
+    Ok(next.run(request).await)
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /admin/users
+// ─────────────────────────────────────────────────────
+
+pub async fn get_users(
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Json<Vec<String>> {
+    let st = state.read().unwrap();
+    let keys = st
+        .user_group
+        .members
+        .iter()
+        .map(|p| hex::encode(p.compress().as_bytes()))
+        .collect();
+    Json(keys)
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /admin/requests
+// ─────────────────────────────────────────────────────
+
+pub async fn get_requests(
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Json<Vec<VerificationRecord>> {
+    let st = state.read().unwrap();
+    Json(st.request_history.clone())
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /admin/stats
+// ─────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ClientBalance {
+    pub name: String,
+    pub purchased_tokens: i64,
+    pub kyc_provided: usize,
 }
 
 #[derive(Serialize)]
-pub struct UserRecord {
-    pub public_key_hex: String,
-    pub profile: Option<UserData>,
+pub struct StatsResponse {
+    pub total_users: usize,
+    pub total_tokens_a_issued: usize,
+    pub total_tokens_a_burned: usize,
+    pub total_tokens_b_issued: usize,
+    pub total_tokens_b_burned: usize,
+    pub exchange_rate: u32,
+    pub client_balances: Vec<ClientBalance>,
 }
 
-pub async fn get_users(
-    State(state): State<Arc<RwLock<ServerState>>>
-) -> Json<Vec<UserRecord>> {
-    println!("[ADMIN] GET /admin/users");
+pub async fn get_stats(
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Json<StatsResponse> {
     let st = state.read().unwrap();
-    
-    let users = st.adult_group.members.iter()
-        .map(|p: &RistrettoPoint| {
-            let hex_key = hex::encode(p.compress().as_bytes());
-            UserRecord {
-                public_key_hex: hex_key.clone(),
-                profile: st.user_profiles.get(&hex_key).cloned()
-            }
+
+    let mut client_balances: Vec<ClientBalance> = st
+        .client_accounts
+        .iter()
+        .map(|(name, acc)| ClientBalance {
+            name: name.clone(),
+            purchased_tokens: acc.purchased_tokens,
+            kyc_provided: acc.kyc_provided,
         })
         .collect();
-        
-    Json(users)
-}
+    client_balances.sort_by(|a, b| a.name.cmp(&b.name));
 
-pub async fn get_requests(
-    State(state): State<Arc<RwLock<ServerState>>>
-) -> Json<Vec<VerificationRecord>> {
-    println!("[ADMIN] GET /admin/requests");
-    let st = state.read().unwrap();
-    Json(st.request_history.clone())
+    Json(StatsResponse {
+        total_users: st.user_group.members.len(),
+        total_tokens_a_issued: st.total_tokens_a_issued,
+        total_tokens_a_burned: st.total_tokens_a_burned,
+        total_tokens_b_issued: st.total_tokens_b_issued,
+        total_tokens_b_burned: st.total_tokens_b_burned,
+        exchange_rate: st.token_a_to_b_rate,
+        client_balances,
+    })
 }

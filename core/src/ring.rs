@@ -67,6 +67,9 @@ pub struct AdultGroup {
     pub members: Vec<RistrettoPoint>,
 }
 
+/// Alias générique utilisé pour ClientGroup et UserGroup dans ServerState.
+pub type RingGroup = AdultGroup;
+
 impl AdultGroup {
     pub fn new() -> Self { Self { members: Vec::new() } }
     pub fn add_member(&mut self, public: RistrettoPoint) {
@@ -87,19 +90,19 @@ mod tests {
     use crate::identity::{AdultMember, UserData};
     use crate::oprf;
 
-    fn create_test_member(name: &str, age: u8) -> AdultMember {
-        let data = UserData::new(name, "Test", "mail", age, "FR");
+    fn create_test_member(name: &str) -> AdultMember {
+        let data = UserData::new(name, "Test", "mail", "FR");
         let server_k = Scalar::from_bytes_mod_order([42u8; 32]);
         let (b, r) = oprf::client_blind("password", name);
         let e = oprf::server_evaluate(b, server_k);
         let oprf_res = oprf::client_unblind(e, r);
-        AdultMember::new(oprf_res, data).unwrap()
+        AdultMember::new(oprf_res, data)
     }
 
     #[test]
     fn test_full_flow() {
-        let m1 = create_test_member("alice", 25);
-        let m2 = create_test_member("bob", 30);
+        let m1 = create_test_member("alice");
+        let m2 = create_test_member("bob");
         let mut group = AdultGroup::new();
         group.add_member(m1.public_point());
         group.add_member(m2.public_point());

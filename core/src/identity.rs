@@ -7,23 +7,17 @@ pub struct UserData {
     pub first_name: String,
     pub last_name: String,
     pub email: String,
-    pub age: u8,
     pub country: String,
 }
 
 impl UserData {
-    pub fn new(first_name: &str, last_name: &str, email: &str, age: u8, country: &str) -> Self {
+    pub fn new(first_name: &str, last_name: &str, email: &str, country: &str) -> Self {
         Self {
             first_name: first_name.to_string(),
             last_name: last_name.to_string(),
             email: email.to_string(),
-            age,
             country: country.to_string(),
         }
-    }
-
-    pub fn is_adult(&self) -> bool {
-        self.age >= 18
     }
 }
 
@@ -41,6 +35,16 @@ impl Identity {
         Self { secret, public }
     }
 
+    /// Crée une identité déterministe à partir d'un seed fixe (pour les clients hardcodés).
+    pub fn from_seed(seed: &[u8]) -> Self {
+        let mut hasher = Sha512::new();
+        hasher.update(b"SAURON_ISSUER_SEED:");
+        hasher.update(seed);
+        let secret = Scalar::from_hash(hasher);
+        let public = &secret * RISTRETTO_BASEPOINT_TABLE;
+        Self { secret, public }
+    }
+
     pub fn secret(&self) -> &Scalar {
         &self.secret
     }
@@ -51,24 +55,26 @@ impl Identity {
     }
 }
 
-pub struct AdultMember {
+/// Un membre du réseau (utilisateur ou site). L'appartenance au groupe est prouvée par ring signature.
+pub struct Member {
     pub identity: Identity,
     pub data: UserData,
 }
 
-impl AdultMember {
-    pub fn new(oprf_point: RistrettoPoint, data: UserData) -> Option<Self> {
-        if !data.is_adult() {
-            return None;
-        }
+impl Member {
+    /// Crée un membre à partir d'un point OPRF (clé publique dérivée du mot de passe).
+    pub fn new(oprf_point: RistrettoPoint, data: UserData) -> Self {
         let identity = Identity::from_oprf(oprf_point);
-        Some(Self { identity, data })
+        Self { identity, data }
     }
 
     pub fn public_point(&self) -> RistrettoPoint {
         self.identity.public
     }
 }
+
+/// Alias de compatibilité — à utiliser dans ring.rs quand on stocke un membre dans un groupe.
+pub type AdultMember = Member;
 
 #[cfg(test)]
 mod tests {
