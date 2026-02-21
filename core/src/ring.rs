@@ -1,6 +1,4 @@
 //! Ring Signatures - Anonymous group membership proof
-//!
-//! Proves membership in "majeur" group without revealing identity
 
 use curve25519_dalek::{RistrettoPoint, Scalar, constants::RISTRETTO_BASEPOINT_TABLE};
 use sha2::{Sha512, Digest};
@@ -33,11 +31,6 @@ fn challenge(msg: &[u8], l: &RistrettoPoint, r: &RistrettoPoint) -> Scalar {
 }
 
 /// Sign a message with a ring signature
-///
-/// - `msg`: Message to sign
-/// - `ring`: Public points of all ring members
-/// - `identity`: The signer's identity
-/// - `signer_idx`: Position of signer in the ring
 pub fn sign(
     msg: &[u8],
     ring: &[RistrettoPoint],
@@ -47,15 +40,12 @@ pub fn sign(
     let n = ring.len();
     let mut responses: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut OsRng)).collect();
 
-    // Key image: I = x * H(P)
     let key_image = identity.key_image();
 
-    // Random commitment
     let alpha = Scalar::random(&mut OsRng);
     let l_init = &alpha * RISTRETTO_BASEPOINT_TABLE;
     let r_init = &alpha * hash_to_point(&ring[signer_idx]);
 
-    // Compute challenges around the ring
     let mut challenges = vec![Scalar::ZERO; n];
     challenges[(signer_idx + 1) % n] = challenge(msg, &l_init, &r_init);
 
@@ -73,7 +63,6 @@ pub fn sign(
         }
     }
 
-    // Close the ring
     responses[signer_idx] = alpha - challenges[signer_idx] * identity.secret();
 
     RingSignature {
@@ -101,52 +90,45 @@ pub fn verify(msg: &[u8], ring: &[RistrettoPoint], sig: &RingSignature) -> bool 
     c == sig.c0
 }
 
-/// The "Majeur" group - manages ring of adult members
-pub struct MajeurGroup {
-    /// Public points of all members
+/// Adult group - ring of verified adult members
+pub struct AdultGroup {
     pub members: Vec<RistrettoPoint>,
 }
 
-impl MajeurGroup {
+impl AdultGroup {
     pub fn new() -> Self {
         Self { members: Vec::new() }
     }
 
-    /// Add a member's public point to the group
     pub fn add_member(&mut self, public: RistrettoPoint) {
         if !self.members.contains(&public) {
             self.members.push(public);
         }
     }
 
-    /// Get the ring (all public points)
     pub fn ring(&self) -> &[RistrettoPoint] {
         &self.members
     }
 
-    /// Find member index by public point
     pub fn find_index(&self, public: &RistrettoPoint) -> Option<usize> {
         self.members.iter().position(|p| p == public)
     }
 
-    /// Prove membership in the group
     pub fn prove(&self, identity: &Identity, msg: &[u8]) -> Option<RingSignature> {
         let idx = self.find_index(&identity.public)?;
         Some(sign(msg, &self.members, identity, idx))
     }
 
-    /// Verify a membership proof
     pub fn verify_proof(&self, msg: &[u8], sig: &RingSignature) -> bool {
         verify(msg, &self.members, sig)
     }
 
-    /// Number of members
     pub fn size(&self) -> usize {
         self.members.len()
     }
 }
 
-impl Default for MajeurGroup {
+impl Default for AdultGroup {
     fn default() -> Self {
         Self::new()
     }
@@ -155,11 +137,11 @@ impl Default for MajeurGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::{Identity, UserData, Sexe, MajeurMember};
+    use crate::identity::{Identity, UserData, AdultMember};
 
-    fn create_test_member(name: &str, age: u8) -> MajeurMember {
-        let data = UserData::new(name, "Test", &format!("{}@test.com", name), age, Sexe::Homme, "France");
-        MajeurMember::new("password", name.as_bytes(), data).unwrap()
+    fn create_test_member(name: &str, age: u8) -> AdultMember {
+        let data = UserData::new(name, "Test", &format!("{}@test.com", name), age, "France");
+        AdultMember::new("password", name.as_bytes(), data).unwrap()
     }
 
     #[test]
@@ -168,12 +150,12 @@ mod tests {
         let member2 = create_test_member("bob", 30);
         let member3 = create_test_member("charlie", 22);
 
-        let mut group = MajeurGroup::new();
+        let mut group = AdultGroup::new();
         group.add_member(member1.public_point());
         group.add_member(member2.public_point());
         group.add_member(member3.public_point());
 
-        let msg = b"Je suis majeur";
+        let msg = b"I am an adult";
         let proof = group.prove(&member2.identity, msg).unwrap();
 
         assert!(group.verify_proof(msg, &proof));
@@ -184,7 +166,7 @@ mod tests {
         let member1 = create_test_member("alice", 25);
         let member2 = create_test_member("bob", 30);
 
-        let mut group = MajeurGroup::new();
+        let mut group = AdultGroup::new();
         group.add_member(member1.public_point());
         group.add_member(member2.public_point());
 
@@ -199,11 +181,11 @@ mod tests {
         let other1 = create_test_member("bob", 30);
         let other2 = create_test_member("charlie", 28);
 
-        let mut group1 = MajeurGroup::new();
+        let mut group1 = AdultGroup::new();
         group1.add_member(member.public_point());
         group1.add_member(other1.public_point());
 
-        let mut group2 = MajeurGroup::new();
+        let mut group2 = AdultGroup::new();
         group2.add_member(other2.public_point());
         group2.add_member(member.public_point());
 
@@ -219,7 +201,7 @@ mod tests {
         let member1 = create_test_member("alice", 25);
         let member2 = create_test_member("bob", 30);
 
-        let mut group = MajeurGroup::new();
+        let mut group = AdultGroup::new();
         group.add_member(member1.public_point());
         group.add_member(member2.public_point());
 
@@ -234,7 +216,7 @@ mod tests {
         let member = create_test_member("alice", 25);
         let outsider = Identity::from_password("outsider", b"salt");
 
-        let mut group = MajeurGroup::new();
+        let mut group = AdultGroup::new();
         group.add_member(member.public_point());
 
         let proof = group.prove(&outsider, b"msg");
@@ -245,7 +227,7 @@ mod tests {
     fn test_single_member_ring() {
         let member = create_test_member("alice", 25);
 
-        let mut group = MajeurGroup::new();
+        let mut group = AdultGroup::new();
         group.add_member(member.public_point());
 
         let msg = b"solo";
@@ -258,7 +240,7 @@ mod tests {
     fn test_large_ring() {
         let signer = create_test_member("signer", 25);
 
-        let mut group = MajeurGroup::new();
+        let mut group = AdultGroup::new();
         for i in 0..50 {
             let m = create_test_member(&format!("member{}", i), 20 + (i % 30) as u8);
             group.add_member(m.public_point());

@@ -1,45 +1,31 @@
-//! Identity - Simplified identity for Sauron V1
-//!
-//! - Private key derived from password (local)
-//! - Basic user data
-//! - Ring signature for "majeur" group membership proof
-
 use curve25519_dalek::{RistrettoPoint, Scalar, constants::RISTRETTO_BASEPOINT_TABLE};
 use sha2::{Sha256, Sha512, Digest};
 use serde::{Serialize, Deserialize};
 use argon2::Argon2;
 
-/// User's basic KYC data
+/// User's basic data
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserData {
-    pub nom: String,
-    pub prenom: String,
+    pub first_name: String,
+    pub last_name: String,
     pub email: String,
     pub age: u8,
-    pub sexe: Sexe,
-    pub pays: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum Sexe {
-    Homme,
-    Femme,
+    pub country: String,
 }
 
 impl UserData {
-    pub fn new(nom: &str, prenom: &str, email: &str, age: u8, sexe: Sexe, pays: &str) -> Self {
+    pub fn new(first_name: &str, last_name: &str, email: &str, age: u8, country: &str) -> Self {
         Self {
-            nom: nom.to_string(),
-            prenom: prenom.to_string(),
+            first_name: first_name.to_string(),
+            last_name: last_name.to_string(),
             email: email.to_string(),
             age,
-            sexe,
-            pays: pays.to_string(),
+            country: country.to_string(),
         }
     }
 
     /// Check if user is adult (18+)
-    pub fn is_majeur(&self) -> bool {
+    pub fn is_adult(&self) -> bool {
         self.age >= 18
     }
 }
@@ -98,16 +84,16 @@ impl Identity {
     }
 }
 
-/// A member of the "majeur" group (adults 18+)
-pub struct MajeurMember {
+/// A member of the adult group (18+)
+pub struct AdultMember {
     pub identity: Identity,
     pub data: UserData,
 }
 
-impl MajeurMember {
-    /// Create a new majeur member
+impl AdultMember {
+    /// Create a new adult member
     pub fn new(password: &str, salt: &[u8], data: UserData) -> Option<Self> {
-        if !data.is_majeur() {
+        if !data.is_adult() {
             return None;
         }
 
@@ -168,31 +154,31 @@ mod tests {
 
     #[test]
     fn test_user_data() {
-        let data = UserData::new("Dupont", "Jean", "jean@email.com", 25, Sexe::Homme, "France");
+        let data = UserData::new("John", "Doe", "john@email.com", 25, "France");
 
-        assert!(data.is_majeur());
-        assert_eq!(data.nom, "Dupont");
+        assert!(data.is_adult());
+        assert_eq!(data.last_name, "Doe");
     }
 
     #[test]
-    fn test_minor_not_majeur() {
-        let data = UserData::new("Dupont", "Pierre", "pierre@email.com", 16, Sexe::Homme, "France");
+    fn test_minor_not_adult() {
+        let data = UserData::new("John", "Doe", "john@email.com", 16, "France");
 
-        assert!(!data.is_majeur());
+        assert!(!data.is_adult());
     }
 
     #[test]
-    fn test_majeur_member_creation() {
-        let data = UserData::new("Martin", "Marie", "marie@email.com", 30, Sexe::Femme, "France");
-        let member = MajeurMember::new("password123", b"marie@email.com", data);
+    fn test_adult_member_creation() {
+        let data = UserData::new("Marie", "Martin", "marie@email.com", 30, "France");
+        let member = AdultMember::new("password123", b"marie@email.com", data);
 
         assert!(member.is_some());
     }
 
     #[test]
-    fn test_minor_cannot_be_majeur_member() {
-        let data = UserData::new("Martin", "Luc", "luc@email.com", 15, Sexe::Homme, "France");
-        let member = MajeurMember::new("password123", b"luc@email.com", data);
+    fn test_minor_cannot_be_adult_member() {
+        let data = UserData::new("Luc", "Martin", "luc@email.com", 15, "France");
+        let member = AdultMember::new("password123", b"luc@email.com", data);
 
         assert!(member.is_none());
     }
