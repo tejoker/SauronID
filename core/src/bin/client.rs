@@ -1,4 +1,4 @@
-use sauron_core::{oprf, ring, identity};
+use sauron_core::{oprf, ring, identity::{self, UserData}};
 use curve25519_dalek::{ristretto::CompressedRistretto, RistrettoPoint};
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
@@ -6,12 +6,21 @@ use std::env;
 
 #[derive(Serialize)]
 struct OprfRequest { blinded_point: Vec<u8> }
+
 #[derive(Deserialize)]
 struct OprfResponse { evaluated_point: Vec<u8> }
+
 #[derive(Serialize)]
-struct RegisterRequest { public_key: Vec<u8> }
+struct RegisterRequest { 
+    public_key: Vec<u8>,
+    profile: UserData,
+}
+
 #[derive(Serialize)]
-struct VerifyRequest { message: String, signature: ring::RingSignature }
+struct VerifyRequest { 
+    message: String, 
+    signature: ring::RingSignature 
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,14 +55,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- ROUTAGE DES COMMANDES ---
     if command == "register" {
         println!("[INFO] Registering to Adult Group...");
+        
+        // Génération automatique d'un profil propre pour le dashboard
+        let raw_name = login.split('@').next().unwrap_or("User");
+        let mut first_name = raw_name.to_string();
+        if let Some(r) = first_name.get_mut(0..1) { 
+            r.make_ascii_uppercase(); 
+        }
+
+        let profile = UserData::new(
+            &first_name,
+            "HackEurope", 
+            login, 
+            25, // Âge par défaut simulant un majeur
+            "France"
+        );
+
         let resp = http.post(format!("{}/register", base_url))
-            .json(&RegisterRequest { public_key: user_identity.public.compress().as_bytes().to_vec() })
+            .json(&RegisterRequest { 
+                public_key: user_identity.public.compress().as_bytes().to_vec(),
+                profile 
+            })
             .send().await?;
         
         if resp.status().is_success() {
-            println!("[SUCCESS] User registered.");
+            println!("[SUCCESS] User {} registered.", first_name);
         } else {
-            println!("[ERROR] Registration failed.");
+            println!("[ERROR] Registration failed with status: {}", resp.status());
         }
 
     } else if command == "sign" {
@@ -75,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Trouver l'index de l'utilisateur dans le groupe
         let my_pub = user_identity.public;
-        let my_idx = full_ring.iter().position(|&p| p == my_pub).expect("[ERROR] User public key not found in the group!");
+        let my_idx = full_ring.iter().position(|&p| p == my_pub).expect("[ERROR] User public key not found in the group! Make sure you registered first.");
 
         println!("[INFO] Generating Ring Signature...");
         let proof = ring::sign(message.as_bytes(), &full_ring, &user_identity, my_idx);
@@ -88,11 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .send().await?;
 
-        let status_text = resp.text().await?;
-        if status_text == "Valid" {
+        if resp.status().is_success() {
             println!("[SUCCESS] Server accepted the signature. You are verified and anonymous.");
         } else {
-            println!("[ERROR] Server rejected the signature.");
+            println!("[ERROR] Server rejected the signature. Status: {}", resp.status());
         }
     } else {
         println!("[ERROR] Unknown command.");
