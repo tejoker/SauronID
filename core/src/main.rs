@@ -6,8 +6,11 @@ use axum::{
     middleware,
 };
 use std::sync::{Arc, RwLock};
-use sauron_core::{oprf, ring, state::{ServerState, sign_token, verify_token}, admin, billing, identity::UserData};
+use sauron_core::{oprf, ring, state::{ServerState, sign_token, verify_token, SiteUser}, admin, billing, identity::UserData};
+use sauron_core::{sites, identity::Identity};
 use curve25519_dalek::ristretto::CompressedRistretto;
+use curve25519_dalek::RistrettoPoint;
+use sha2::{Sha512, Digest};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
@@ -19,6 +22,7 @@ async fn main() {
         .route("/users", get(admin::get_users))
         .route("/requests", get(admin::get_requests))
         .route("/stats", get(admin::get_stats))
+        .route("/site/{name}/users", get(admin::get_site_users))
         .route_layer(middleware::from_fn(admin::auth_middleware));
 
     let app = Router::new()
@@ -35,6 +39,10 @@ async fn main() {
         // Billing: site purchases Token B with fiat
         .route("/client/add_tokens", post(billing::add_tokens))
         .nest("/admin", admin_routes)
+        // DEV endpoints (hackathon only — bypass crypto for frontend demo)
+        .route("/dev/register_user", post(dev_register_user))
+        .route("/dev/get_kyc", post(dev_get_kyc))
+        .route("/dev/sites", get(dev_get_sites))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -148,6 +156,8 @@ async fn handle_register(
 
 #[derive(Deserialize)]
 struct ExchangeRequest {
+    /// Le site partenaire qui s'identifie pour l'échange (seul moment où Sauron connaît son identité).
+    site_name: String,
     /// Liste des Tokens A en clair : ["blind_a:sig_a", ...].
     tokens_a: Vec<String>,
     /// Valeurs aveugles pour les Tokens B : autant que tokens_a * rate.
@@ -218,8 +228,15 @@ async fn handle_exchange_tokens(
 
     st.total_tokens_b_issued += signed_tokens_b.len();
 
+    // C'est ICI, et uniquement ici, que Sauron apprend l'identité du site.
+    // Sauron sait que Revolut a échangé N Tokens A, mais ne sait pas QUELS KYC il a fourni.
+    if let Some(acct) = st.client_accounts.get_mut(&payload.site_name) {
+        acct.kyc_provided += payload.tokens_a.len();
+    }
+
     println!(
-        "[FLUX 2] POST /exchange_tokens | Burned {} Token A → Issued {} Token B (rate={})",
+        "[FLUX 2] POST /exchange_tokens | {} burned {} Token A → {} Token B (rate={})",
+        payload.site_name,
         payload.tokens_a.len(),
         signed_tokens_b.len(),
         rate
@@ -315,4 +332,186 @@ async fn handle_get_group(State(state): State<Arc<RwLock<ServerState>>>) -> Json
     let st = state.read().unwrap();
     let keys = st.user_group.members.iter().map(|p| p.compress().as_bytes().to_vec()).collect();
     Json(keys)
+}
+
+// ─────────────────────────────────────────────────────
+//  DEV ENDPOINTS — hackathon only, exposes server crypto
+//  so the frontend doesn't need to implement Ristretto255
+// ─────────────────────────────────────────────────────
+
+/// Recalcule le résultat OPRF sans le protocole blind.
+/// Équivalent à client_unblind(server_evaluate(client_blind(e,p), k), r)
+/// mais sans le masquage (k est connu, pour usage interne uniquement).
+fn dev_oprf_eval(server_k: curve25519_dalek::scalar::Scalar, email: &str, password: &str) -> RistrettoPoint {
+    let mut hasher = Sha512::new();
+    hasher.update(email.as_bytes());
+    hasher.update(b"|SALT|");
+    hasher.update(password.as_bytes());
+    let base = RistrettoPoint::hash_from_bytes::<Sha512>(hasher.finalize().as_ref());
+    server_k * base
+}
+
+#[derive(Deserialize)]
+struct DevRegisterRequest {
+    site_name: String,
+    email: String,
+    password: String,
+    first_name: String,
+    last_name: String,
+    country: String,
+}
+
+#[derive(Serialize)]
+struct DevRegisterResponse {
+    signed_token_a: String,
+    public_key_hex: String,
+    message: String,
+}
+
+async fn dev_register_user(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<DevRegisterRequest>,
+) -> Result<Json<DevRegisterResponse>, (StatusCode, String)> {
+    // 1. Reconstruct user identity via internal OPRF (same result as full protocol)
+    let oprf_result = {
+        let st = state.read().unwrap();
+        dev_oprf_eval(st.k, &payload.email, &payload.password)
+    };
+    let user_identity = Identity::from_oprf(oprf_result);
+    let pk_bytes = user_identity.public.compress().as_bytes().to_vec();
+    let ki_bytes = user_identity.key_image().compress().as_bytes().to_vec();
+    let hex_pk = hex::encode(&pk_bytes);
+    let hex_ki = hex::encode(&ki_bytes);
+
+    // 2. Find the site that will sign the request
+    let issuers = sites::hardcoded_issuers();
+    let issuer_idx = issuers.iter().position(|i| i.name == payload.site_name)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("Unknown site: {}", payload.site_name)))?;
+
+    // 3. Generate a random blind for Token A
+    let random_bytes: [u8; 16] = rand::random();
+    let blinded_token_a = hex::encode(random_bytes);
+
+    // 4. Site ring-signs the message
+    let ring_keys: Vec<RistrettoPoint> = issuers.iter().map(|i| i.identity.public).collect();
+    let msg = format!("{}:{}", hex_pk, blinded_token_a);
+    let client_signature = ring::sign(msg.as_bytes(), &ring_keys, &issuers[issuer_idx].identity, issuer_idx);
+
+    // 5. Verify ring sig + register
+    {
+        let st = state.read().unwrap();
+        if !st.client_group.verify_proof(msg.as_bytes(), &client_signature) {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Client ring signature check failed".into()));
+        }
+    }
+
+    let profile = UserData::new(&payload.first_name, &payload.last_name, &payload.email, &payload.country);
+    let pk_point = user_identity.public;
+
+    let signed_token_a = {
+        let mut st = state.write().unwrap();
+        st.user_group.add_member(pk_point);
+        st.user_profiles.insert(hex_ki.clone(), profile);
+        let sig = sign_token(&st.token_secret.clone(), "TOKEN_A", &blinded_token_a);
+        let token_a = format!("{}:{}", blinded_token_a, sig);
+        st.total_tokens_a_issued += 1;
+        // NE PAS incrémenter kyc_provided ici — Sauron ne sait pas quel site a soumis ce KYC.
+        // Le compteur sera mis à jour lors de l'échange (Flux 2), quand le site s'identifie explicitement.
+        // En revanche, le site lui-même sait qu'il vient d'enregistrer cet utilisateur.
+        if let Some(acct) = st.client_accounts.get_mut(&payload.site_name) {
+            acct.users.push(SiteUser {
+                first_name: payload.first_name.clone(),
+                last_name: payload.last_name.clone(),
+                email: payload.email.clone(),
+                country: payload.country.clone(),
+                source: "full_kyc".to_string(),
+                acquired_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            });
+        }
+        println!("[FLUX 1] register_user | email={} | via Anonymous Partner (ring sig) | group_size={}",
+            payload.email, st.user_group.members.len());
+        token_a
+    };
+
+    Ok(Json(DevRegisterResponse {
+        signed_token_a,
+        public_key_hex: hex_pk,
+        message: format!("{} registered via {}", payload.email, payload.site_name),
+    }))
+}
+
+#[derive(Deserialize)]
+struct DevGetKycRequest {
+    site_name: String,
+    email: String,
+    password: String,
+    token_b: String,
+}
+
+async fn dev_get_kyc(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<DevGetKycRequest>,
+) -> Result<Json<GetKycResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // 1. Validate Token B
+    {
+        let st = state.read().unwrap();
+        if !verify_token(&st.token_secret, "TOKEN_B", &payload.token_b) {
+            return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid Token B signature"}))));
+        }
+        if st.spent_tokens_b.contains(&payload.token_b) {
+            return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error": "Token B already spent"}))));
+        }
+    }
+
+    // 2. Reconstruct user identity
+    let oprf_result = {
+        let st = state.read().unwrap();
+        dev_oprf_eval(st.k, &payload.email, &payload.password)
+    };
+    let user_identity = Identity::from_oprf(oprf_result);
+
+    // 3. Build user ring signature on GET_KYC:{token_b}
+    let msg = format!("GET_KYC:{}", payload.token_b);
+    let user_sig = {
+        let st = state.read().unwrap();
+        st.user_group.prove(&user_identity, msg.as_bytes())
+            .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({
+                "error": format!("{} is not registered on Sauron. Register first.", payload.email)
+            }))))?
+    };
+
+    // 4. Find profile by key_image + burn token
+    let hex_ki = hex::encode(user_sig.key_image.compress().as_bytes());
+    let mut st = state.write().unwrap();
+    let profile = st.user_profiles.get(&hex_ki).cloned()
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Profile not found for this identity"}))))?;
+
+    let ring_size = st.user_group.members.len();
+    st.spent_tokens_b.insert(payload.token_b.clone());
+    st.total_tokens_b_burned += 1;
+    st.add_record(format!("GET_KYC:{}", &hex_ki[..16]), ring_size, true);
+    // Le site qui a demandé le KYC connaît maintenant ce profil. Sauron lui indique le résultat,
+    // mais ne sait pas lequel parmi tous les KYC de sa base a été demandé.
+    if let Some(acct) = st.client_accounts.get_mut(&payload.site_name) {
+        if !acct.users.iter().any(|u| u.email == profile.email) {
+            acct.users.push(SiteUser {
+                first_name: profile.first_name.clone(),
+                last_name: profile.last_name.clone(),
+                email: profile.email.clone(),
+                country: profile.country.clone(),
+                source: "fast_login".to_string(),
+                acquired_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            });
+        }
+    }
+    println!("[DEV/FLUX3] get_kyc | email={} | anonymous | total_consumed={}",
+        payload.email, st.total_tokens_b_burned);
+
+    Ok(Json(GetKycResponse { profile }))
+}
+
+async fn dev_get_sites() -> Json<Vec<&'static str>> {
+    Json(sites::hardcoded_issuers().iter().map(|i| i.name).collect())
 }

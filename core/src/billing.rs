@@ -1,7 +1,7 @@
 use axum::{extract::{State, Json}, http::StatusCode};
 use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
-use crate::state::ServerState;
+use crate::state::{ServerState, sign_token};
 
 // ─────────────────────────────────────────────────────
 //  Route : POST /client/add_tokens
@@ -20,6 +20,8 @@ pub struct AddTokensResponse {
     pub site: String,
     pub added: u32,
     pub purchased_tokens: i64,
+    /// Signed Token B strings ready to use: "blind_value:sig"
+    pub tokens: Vec<String>,
 }
 
 pub async fn add_tokens(
@@ -35,6 +37,27 @@ pub async fn add_tokens(
     account.purchased_tokens += payload.amount as i64;
     let balance = account.purchased_tokens;
 
+    // Issue real signed Token B strings so they pass verify_token in /dev/get_kyc
+    let token_secret = st.token_secret.clone();
+    let tokens: Vec<String> = (0..payload.amount)
+        .map(|i| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            use sha2::{Sha256, Digest};
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let mut h = Sha256::new();
+            h.update(&token_secret);
+            h.update(b"BLIND_B:");
+            h.update(payload.site_name.as_bytes());
+            h.update(b":");
+            h.update(&ts.as_nanos().to_le_bytes());
+            h.update(&i.to_le_bytes());
+            let blind_value = hex::encode(&h.finalize()[..16]);
+            let sig = sign_token(&token_secret, "TOKEN_B", &blind_value);
+            format!("{blind_value}:{sig}")
+        })
+        .collect();
+    st.total_tokens_b_issued += payload.amount as usize;
+
     println!(
         "[BILLING] POST /client/add_tokens | '{}' +{} tokens | purchased_total={}",
         payload.site_name, payload.amount, balance
@@ -44,6 +67,7 @@ pub async fn add_tokens(
         site: payload.site_name,
         added: payload.amount,
         purchased_tokens: balance,
+        tokens,
     }))
 }
 

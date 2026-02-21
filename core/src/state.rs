@@ -21,13 +21,27 @@ pub struct VerificationRecord {
 //  Compte d'un site partenaire (Client)
 // ─────────────────────────────────────────────────────
 
+/// Un utilisateur connu d'un site partenaire (soit via KYC complet, soit via fast login).
+#[derive(Clone, Serialize)]
+pub struct SiteUser {
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub country: String,
+    /// "full_kyc" = enregistrement Flux 1, "fast_login" = récupération Flux 3
+    pub source: String,
+    pub acquired_at: u64,
+}
+
 /// Compte de facturation d'un site partenaire.
 #[derive(Clone, Default, Serialize)]
 pub struct ClientAccount {
     /// Tokens achetés directement avec fiat (via /client/add_tokens).
     pub purchased_tokens: i64,
-    /// Nombre de KYC injectés dans le réseau via Flux 1 (= Tokens A émis au total).
+    /// Nombre de KYC échangés via Flux 2 (incrémenté uniquement à l'échange).
     pub kyc_provided: usize,
+    /// Utilisateurs connus du site (Flux 1 + Flux 3).
+    pub users: Vec<SiteUser>,
 }
 
 impl ClientAccount {

@@ -1,12 +1,12 @@
 use axum::{
-    extract::{State, Request},
+    extract::{State, Request, Path},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Json},
 };
 use std::sync::{Arc, RwLock};
 use serde::Serialize;
-use crate::state::{ServerState, VerificationRecord};
+use crate::state::{ServerState, VerificationRecord, SiteUser};
 
 // ─────────────────────────────────────────────────────
 //  Middleware d'authentification admin
@@ -32,17 +32,46 @@ pub async fn auth_middleware(
 //  GET /admin/users
 // ─────────────────────────────────────────────────────
 
+#[derive(Serialize)]
+pub struct AdminUserRecord {
+    pub key_image_hex: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub country: String,
+}
+
 pub async fn get_users(
     State(state): State<Arc<RwLock<ServerState>>>,
-) -> Json<Vec<String>> {
+) -> Json<Vec<AdminUserRecord>> {
     let st = state.read().unwrap();
-    let keys = st
-        .user_group
-        .members
+    let records = st
+        .user_profiles
         .iter()
-        .map(|p| hex::encode(p.compress().as_bytes()))
+        .map(|(hex_ki, profile)| AdminUserRecord {
+            key_image_hex: hex_ki.clone(),
+            first_name: profile.first_name.clone(),
+            last_name: profile.last_name.clone(),
+            country: profile.country.clone(),
+        })
         .collect();
-    Json(keys)
+    Json(records)
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /admin/site/:name/users
+// ─────────────────────────────────────────────────────
+
+pub async fn get_site_users(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Path(name): Path<String>,
+) -> Json<Vec<SiteUser>> {
+    let st = state.read().unwrap();
+    Json(
+        st.client_accounts
+            .get(&name)
+            .map(|acct| acct.users.clone())
+            .unwrap_or_default(),
+    )
 }
 
 // ─────────────────────────────────────────────────────
