@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 use sauron_core::{oprf, ring, state::ServerState, admin, identity::UserData}; 
 use curve25519_dalek::ristretto::CompressedRistretto;
 use serde::{Deserialize, Serialize};
+use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() {
@@ -26,6 +27,7 @@ async fn main() {
         .route("/group", get(handle_get_group))
         .route("/verify", post(handle_verify))
         .nest("/admin", admin_routes)
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
     let addr = "0.0.0.0:3000";
@@ -113,7 +115,7 @@ async fn handle_verify(
         members_hex = st.adult_group.members.iter()
             .map(|p| hex::encode(p.compress().as_bytes()))
             .collect::<Vec<String>>();
-    } 
+    }
 
     {
         let mut st = state.write().unwrap();

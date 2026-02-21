@@ -9,8 +9,14 @@ pub struct VerificationRecord {
     pub timestamp: u64,
     pub message: String,
     pub ring_size: usize,
-    pub ring_members_hex: Vec<String>,
+    pub ring_members: Vec<MemberProfile>,
     pub is_valid: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct MemberProfile {
+    pub public_key_hex: String,
+    pub profile: Option<UserData>,
 }
 
 pub struct ServerState {
@@ -35,11 +41,19 @@ impl ServerState {
         let start = SystemTime::now();
         let timestamp = start.duration_since(UNIX_EPOCH).unwrap().as_secs();
         
+        // Convertir les clés hex en profils complets
+        let member_profiles: Vec<MemberProfile> = ring_members.iter()
+            .map(|hex_key| MemberProfile {
+                public_key_hex: hex_key.clone(),
+                profile: self.user_profiles.get(hex_key).cloned()
+            })
+            .collect();
+        
         self.request_history.push(VerificationRecord {
             timestamp,
             message,
-            ring_size: ring_members.len(),
-            ring_members_hex: ring_members,
+            ring_size: member_profiles.len(),
+            ring_members: member_profiles,
             is_valid,
         });
     }

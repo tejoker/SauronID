@@ -1,6 +1,6 @@
 use axum::{
     extract::{State, Request},
-    http::{StatusCode, HeaderMap},
+    http::{StatusCode, HeaderMap, Method}, // Ajout de Method ici
     response::{IntoResponse, Json},
     middleware::Next,
 };
@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use serde::Serialize;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use crate::state::{ServerState, VerificationRecord};
+use crate::identity::UserData;
 
 const ADMIN_API_KEY: &str = "super_secret_hackathon_key";
 
@@ -16,11 +17,18 @@ pub async fn auth_middleware(
     request: Request, 
     next: Next
 ) -> Result<impl IntoResponse, StatusCode> {
+    // Laisse passer la requête de test (Preflight) du navigateur (CORS)
+    if request.method() == Method::OPTIONS {
+        return Ok(next.run(request).await);
+    }
+
+    // Vérification de la clé d'API pour les vraies requêtes GET/POST
     if let Some(key) = headers.get("x-admin-key") {
         if key == ADMIN_API_KEY {
             return Ok(next.run(request).await);
         }
     }
+    
     println!("[SECURITY] Blocked unauthorized admin access attempt");
     Err(StatusCode::UNAUTHORIZED)
 }
@@ -28,6 +36,7 @@ pub async fn auth_middleware(
 #[derive(Serialize)]
 pub struct UserRecord {
     pub public_key_hex: String,
+    pub profile: Option<UserData>,
 }
 
 pub async fn get_users(
@@ -37,8 +46,12 @@ pub async fn get_users(
     let st = state.read().unwrap();
     
     let users = st.adult_group.members.iter()
-        .map(|p: &RistrettoPoint| UserRecord {
-            public_key_hex: hex::encode(p.compress().as_bytes())
+        .map(|p: &RistrettoPoint| {
+            let hex_key = hex::encode(p.compress().as_bytes());
+            UserRecord {
+                public_key_hex: hex_key.clone(),
+                profile: st.user_profiles.get(&hex_key).cloned()
+            }
         })
         .collect();
         

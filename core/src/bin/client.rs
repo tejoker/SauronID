@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     if args.len() < 4 {
         println!("Usage:");
-        println!("  client register <email> <password>");
+        println!("  client register <email> <password> <prenom> <nom> <age> <pays>");
         println!("  client sign <email> <password> <message>");
         return Ok(());
     }
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http = Client::new();
     let base_url = "http://localhost:3000";
 
-    // --- ETAPE 1 : OPRF (Commune aux deux commandes) ---
+    // --- ETAPE 1 : OPRF ---
     println!("[INFO] Starting OPRF flow for user: {}", login);
     let (blinded, r) = oprf::client_blind(password, login);
     
@@ -54,22 +54,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- ROUTAGE DES COMMANDES ---
     if command == "register" {
-        println!("[INFO] Registering to Adult Group...");
-        
-        // Génération automatique d'un profil propre pour le dashboard
-        let raw_name = login.split('@').next().unwrap_or("User");
-        let mut first_name = raw_name.to_string();
-        if let Some(r) = first_name.get_mut(0..1) { 
-            r.make_ascii_uppercase(); 
+        if args.len() < 8 {
+            println!("[ERROR] Paramètres manquants pour créer un vrai profil.");
+            println!("Usage: client register <email> <password> <prenom> <nom> <age> <pays>");
+            return Ok(());
         }
 
-        let profile = UserData::new(
-            &first_name,
-            "HackEurope", 
-            login, 
-            25, // Âge par défaut simulant un majeur
-            "France"
-        );
+        let first_name = &args[4];
+        let last_name = &args[5];
+        let age: u8 = args[6].parse().expect("[ERROR] L'âge doit être un nombre entier valide");
+        let country = &args[7];
+
+        println!("[INFO] Registering {} {} ({} ans, {}) to Adult Group...", first_name, last_name, age, country);
+        
+        let profile = UserData::new(first_name, last_name, login, age, country);
 
         let resp = http.post(format!("{}/register", base_url))
             .json(&RegisterRequest { 
@@ -101,7 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         println!("[INFO] Group retrieved. Size: {}", full_ring.len());
 
-        // Trouver l'index de l'utilisateur dans le groupe
         let my_pub = user_identity.public;
         let my_idx = full_ring.iter().position(|&p| p == my_pub).expect("[ERROR] User public key not found in the group! Make sure you registered first.");
 
