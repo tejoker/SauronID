@@ -229,6 +229,34 @@ async fn handle_register(
             st.user_group.members.len(), st.total_tokens_a_issued, st.merkle_ledger.len());
     }
 
+    // ── Ancrage Solana (non-bloquant) ─────────────────────────────────────
+    // Si une nouvelle root Merkle a été calculée ET que le service Solana est
+    // configuré, on publie la root on-chain dans un task séparé (fire & forget).
+    // Une erreur réseau Solana ne doit jamais faire échouer l'API KYC.
+    if let Some(ref root_hex) = merkle_root_out {
+        if let Ok(root_bytes) = hex::decode(root_hex) {
+            if root_bytes.len() == 32 {
+                let root_arr: [u8; 32] = root_bytes.try_into().unwrap();
+                let st = state.read().unwrap();
+                if let Some(ref svc) = st.solana_service {
+                    let svc = svc.clone();
+                    tokio::spawn(async move {
+                        match svc.publish_new_root(root_arr).await {
+                            Ok(sig) => println!(
+                                "[SOLANA] ✓ Root anchée on-chain | tx={}",
+                                &sig[..20]
+                            ),
+                            Err(e) => eprintln!(
+                                "[SOLANA] ⚠ publish_new_root échoué (non-fatal) : {}", e
+                            ),
+                        }
+                    });
+                }
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     Ok(Json(RegisterResponse {
         status: "success".to_string(),
         signed_token_a,
@@ -598,6 +626,30 @@ async fn dev_register_user(
         token_a
     };
 
+    // ── Ancrage Solana (non-bloquant) ─────────────────────────────────────
+    if let Some(ref root_hex) = merkle_root_out {
+        if let Ok(root_bytes) = hex::decode(root_hex) {
+            if root_bytes.len() == 32 {
+                let root_arr: [u8; 32] = root_bytes.try_into().unwrap();
+                let st = state.read().unwrap();
+                if let Some(ref svc) = st.solana_service {
+                    let svc = svc.clone();
+                    tokio::spawn(async move {
+                        match svc.publish_new_root(root_arr).await {
+                            Ok(sig) => println!(
+                                "[SOLANA][DEV] ✓ Root anchée | tx={}",
+                                &sig[..20]
+                            ),
+                            Err(e) => eprintln!(
+                                "[SOLANA][DEV] ⚠ publish échoué (non-fatal) : {}", e
+                            ),
+                        }
+                    });
+                }
+            }
+        }
+    }
+
     Ok(Json(DevRegisterResponse {
         signed_token_a,
         public_key_hex: hex_pk,
@@ -624,17 +676,37 @@ async fn dev_get_kyc(
     Json(payload): Json<DevGetKycRequest>,
 ) -> Result<Json<GetKycResponse>, (StatusCode, Json<serde_json::Value>)> {
     // 1. Valider Token B.
+    //    Mode "db_managed" : le frontend n'a pas de vrai blind token,
+    //    on vérifie juste que le client a assez de tokens_b en DB.
+    let db_managed_mode = payload.token_b == "db_managed"
+        || !payload.token_b.contains(':');
     {
         let st = state.read().unwrap();
-        if !verify_token(&st.token_secret, "TOKEN_B", &payload.token_b) {
-            return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid Token B signature"}))));
-        }
-        let tv = token_value(&payload.token_b);
-        let db = st.db.lock().unwrap();
-        let exists: bool = db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
-            params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
-        if exists {
-            return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error": "Token B already spent"}))));
+        if db_managed_mode {
+            // Vérifier le solde Token B du client en DB
+            if payload.site_name.is_empty() {
+                return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "site_name required for db_managed token mode"}))));
+            }
+            let db = st.db.lock().unwrap();
+            let balance: i64 = db.query_row(
+                "SELECT tokens_b FROM clients WHERE name = ?1",
+                params![payload.site_name],
+                |row| row.get(0),
+            ).unwrap_or(0);
+            if balance < 1 {
+                return Err((StatusCode::PAYMENT_REQUIRED, Json(serde_json::json!({"error": "Insufficient Token B balance"}))));
+            }
+        } else {
+            if !verify_token(&st.token_secret, "TOKEN_B", &payload.token_b) {
+                return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid Token B signature"}))));
+            }
+            let tv = token_value(&payload.token_b);
+            let db = st.db.lock().unwrap();
+            let exists: bool = db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
+                params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
+            if exists {
+                return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error": "Token B already spent"}))));
+            }
         }
     }
 
@@ -674,12 +746,14 @@ async fn dev_get_kyc(
     };
 
     // 5. Brûler le Token B + décrémenter solde du client.
-    let tv = token_value(&payload.token_b).to_string();
     {
         let mut st = state.write().unwrap();
         {
             let db = st.db.lock().unwrap();
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            if !db_managed_mode {
+                let tv = token_value(&payload.token_b).to_string();
+                let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            }
             if !payload.site_name.is_empty() {
                 let _ = db.execute(
                     "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
@@ -1172,19 +1246,38 @@ async fn dev_zkp_login(
     Json(payload): Json<DevZkpLoginRequest>,
 ) -> Result<Json<DevZkpLoginResponse>, (StatusCode, String)> {
     // 1. Valider + anti-double-spend Token B
-    let token_secret = state.read().unwrap().token_secret.clone();
-    if !verify_token(&token_secret, "TOKEN_B", &payload.token_b) {
-        return Err((StatusCode::PAYMENT_REQUIRED, "Invalid Token B".into()));
-    }
-    let tv = token_value(&payload.token_b).to_string();
+    //    Mode "db_managed" : le frontend n'a pas de vrai blind token,
+    //    on vérifie le solde en DB au lieu de la signature HMAC.
+    let db_managed_mode = payload.token_b == "db_managed"
+        || !payload.token_b.contains(':');
     {
         let st = state.read().unwrap();
-        let db = st.db.lock().unwrap();
-        let exists: bool =
-            db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
-                params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
-        if exists {
-            return Err((StatusCode::CONFLICT, "Token B already spent".into()));
+        if db_managed_mode {
+            if payload.site_name.is_empty() {
+                return Err((StatusCode::BAD_REQUEST, "site_name required for db_managed token mode".into()));
+            }
+            let db = st.db.lock().unwrap();
+            let balance: i64 = db.query_row(
+                "SELECT tokens_b FROM clients WHERE name = ?1",
+                params![payload.site_name],
+                |row| row.get(0),
+            ).unwrap_or(0);
+            if balance < 1 {
+                return Err((StatusCode::PAYMENT_REQUIRED, "Insufficient Token B balance".into()));
+            }
+        } else {
+            let token_secret = st.token_secret.clone();
+            if !verify_token(&token_secret, "TOKEN_B", &payload.token_b) {
+                return Err((StatusCode::PAYMENT_REQUIRED, "Invalid Token B".into()));
+            }
+            let tv = token_value(&payload.token_b).to_string();
+            let db = st.db.lock().unwrap();
+            let exists: bool =
+                db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
+                    params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
+            if exists {
+                return Err((StatusCode::CONFLICT, "Token B already spent".into()));
+            }
         }
     }
 
@@ -1276,7 +1369,10 @@ async fn dev_zkp_login(
         let mut st = state.write().unwrap();
         {
             let db = st.db.lock().unwrap();
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            if !db_managed_mode {
+                let tv = token_value(&payload.token_b).to_string();
+                let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            }
             let _ = db.execute(
                 "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
                 params![payload.site_name],

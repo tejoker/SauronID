@@ -5,6 +5,7 @@ use rusqlite::{Connection, params};
 use sha2::{Sha256, Digest};
 use crate::ring;
 use crate::merkle::MerkleCommitmentLedger;
+use crate::solana_service::SolanaService;
 
 // ─────────────────────────────────────────────────────
 //  Helpers tokens (simulation blind signature HMAC-SHA256)
@@ -55,9 +56,12 @@ pub struct ServerState {
     pub total_tokens_a_burned: usize,
     pub total_tokens_b_issued: usize,
     pub total_tokens_b_burned: usize,
-    /// Arbre de Merkle des commitments KYC (Préparation Solana).
+    /// Arbre de Merkle des commitments KYC.
     /// Append-only ; chaque feuille = SHA256(secret_client).
     pub merkle_ledger: MerkleCommitmentLedger,
+    /// Service d'ancrage Solana Devnet (optionnel).
+    /// `None` si les variables SOLANA_WALLET_PATH / SOLANA_PROGRAM_ID sont absentes.
+    pub solana_service: Option<std::sync::Arc<SolanaService>>,
 }
 
 impl ServerState {
@@ -74,6 +78,7 @@ impl ServerState {
             total_tokens_b_issued: 0,
             total_tokens_b_burned: 0,
             merkle_ledger: MerkleCommitmentLedger::new(),
+            solana_service: SolanaService::from_env().map(std::sync::Arc::new),
         }
     }
 

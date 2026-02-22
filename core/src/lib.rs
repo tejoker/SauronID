@@ -7,3 +7,4 @@ pub mod admin;
 pub mod sites;
 pub mod billing;
 pub mod merkle;
+pub mod solana_service;
