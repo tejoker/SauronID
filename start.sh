@@ -1,75 +1,132 @@
 #!/usr/bin/env bash
-set -e
+# start-test.sh — démarrage rapide sans build (mode dev)
+# Utilise le binaire Rust déjà compilé + npm run dev pour les frontends
 
+set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-# ── Check .env ───────────────────────────────────────────────────────────────
-if [ ! -f "$ROOT/KYC/.env" ]; then
-  echo "[error] KYC/.env not found. Copy KYC/.env and set GEMINI_API_KEY."
-  exit 1
-fi
+# ── Couleurs ─────────────────────────────────────────────────────────────────
+GRN='\033[0;32m'; YLW='\033[1;33m'; RED='\033[0;31m'; RST='\033[0m'
+log()  { echo -e "${GRN}[start-test]${RST} $*"; }
+warn() { echo -e "${YLW}[warn]${RST} $*"; }
 
-source "$ROOT/KYC/.env"
-if [ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "your_key_here" ]; then
-  echo "[error] GEMINI_API_KEY is not set in KYC/.env"
-  exit 1
-fi
-
-# ── Cleanup on exit ──────────────────────────────────────────────────────────
+# ── Cleanup ──────────────────────────────────────────────────────────────────
+PIDS=()
 cleanup() {
   echo ""
-  echo "[stop] Shutting down..."
-  kill "$CORE_PID" "$NEXT_PID" "$KYC_PID" 2>/dev/null
-  wait "$CORE_PID" "$NEXT_PID" "$KYC_PID" 2>/dev/null
-  echo "[stop] Done."
+  log "Arrêt de tous les processus..."
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+  log "Arrêté." 
 }
 trap cleanup INT TERM
 
-# ── Backend (Rust) ───────────────────────────────────────────────────────────
-echo "[1/5] Building backend (cargo build --release)..."
+# ── 1. Backend Rust ──────────────────────────────────────────────────────────
+log "[1/6] Backend Rust → :3001"
 cd "$ROOT/core"
-cargo build --release 2>&1
 
-echo "[2/5] Starting sauron-core on :3001..."
-./target/release/sauron-core &
+BINARY="./target/release/sauron-core"
+if [ ! -f "$BINARY" ]; then
+  warn "Binaire release introuvable, utilisation de debug..."
+  BINARY="./target/debug/sauron-core"
+fi
+if [ ! -f "$BINARY" ]; then
+  warn "Aucun binaire trouvé — lance 'cargo build' d'abord !"
+  warn "Fallback: cargo run (lent au premier démarrage)"
+  cargo run &
+else
+  "$BINARY" &
+fi
 CORE_PID=$!
+PIDS+=("$CORE_PID")
 
-# ── Seed (clients + users) ───────────────────────────────────────────────────────────
-echo "[3/5] Seeding database (10 clients + 10 users)..."
+# ── Attendre que le backend soit prêt ────────────────────────────────────────
+log "Attente du backend..."
+for i in $(seq 1 30); do
+  if curl -sf http://localhost:3001/admin/stats \
+       -H "x-admin-key: super_secret_hackathon_key" > /dev/null 2>&1; then
+    log "Backend prêt ✓"
+    break
+  fi
+  sleep 1
+  if [ "$i" -eq 30 ]; then
+    echo -e "${RED}[error]${RST} Backend non disponible après 30s."
+    exit 1
+  fi
+done
+
+# ── 2. Seed ──────────────────────────────────────────────────────────────────
+log "[2/6] Seed (clients + users)..."
 cd "$ROOT/core"
 SAURON_URL=http://localhost:3001 bash seed.sh
 
-# ── KYC (Python) ─────────────────────────────────────────────────────────────
-echo "[4/5] Setting up KYC Python environment..."
+# ── 3. KYC (Python) ──────────────────────────────────────────────────────────
+log "[3/6] KYC Python → :8000"
 cd "$ROOT/KYC"
-
 if [ ! -d ".venv" ]; then
-  echo "      Creating virtual environment..."
+  warn "Création du venv KYC..."
   python3 -m venv .venv
+  .venv/bin/pip install -q -r requirements.txt
+elif [ ! -f ".venv/lib/python3*/site-packages/fastapi/__init__.py" ] 2>/dev/null; then
+  .venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
 fi
-
-source .venv/bin/activate
-pip install -q -r requirements.txt
-
-echo "      Starting KYC service on :8000..."
-uvicorn main:app --host 0.0.0.0 --port 8000 &
+if [ -f ".env" ]; then source .env; fi
+GEMINI_API_KEY="${GEMINI_API_KEY:-dummy_dev_key}" \
+  .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
 KYC_PID=$!
-deactivate
+PIDS+=("$KYC_PID")
 
-# ── Partner Portal (Next.js) ─────────────────────────────────────────────────
-echo "[5/5] Building and starting Partner Portal (Next.js) on :3000..."
+# ── 4. Analytics API (Python) ────────────────────────────────────────────────
+log "[4/6] Analytics API → :8002"
+cd "$ROOT/data/sauron"
+if [ ! -d ".venv" ]; then
+  warn "Création du venv sauron..."
+  python3 -m venv .venv
+  .venv/bin/pip install -q -r requirements.txt
+fi
+SAURON_URL=http://localhost:3001 \
+DATA_DIR="$ROOT/data" \
+  .venv/bin/uvicorn app:app --host 0.0.0.0 --port 8002 --reload &
+SAURON_PID=$!
+PIDS+=("$SAURON_PID")
+
+# ── 5. Partner Portal (Next.js) ──────────────────────────────────────────────
+log "[5/6] Partner Portal → :3000"
 cd "$ROOT/partner-portal"
-npm run build 2>&1
-npm run start -- -p 3000 &
-NEXT_PID=$!
+if [ ! -d "node_modules" ]; then
+  warn "Installation des dépendances npm (partner-portal)..."
+  npm install --silent
+fi
+NEXT_PUBLIC_API_URL=http://localhost:3001 \
+NEXT_PUBLIC_KYC_URL=http://localhost:8000 \
+  npm run dev -- -p 3000 &
+PORTAL_PID=$!
+PIDS+=("$PORTAL_PID")
 
-# ── Ready ────────────────────────────────────────────────────────────────
+# ── 6. Sauron Dashboard UI (Next.js) ─────────────────────────────────────────
+log "[6/6] Sauron Dashboard → :8003"
+cd "$ROOT/sauron-dashboard"
+if [ ! -d "node_modules" ]; then
+  warn "Installation des dépendances npm (sauron-dashboard)..."
+  npm install --silent
+fi
+NEXT_PUBLIC_API_URL=http://localhost:3001 \
+NEXT_PUBLIC_DASH_API_URL=http://localhost:8002 \
+  npm run dev -- -p 8003 &
+DASH_PID=$!
+PIDS+=("$DASH_PID")
+
+# ── Résumé ───────────────────────────────────────────────────────────────────
 echo ""
-echo "  Frontend → http://localhost:3000"
-echo "  Backend  → http://localhost:3001"
-echo "  KYC      → http://localhost:8000"
+echo -e "  ${GRN}Partner Portal   →${RST} http://localhost:3000"
+echo -e "  ${GRN}Backend Rust     →${RST} http://localhost:3001"
+echo -e "  ${GRN}KYC              →${RST} http://localhost:8000"
+echo -e "  ${GRN}Analytics API    →${RST} http://localhost:8002"
+echo -e "  ${GRN}Sauron Dashboard →${RST} http://localhost:8003"
 echo ""
-echo "  Press Ctrl+C to stop everything."
+echo -e "  ${YLW}Ctrl+C pour tout arrêter${RST}"
 echo ""
 
-wait "$CORE_PID" "$KYC_PID" "$NEXT_PID"
+wait
