@@ -1,82 +1,103 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DASH_API } from "../context/DashContext";
+import "../chartSetup";
+import { Line } from "react-chartjs-2";
+import { sauronFetch, Kpi, Card, Spinner, fmtNum } from "../shared";
 
-interface RingData {
-  total_rings?: number;
-  avg_ring_size?: number;
-  rings?: Array<{ ring_id?: string; size?: number; client?: string; created_at?: string; [key: string]: unknown }>;
-  [key: string]: unknown;
+/* ── Types matching GET /api/rings ─────────────────────────────────────── */
+interface RingSeries {
+  label: string;
+  dates: string[];
+  counts: number[];
+}
+interface RingLatest {
+  ring_id: string;
+  label: string;
+  count: number;
+  first_count: number;
+  growth_pct: number;
+}
+interface RData {
+  series: Record<string, RingSeries>;
+  latest: RingLatest[];
 }
 
+const RING_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#6366f1", "#14b8a6"];
+
 export default function RingsPage() {
-  const [data, setData] = useState<RingData | null>(null);
-  const [error, setError] = useState(false);
+  const [data, setData] = useState<RData | null>(null);
 
   useEffect(() => {
-    fetch(`${DASH_API}/api/rings`)
-      .then(r => r.json())
-      .then(setData)
-      .catch(() => setError(true));
+    sauronFetch<RData>("rings").then(setData).catch(() => {});
   }, []);
 
-  const rings = data?.rings ?? (Array.isArray(data) ? (data as unknown as unknown[]) : []);
+  if (!data) return <Spinner />;
+
+  const totalMembers = data.latest.reduce((a, r) => a + r.count, 0);
+  const seriesKeys = Object.keys(data.series);
+  const allDates = seriesKeys.length > 0 ? data.series[seriesKeys[0]].dates : [];
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--text)" }}>Rings</h1>
-      <p className="text-sm mb-6" style={{ color: "var(--text3)" }}>Cryptographic ring sets for ZKP anonymization</p>
+    <div className="space-y-6 max-w-[1200px]">
+      <h1 className="text-lg font-bold text-neutral-900">Privacy Rings</h1>
 
-      {error ? (
-        <div className="px-4 py-4 rounded-lg" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)", color: "#ef4444" }}>
-          Analytics service unavailable.
-        </div>
-      ) : !data ? (
-        <div style={{ color: "var(--text3)" }}>Loading…</div>
-      ) : (
-        <>
-          <div className="grid gap-4 mb-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
-            <div className="rounded-xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--text3)" }}>Total Rings</div>
-              <div className="text-3xl font-extrabold" style={{ color: "var(--accent2)" }}>{data.total_rings ?? (rings as unknown[]).length}</div>
-            </div>
-            {data.avg_ring_size != null && (
-              <div className="rounded-xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-                <div className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--text3)" }}>Avg Ring Size</div>
-                <div className="text-3xl font-extrabold" style={{ color: "var(--text)" }}>{typeof data.avg_ring_size === "number" ? data.avg_ring_size.toFixed(1) : data.avg_ring_size}</div>
-              </div>
-            )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Kpi label="Active Rings" value={String(data.latest.length)} />
+        <Kpi label="Total Members" value={fmtNum(totalMembers)} />
+        <Kpi label="Avg Ring Size" value={fmtNum(Math.round(totalMembers / (data.latest.length || 1)))} />
+        <Kpi label="Largest Ring" value={fmtNum(Math.max(...data.latest.map((r) => r.count), 0))} />
+      </div>
+
+      {allDates.length > 0 && (
+        <Card title="Ring Growth Over Time">
+          <div className="h-60">
+            <Line
+              data={{
+                labels: allDates,
+                datasets: seriesKeys.map((key, i) => ({
+                  label: data.series[key].label,
+                  data: data.series[key].counts,
+                  borderColor: RING_COLORS[i % RING_COLORS.length],
+                  backgroundColor: RING_COLORS[i % RING_COLORS.length] + "22",
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  borderWidth: 2,
+                })),
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: true, position: "top" as const, labels: { boxWidth: 10, font: { size: 11 } } } },
+                scales: {
+                  x: { grid: { display: false } },
+                  y: { beginAtZero: true, grid: { color: "#f3f4f6" } },
+                },
+              }}
+            />
           </div>
-
-          {(rings as unknown[]).length > 0 && (
-            <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-              <div className="px-5 py-3 text-xs font-semibold uppercase tracking-widest" style={{ background: "var(--surface2)", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>
-                Ring Details
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead><tr style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
-                    {["Ring ID", "Client", "Size", "Created"].map(h => (
-                      <th key={h} className="px-5 py-3 text-left text-xs uppercase tracking-widest" style={{ color: "var(--text3)" }}>{h}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {(rings as Record<string, unknown>[]).map((r, i) => (
-                      <tr key={String(r.ring_id ?? i)} style={{ borderBottom: i < rings.length - 1 ? "1px solid var(--border)" : undefined }}>
-                        <td className="px-5 py-3 font-mono text-xs" style={{ color: "var(--text3)" }}>{String(r.ring_id ?? i + 1).slice(0, 12)}…</td>
-                        <td className="px-5 py-3" style={{ color: "var(--text)" }}>{String(r.client ?? "—")}</td>
-                        <td className="px-5 py-3 tabular-nums" style={{ color: "var(--accent2)" }}>{String(r.size ?? "—")}</td>
-                        <td className="px-5 py-3 text-xs" style={{ color: "var(--text3)" }}>{String(r.created_at ?? "—")}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </>
+        </Card>
       )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {data.latest.map((r, i) => (
+          <div key={r.ring_id} className="bg-white border border-neutral-200 rounded-lg p-4 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full" style={{ background: RING_COLORS[i % RING_COLORS.length] }} />
+              <span className="text-sm font-semibold text-neutral-800">{r.label}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-xl font-bold tabular-nums text-neutral-900">{fmtNum(r.count)}</span>
+              <span className={`text-xs font-medium ${r.growth_pct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                {r.growth_pct >= 0 ? "+" : ""}
+                {r.growth_pct.toFixed(1)}%
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">{r.ring_id}</p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

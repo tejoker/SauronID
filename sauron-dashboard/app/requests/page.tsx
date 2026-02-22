@@ -1,91 +1,105 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { Card } from "../shared";
 import { API, ADMIN_KEY } from "../context/DashContext";
 
-interface Request {
-  id?: number;
-  client_name?: string;
-  request_type?: string;
-  timestamp?: string;
-  success?: boolean;
-  [key: string]: unknown;
+interface RequestEvent {
+  client_name: string;
+  request_type: string;
+  timestamp: string;
+  success: boolean;
 }
 
 export default function RequestsPage() {
-  const [requests, setRequests] = useState<Request[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<RequestEvent[]>([]);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    fetch(`${API}/admin/requests`, { headers: { "X-Admin-Key": ADMIN_KEY } })
-      .then(r => r.json())
-      .then(d => { setRequests(Array.isArray(d) ? d : (d.requests ?? [])); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/admin/requests`, {
+        headers: { "x-admin-key": ADMIN_KEY },
+      });
+      if (res.ok) setEvents(await res.json());
+    } catch {}
   }, []);
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 5_000);
     return () => clearInterval(t);
   }, [load]);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-3xl font-bold mb-1" style={{ color: "var(--text)" }}>Activity</h1>
-          <p className="text-sm mt-1" style={{ color: "var(--text3)" }}>Live request log — auto-refreshed every 5 s</p>
+    <div className="space-y-6 max-w-[1200px]">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-neutral-900">Activity Log</h1>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-neutral-400">{events.length} events</span>
+          <button
+            onClick={load}
+            className="px-3 py-1.5 text-xs border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors"
+          >
+            Refresh
+          </button>
         </div>
-        <button onClick={load} className="px-4 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-80"
-          style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text2)" }}>
-          ↺ Refresh
-        </button>
       </div>
 
-      <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+      <Card>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-xs">
             <thead>
-              <tr style={{ background: "var(--surface2)", borderBottom: "1px solid var(--border)" }}>
-                {["#", "Client", "Type", "Timestamp", "Status"].map(h => (
-                  <th key={h} className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text3)" }}>{h}</th>
-                ))}
+              <tr className="border-b border-neutral-200 text-neutral-400">
+                <th className="text-left py-2 font-medium">#</th>
+                <th className="text-left py-2 font-medium">Client</th>
+                <th className="text-left py-2 font-medium">Type</th>
+                <th className="text-left py-2 font-medium">Timestamp</th>
+                <th className="text-center py-2 font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? (
-                <tr><td colSpan={5} className="px-5 py-12 text-center" style={{ color: "var(--text3)" }}>Loading…</td></tr>
-              ) : requests.length === 0 ? (
-                <tr><td colSpan={5} className="px-5 py-12 text-center" style={{ color: "var(--text3)" }}>No requests yet.</td></tr>
-              ) : requests.map((r, i) => (
-                <tr key={r.id ?? i} style={{ borderBottom: i < requests.length - 1 ? "1px solid var(--border)" : undefined, background: "var(--surface)" }}>
-                  <td className="px-6 py-4 font-mono text-xs" style={{ color: "var(--text3)" }}>{r.id ?? i + 1}</td>
-                  <td className="px-6 py-4 font-medium" style={{ color: "var(--text)" }}>{String(r.client_name ?? "—")}</td>
-                  <td className="px-6 py-4">
-                    <span className="text-xs px-2.5 py-1 rounded-full" style={{ background: "rgba(37,99,235,.08)", color: "#1d4ed8" }}>
-                      {String(r.request_type ?? r.type ?? "—")}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-xs" style={{ color: "var(--text3)" }}>{String(r.timestamp ?? r.created_at ?? "—")}</td>
-                  <td className="px-6 py-4">
-                    <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{
-                      background: r.success !== false ? "rgba(22,163,74,.1)" : "rgba(220,38,38,.1)",
-                      color:      r.success !== false ? "#16a34a" : "#dc2626",
-                    }}>{r.success !== false ? "OK" : "FAIL"}</span>
+              {events.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-neutral-400">
+                    No activity yet
                   </td>
                 </tr>
-              ))}
+              ) : (
+                events.map((e, i) => (
+                  <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
+                    <td className="py-2 tabular-nums text-neutral-400">{i + 1}</td>
+                    <td className="py-2 font-medium text-neutral-700">{e.client_name}</td>
+                    <td className="py-2">
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          e.request_type === "register"
+                            ? "bg-blue-50 text-blue-700"
+                            : e.request_type === "login"
+                              ? "bg-green-50 text-green-700"
+                              : "bg-neutral-100 text-neutral-600"
+                        }`}
+                      >
+                        {e.request_type}
+                      </span>
+                    </td>
+                    <td className="py-2 text-neutral-400 tabular-nums">{e.timestamp}</td>
+                    <td className="py-2 text-center">
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          e.success
+                            ? "bg-green-50 text-green-700"
+                            : "bg-red-50 text-red-600"
+                        }`}
+                      >
+                        {e.success ? "OK" : "FAIL"}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
-        {requests.length > 0 && (
-          <div className="px-6 py-4 text-xs" style={{ background: "var(--surface2)", borderTop: "1px solid var(--border)", color: "var(--text3)" }}>
-            {requests.length} events
-          </div>
-        )}
-      </div>
+      </Card>
     </div>
   );
 }

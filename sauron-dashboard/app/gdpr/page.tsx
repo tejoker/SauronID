@@ -1,110 +1,167 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DASH_API } from "../context/DashContext";
+import "../chartSetup";
+import { Doughnut, Bar } from "react-chartjs-2";
+import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtPct } from "../shared";
 
-interface GdprStats {
-  total_users?: number;
-  purge_requests?: number;
-  last_purge?: string;
-  users_purged?: number;
-  [key: string]: unknown;
+interface GData {
+  retention: Record<string, number>;
+  total_users: number;
+  purged_users: number;
+  purge_rate: number;
+  monthly_purges: { months: string[]; counts: number[] };
+  policies: { name: string; retention_days: number; auto_purge: boolean }[];
+  recent_purges: { user_id: string; purged_at: string; data_types: string[] }[];
 }
 
 export default function GdprPage() {
-  const [stats, setStats] = useState<GdprStats | null>(null);
-  const [error, setError] = useState(false);
-  const [userId, setUserId] = useState("");
+  const [data, setData] = useState<GData | null>(null);
   const [purging, setPurging] = useState(false);
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
 
-  const load = () => {
-    fetch(`${DASH_API}/api/gdpr/stats`)
-      .then(r => r.json())
-      .then(setStats)
-      .catch(() => setError(true));
-  };
+  useEffect(() => {
+    sauronFetch<GData>("gdpr/stats").then(setData).catch(() => {});
+  }, []);
 
-  useEffect(() => { load(); }, []);
-
-  const handlePurge = async () => {
-    if (!userId.trim()) return;
+  const executePurge = async () => {
     setPurging(true);
     setPurgeResult(null);
     try {
-      const r = await fetch(`${DASH_API}/api/gdpr/purge`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId.trim() }),
-      });
-      const d = await r.json();
-      setPurgeResult(r.ok ? `✓ ${d.message ?? "User data purged."}` : `✗ ${d.detail ?? "Purge failed."}`);
-      setUserId("");
-      load();
+      const r = await sauronFetch<{ purged: number; message: string }>("gdpr/purge");
+      setPurgeResult(`Purged ${r.purged} records. ${r.message}`);
+      sauronFetch<GData>("gdpr/stats").then(setData);
     } catch {
-      setPurgeResult("✗ Service unavailable");
+      setPurgeResult("Purge failed.");
     } finally {
       setPurging(false);
     }
   };
 
-  return (
-    <div>
-      <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--text)" }}>GDPR Compliance</h1>
-      <p className="text-sm mb-6" style={{ color: "var(--text3)" }}>Right-to-erasure and data compliance tooling</p>
+  if (!data) return <Spinner />;
 
-      {error ? (
-        <div className="px-4 py-4 rounded-lg mb-6" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)", color: "#ef4444" }}>
-          Analytics service unavailable.
-        </div>
-      ) : stats && (
-        <div className="grid gap-4 mb-6" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
-          {[
-            { label: "Total Users",   value: stats.total_users   ?? "—" },
-            { label: "Purge Requests",value: stats.purge_requests ?? "—", color: "var(--warning)" },
-            { label: "Users Purged",  value: stats.users_purged  ?? "—", color: "var(--danger)" },
-            { label: "Last Purge",    value: stats.last_purge    ?? "—", sm: true },
-          ].map(({ label, value, color, sm }) => (
-            <div key={label} className="rounded-xl p-5" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-              <div className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--text3)" }}>{label}</div>
-              <div className={sm ? "text-sm font-semibold" : "text-2xl font-extrabold"} style={{ color: color || "var(--text)" }}>{String(value)}</div>
-            </div>
-          ))}
+  const retentionLabels = Object.keys(data.retention);
+  const retentionValues = Object.values(data.retention);
+  const retentionColors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+
+  return (
+    <div className="space-y-6 max-w-[1200px]">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-neutral-900">GDPR Compliance</h1>
+        <button
+          onClick={executePurge}
+          disabled={purging}
+          className="text-xs px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 transition font-medium"
+        >
+          {purging ? "Purging..." : "Execute Purge"}
+        </button>
+      </div>
+
+      {purgeResult && (
+        <div className="text-xs px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
+          {purgeResult}
         </div>
       )}
 
-      {/* Purge form */}
-      <div className="rounded-xl p-6" style={{ background: "var(--surface)", border: "1px solid var(--border)", maxWidth: 480 }}>
-        <h2 className="text-sm font-semibold mb-4" style={{ color: "var(--text)" }}>
-          Request Data Erasure
-        </h2>
-        <div className="flex gap-3">
-          <input
-            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-            style={{ background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)" }}
-            placeholder="User ID to purge…"
-            value={userId}
-            onChange={e => setUserId(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handlePurge()}
-          />
-          <button
-            onClick={handlePurge}
-            disabled={purging || !userId.trim()}
-            className="px-4 py-2 rounded-lg text-sm font-semibold transition-opacity disabled:opacity-40"
-            style={{ background: "rgba(220,38,38,.08)", color: "#dc2626", border: "1px solid rgba(220,38,38,.25)" }}
-          >
-            {purging ? "…" : "Purge"}
-          </button>
-        </div>
-        {purgeResult && (
-          <div className="mt-3 text-xs px-3 py-2 rounded" style={{
-            background: purgeResult.startsWith("✓") ? "rgba(34,197,94,.08)" : "rgba(239,68,68,.08)",
-            color:      purgeResult.startsWith("✓") ? "#16a34a" : "#dc2626",
-          }}>
-            {purgeResult}
-          </div>
-        )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Kpi label="Total Users" value={fmtNum(data.total_users)} />
+        <Kpi label="Purged Users" value={fmtNum(data.purged_users)} accent="text-red-600" />
+        <Kpi label="Purge Rate" value={fmtPct(data.purge_rate)} />
+        <Kpi label="Retention Cats" value={String(retentionLabels.length)} />
       </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card title="Data Retention Breakdown">
+          <div className="h-52 flex items-center justify-center">
+            <Doughnut
+              data={{
+                labels: retentionLabels,
+                datasets: [
+                  {
+                    data: retentionValues,
+                    backgroundColor: retentionColors.slice(0, retentionLabels.length),
+                    borderWidth: 0,
+                  },
+                ],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: true, position: "right" as const, labels: { boxWidth: 10, font: { size: 11 } } } },
+              }}
+            />
+          </div>
+        </Card>
+
+        <Card title="Monthly Purge History">
+          <div className="h-52">
+            <Bar
+              data={{
+                labels: data.monthly_purges.months,
+                datasets: [
+                  { label: "Purges", data: data.monthly_purges.counts, backgroundColor: "#ef4444", borderRadius: 3 },
+                ],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: "#f3f4f6" } } },
+              }}
+            />
+          </div>
+        </Card>
+      </div>
+
+      <Card title="Retention Policies">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-neutral-200 text-neutral-400">
+                <th className="text-left py-2 font-medium">Policy Name</th>
+                <th className="text-right py-2 font-medium">Retention (days)</th>
+                <th className="text-right py-2 font-medium">Auto-Purge</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.policies.map((p, i) => (
+                <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
+                  <td className="py-2 font-medium text-neutral-700">{p.name}</td>
+                  <td className="py-2 text-right tabular-nums">{p.retention_days}</td>
+                  <td className="py-2 text-right">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${p.auto_purge ? "bg-emerald-100 text-emerald-700" : "bg-neutral-100 text-neutral-500"}`}>
+                      {p.auto_purge ? "ON" : "OFF"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card title="Recent Purge Audit Log">
+        <div className="overflow-x-auto max-h-56 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-neutral-200 text-neutral-400">
+                <th className="text-left py-2 font-medium">User ID</th>
+                <th className="text-left py-2 font-medium">Purged At</th>
+                <th className="text-left py-2 font-medium">Data Types</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.recent_purges.map((p, i) => (
+                <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
+                  <td className="py-2 text-neutral-700 font-mono">{p.user_id}</td>
+                  <td className="py-2 text-neutral-500 tabular-nums">{p.purged_at}</td>
+                  <td className="py-2 text-neutral-500">{p.data_types.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

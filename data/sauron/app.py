@@ -18,6 +18,7 @@ import httpx
 import numpy as np
 import polars as pl
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 

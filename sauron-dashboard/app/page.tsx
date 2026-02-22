@@ -1,85 +1,169 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import "./chartSetup";
+import { Line, Bar } from "react-chartjs-2";
+import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtPct, fmtUsd } from "./shared";
 import { useDash } from "./context/DashContext";
 
-function KpiCard({ label, value, sub, accent }: { label: string; value: string | number; sub?: string; accent?: string }) {
-  return (
-    <div className="rounded-xl p-6" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-      <div className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "var(--text3)" }}>{label}</div>
-      <div className="text-4xl font-extrabold tabular-nums" style={{ color: accent || "var(--text)" }}>{value}</div>
-      {sub && <div className="text-sm mt-2" style={{ color: "var(--text3)" }}>{sub}</div>}
-    </div>
-  );
+interface OverviewData {
+  kpis: Record<string, number>;
+  daily: { dates: string[]; credit_a: number[]; credit_b: number[] };
+  rings: { labels: string[]; names: string[]; counts: number[] };
 }
 
-export default function OverviewPage() {
-  const { stats, clients, offline } = useDash();
+interface AnomalyEvent {
+  anomaly_type: string;
+  severity: string;
+  description?: string;
+  date?: string;
+  name?: string;
+}
 
-  const fullKyc = clients.filter(c => c.client_type === "FULL_KYC").length;
-  const zkpOnly = clients.filter(c => c.client_type === "ZKP_ONLY").length;
-  const totalTokensA = clients.reduce((s, c) => s + (c.tokens_a || 0), 0);
-  const totalTokensB = clients.reduce((s, c) => s + (c.tokens_b || 0), 0);
+interface InsightsData {
+  avg_churn_risk: number;
+  avg_trust_score: number;
+  ml_anomalies_detected: number;
+  at_risk_clients: { client_id: number; name: string; churn_risk: number }[];
+}
+
+interface GdprData {
+  total_users: number;
+  eu_eea_scope: number;
+  pending_purge: number;
+}
+
+interface PipelineData {
+  total_events: number;
+  throughput_eps: number;
+  total_fraud: number;
+  total_block: number;
+}
+
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { grid: { display: false } },
+    y: { beginAtZero: true, grid: { color: "#f3f4f6" } },
+  },
+};
+
+export default function OverviewPage() {
+  const { stats, offline } = useDash();
+  const [data, setData] = useState<OverviewData | null>(null);
+  const [anomalies, setAnomalies] = useState<AnomalyEvent[]>([]);
+  const [insights, setInsights] = useState<InsightsData | null>(null);
+  const [gdpr, setGdpr] = useState<GdprData | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineData | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      sauronFetch<OverviewData>("overview").catch(() => null),
+      sauronFetch<{ events: AnomalyEvent[] }>("anomalies").catch(() => ({ events: [] })),
+      sauronFetch<InsightsData>("insights").catch(() => null),
+      sauronFetch<GdprData>("gdpr/stats").catch(() => null),
+      sauronFetch<PipelineData>("pipeline-stats").catch(() => null),
+    ]).then(([o, a, i, g, p]) => {
+      setData(o);
+      setAnomalies(a.events?.slice(0, 8) ?? []);
+      setInsights(i);
+      setGdpr(g);
+      setPipeline(p);
+    });
+  }, []);
+
+  if (!data && !stats) return <Spinner />;
+
+  const k = data?.kpis ?? {};
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold" style={{ color: "var(--text)" }}>Overview</h1>
-          <p className="text-sm mt-1.5" style={{ color: "var(--text3)" }}>Live system snapshot — refreshed every 10 s</p>
-        </div>
-        {offline && <span className="text-xs px-3 py-1 rounded-full" style={{ background: "rgba(239,68,68,.12)", color: "#ef4444" }}>⚠ Backend offline</span>}
+    <div className="space-y-6 max-w-[1200px]">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-neutral-900">Platform Overview</h1>
+        {offline && <span className="text-xs px-2.5 py-1 rounded-full bg-red-50 text-red-600 font-medium">Backend offline</span>}
       </div>
 
       {/* KPI grid */}
-      <div className="grid gap-5 mb-8" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
-        <KpiCard label="Registered Users" value={stats?.total_users ?? "—"} accent="var(--accent)" />
-        <KpiCard label="Partner Clients"  value={stats?.total_clients ?? "—"} />
-        <KpiCard label="Tokens A Issued"  value={stats?.total_tokens_a_issued ?? "—"} sub={`burned: ${stats?.total_tokens_a_burned ?? "—"}`} accent="var(--warning)" />
-        <KpiCard label="Tokens B Issued"  value={stats?.total_tokens_b_issued ?? "—"} sub={`spent: ${stats?.total_tokens_b_spent ?? "—"}`} accent="var(--success)" />
-        <KpiCard label="Exchange Rate"    value={stats ? `${stats.exchange_rate} A/B` : "—"} />
-        <KpiCard label="FULL_KYC Clients" value={fullKyc} sub={`ZKP_ONLY: ${zkpOnly}`} accent="var(--accent2)" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <Kpi label="Registered Users" value={fmtNum(stats?.total_users ?? k.total_full_kyc)} />
+        <Kpi label="Partner Clients" value={fmtNum(stats?.total_clients ?? k.active_clients)} />
+        <Kpi label="KYC Revenue" value={fmtUsd(k.kyc_revenue_usd)} accent="text-green-600" />
+        <Kpi label="Credit A Earned" value={fmtNum(k.credit_a_earned ?? stats?.total_tokens_a_issued)} accent="text-blue-600" />
+        <Kpi label="Credit B Purchased" value={fmtNum(k.credit_b_purchased ?? stats?.total_tokens_b_issued)} accent="text-orange-500" />
+        <Kpi label="Query Revenue" value={fmtUsd(k.query_revenue_usd)} accent="text-green-600" />
+        <Kpi label="Failure Rate" value={fmtPct(k.failure_rate)} accent={(k.failure_rate ?? 0) > 5 ? "text-red-600" : "text-neutral-900"} />
+        <Kpi label="Exchange Rate" value={stats ? `1:${stats.exchange_rate}` : "\u2014"} />
+        {gdpr && <Kpi label="GDPR Pending" value={fmtNum(gdpr.pending_purge)} accent={gdpr.pending_purge > 0 ? "text-amber-600" : "text-green-600"} />}
+        {pipeline && <Kpi label="Pipeline EPS" value={pipeline.throughput_eps.toFixed(1)} sub={`${fmtNum(pipeline.total_events)} events`} />}
       </div>
 
-      {/* Clients table */}
-      <div className="rounded-xl overflow-hidden mt-8" style={{ border: "1px solid var(--border)" }}>
-        <div className="px-6 py-4 text-xs font-semibold uppercase tracking-widest" style={{ background: "var(--surface2)", color: "var(--text3)", borderBottom: "1px solid var(--border)" }}>
-          Live Client Balances
+      {/* Charts row */}
+      {data && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Card title="Daily Credit Activity (90 days)">
+            <div className="h-60">
+              <Line
+                data={{
+                  labels: data.daily.dates,
+                  datasets: [
+                    { label: "Credit A", data: data.daily.credit_a, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.08)", fill: true, tension: 0.3, pointRadius: 0 },
+                    { label: "Credit B", data: data.daily.credit_b, borderColor: "#f97316", backgroundColor: "rgba(249,115,22,0.08)", fill: true, tension: 0.3, pointRadius: 0 },
+                  ],
+                }}
+                options={{ ...CHART_OPTS, plugins: { legend: { display: true, position: "top" as const, labels: { boxWidth: 10, font: { size: 11 } } } } }}
+              />
+            </div>
+          </Card>
+
+          <Card title="Ring Sizes">
+            <div className="h-60">
+              <Bar
+                data={{
+                  labels: data.rings.names,
+                  datasets: [{ data: data.rings.counts, backgroundColor: "#6366f1", borderRadius: 4 }],
+                }}
+                options={CHART_OPTS}
+              />
+            </div>
+          </Card>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
-                {["Name", "Type", "Tokens A", "Tokens B"].map(h => (
-                  <th key={h} className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text3)" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {clients.length === 0 ? (
-                <tr><td colSpan={4} className="px-5 py-8 text-center" style={{ color: "var(--text3)" }}>No clients</td></tr>
-              ) : clients.map((c, i) => (
-                <tr key={c.name} style={{ borderBottom: i < clients.length - 1 ? "1px solid var(--border)" : undefined }}>
-                  <td className="px-6 py-4 font-medium" style={{ color: "var(--text)" }}>{c.name}</td>
-                  <td className="px-6 py-4">
-                    <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{
-                      background: c.client_type === "FULL_KYC" ? "rgba(59,130,246,.1)" : "rgba(124,58,237,.1)",
-                      color:      c.client_type === "FULL_KYC" ? "#1d4ed8" : "#7e22ce",
-                    }}>{c.client_type}</span>
-                  </td>
-                  <td className="px-6 py-4 tabular-nums text-sm font-medium" style={{ color: "var(--warning)" }}>{c.tokens_a ?? 0}</td>
-                  <td className="px-6 py-4 tabular-nums text-sm font-medium" style={{ color: "var(--success)" }}>{c.tokens_b ?? 0}</td>
-                </tr>
+      )}
+
+      {/* Bottom row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card title="Recent Anomalies">
+          {anomalies.length === 0 ? (
+            <p className="text-sm text-neutral-400">No recent anomalies</p>
+          ) : (
+            <div className="space-y-1.5 max-h-60 overflow-auto">
+              {anomalies.map((a, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs py-1.5 border-b border-neutral-100 last:border-0">
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${a.severity === "high" ? "bg-red-500" : a.severity === "medium" ? "bg-amber-500" : "bg-blue-400"}`} />
+                  <span className="font-mono text-neutral-500">{a.anomaly_type}</span>
+                  {a.name && <span className="text-neutral-400">{a.name}</span>}
+                  <span className="ml-auto text-neutral-300 tabular-nums">{a.date?.slice(0, 10)}</span>
+                </div>
               ))}
-              {clients.length > 0 && (
-                <tr style={{ background: "var(--surface2)", borderTop: "1px solid var(--border)" }}>
-                  <td className="px-6 py-4 font-semibold text-xs uppercase tracking-widest" colSpan={2} style={{ color: "var(--text3)" }}>Total</td>
-                  <td className="px-6 py-4 font-bold tabular-nums" style={{ color: "var(--warning)" }}>{totalTokensA}</td>
-                  <td className="px-6 py-4 font-bold tabular-nums" style={{ color: "var(--success)" }}>{totalTokensB}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+          )}
+        </Card>
+
+        <Card title="At-Risk Clients">
+          {insights && insights.at_risk_clients.length > 0 ? (
+            <div className="space-y-1.5 max-h-60 overflow-auto">
+              {insights.at_risk_clients.slice(0, 8).map((c) => (
+                <div key={c.client_id} className="flex items-center gap-2 text-xs py-1.5 border-b border-neutral-100 last:border-0">
+                  <span className="font-medium text-neutral-700">{c.name}</span>
+                  <span className="ml-auto text-red-600 font-mono">{fmtPct(c.churn_risk * 100)} churn</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-neutral-400">No at-risk clients</p>
+          )}
+        </Card>
       </div>
     </div>
   );

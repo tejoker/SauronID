@@ -13,12 +13,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <DashProvider>
-          <Sidebar />
-          <main
-            style={{ marginLeft: "var(--sw)", minHeight: "100vh", padding: "2.5rem 3rem" }}
-          >
-            {children}
-          </main>
+          <div className="flex min-h-screen">
+            <Sidebar />
+            <main className="flex-1 overflow-auto p-6 space-y-6">
+              {children}
+            </main>
+          </div>
         </DashProvider>
       </body>
     </html>

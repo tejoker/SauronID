@@ -1,97 +1,152 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DASH_API } from "../context/DashContext";
+import "../chartSetup";
+import { Bar } from "react-chartjs-2";
+import { sauronFetch, Kpi, Card, Spinner, fmtNum } from "../shared";
 
-interface Anomaly {
-  id?: string | number;
-  type?: string;
-  client?: string;
-  severity?: "low" | "medium" | "high" | string;
-  description?: string;
-  timestamp?: string;
-  [key: string]: unknown;
+/* ── Types matching GET /api/anomalies ─────────────────────────────────── */
+interface AEvent {
+  client_id: number;
+  date: string;
+  anomaly_type: string;
+  severity: string;
+  message: string;
+  name: string;       // client name (from join)
+  type: string;       // client type
+}
+interface ByTypeRow { anomaly_type: string; count: number }
+interface BySevRow  { severity: string; count: number }
+interface AData {
+  events: AEvent[];
+  by_type: ByTypeRow[];
+  by_severity: BySevRow[];
+  monthly: { months: string[]; counts: number[] };
 }
 
-interface AnomalyData {
-  total_anomalies?: number;
-  anomalies?: Anomaly[];
-  [key: string]: unknown;
-}
-
-const SEVERITY_STYLE: Record<string, { bg: string; color: string }> = {
-  high:   { bg: "rgba(220,38,38,.1)",   color: "#dc2626" },
-  medium: { bg: "rgba(217,119,6,.1)",   color: "#d97706" },
-  low:    { bg: "rgba(22,163,74,.1)",   color: "#16a34a" },
+const SEV_COLORS: Record<string, string> = {
+  critical: "bg-red-100 text-red-700",
+  high: "bg-orange-100 text-orange-700",
+  medium: "bg-yellow-100 text-yellow-700",
+  low: "bg-blue-100 text-blue-700",
 };
 
 export default function AnomaliesPage() {
-  const [data, setData] = useState<AnomalyData | null>(null);
-  const [error, setError] = useState(false);
+  const [data, setData] = useState<AData | null>(null);
+  const [filter, setFilter] = useState<string>("all");
 
   useEffect(() => {
-    fetch(`${DASH_API}/api/anomalies`)
-      .then(r => r.json())
-      .then(setData)
-      .catch(() => setError(true));
+    sauronFetch<AData>("anomalies").then(setData).catch(() => {});
   }, []);
 
-  const anomalies: Anomaly[] = data?.anomalies ?? (Array.isArray(data) ? (data as unknown as Anomaly[]) : []);
+  if (!data) return <Spinner />;
+
+  const sevMap: Record<string, number> = {};
+  (data.by_severity ?? []).forEach((s) => { sevMap[s.severity] = s.count; });
+
+  const filtered = filter === "all" ? data.events : data.events.filter((e) => e.severity === filter);
+
+  const typeLabels = data.by_type.map((t) => t.anomaly_type);
+  const typeValues = data.by_type.map((t) => t.count);
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--text)" }}>Anomalies</h1>
-      <p className="text-sm mb-6" style={{ color: "var(--text3)" }}>Suspicious transactions and behavioral anomalies</p>
+    <div className="space-y-6 max-w-[1200px]">
+      <h1 className="text-lg font-bold text-neutral-900">Anomalies</h1>
 
-      {error ? (
-        <div className="px-4 py-4 rounded-lg mb-4" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)", color: "#ef4444" }}>
-          Analytics service unavailable.
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <Kpi label="Total" value={fmtNum(data.events.length)} />
+        <Kpi label="Critical" value={fmtNum(sevMap["critical"] || 0)} accent="text-red-600" />
+        <Kpi label="High" value={fmtNum(sevMap["high"] || 0)} accent="text-orange-600" />
+        <Kpi label="Medium" value={fmtNum(sevMap["medium"] || 0)} accent="text-yellow-600" />
+        <Kpi label="Low" value={fmtNum(sevMap["low"] || 0)} accent="text-blue-600" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card title="Monthly Anomaly Count">
+          <div className="h-48">
+            <Bar
+              data={{
+                labels: data.monthly.months,
+                datasets: [
+                  { label: "Anomalies", data: data.monthly.counts, backgroundColor: "#ef4444", borderRadius: 3 },
+                ],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: "#f3f4f6" } } },
+              }}
+            />
+          </div>
+        </Card>
+
+        <Card title="By Type">
+          <div className="h-48">
+            <Bar
+              data={{
+                labels: typeLabels,
+                datasets: [
+                  { label: "Count", data: typeValues, backgroundColor: "#8b5cf6", borderRadius: 3 },
+                ],
+              }}
+              options={{
+                indexAxis: "y" as const,
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { x: { beginAtZero: true, grid: { color: "#f3f4f6" } }, y: { grid: { display: false } } },
+              }}
+            />
+          </div>
+        </Card>
+      </div>
+
+      <Card title="Event Feed">
+        <div className="flex gap-2 mb-3 flex-wrap">
+          {["all", "critical", "high", "medium", "low"].map((s) => (
+            <button
+              key={s}
+              onClick={() => setFilter(s)}
+              className={`text-xs px-3 py-1 rounded-full border transition ${
+                filter === s
+                  ? "bg-neutral-900 text-white border-neutral-900"
+                  : "bg-white text-neutral-500 border-neutral-200 hover:border-neutral-400"
+              }`}
+            >
+              {s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
         </div>
-      ) : !data ? (
-        <div style={{ color: "var(--text3)" }}>Loading…</div>
-      ) : (
-        <>
-          <div className="mb-6 inline-block rounded-xl px-6 py-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="text-xs uppercase tracking-widest mb-1" style={{ color: "var(--text3)" }}>Detected Anomalies</div>
-            <div className="text-3xl font-extrabold" style={{ color: "var(--danger)" }}>
-              {data.total_anomalies ?? anomalies.length}
-            </div>
-          </div>
-
-          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr style={{ background: "var(--surface2)", borderBottom: "1px solid var(--border)" }}>
-                    {["Type", "Client", "Severity", "Description", "Timestamp"].map(h => (
-                      <th key={h} className="px-5 py-3 text-left text-xs uppercase tracking-widest" style={{ color: "var(--text3)" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {anomalies.length === 0 ? (
-                    <tr><td colSpan={5} className="px-5 py-12 text-center" style={{ color: "var(--text3)" }}>No anomalies detected.</td></tr>
-                  ) : anomalies.map((a, i) => {
-                    const sev = String(a.severity ?? "low");
-                    const style = SEVERITY_STYLE[sev] ?? SEVERITY_STYLE.low;
-                    return (
-                      <tr key={String(a.id ?? i)} style={{ borderBottom: i < anomalies.length - 1 ? "1px solid var(--border)" : undefined, background: "var(--surface)" }}>
-                        <td className="px-5 py-3 font-medium" style={{ color: "var(--text)" }}>{String(a.type ?? "—")}</td>
-                        <td className="px-5 py-3" style={{ color: "var(--text2)" }}>{String(a.client ?? "—")}</td>
-                        <td className="px-5 py-3">
-                          <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ background: style.bg, color: style.color }}>{sev}</span>
-                        </td>
-                        <td className="px-5 py-3 max-w-[260px]" style={{ color: "var(--text3)" }}>{String(a.description ?? "—")}</td>
-                        <td className="px-5 py-3 text-xs" style={{ color: "var(--text3)" }}>{String(a.timestamp ?? "—")}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
-      )}
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-neutral-200 text-neutral-400">
+                <th className="text-left py-2 font-medium">Severity</th>
+                <th className="text-left py-2 font-medium">Type</th>
+                <th className="text-left py-2 font-medium">Client</th>
+                <th className="text-left py-2 font-medium">Description</th>
+                <th className="text-right py-2 font-medium">Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0, 60).map((e, i) => (
+                <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
+                  <td className="py-2">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${SEV_COLORS[e.severity] || "bg-neutral-100 text-neutral-500"}`}>
+                      {e.severity}
+                    </span>
+                  </td>
+                  <td className="py-2 text-neutral-600">{e.anomaly_type}</td>
+                  <td className="py-2 font-medium text-neutral-700">{e.name}</td>
+                  <td className="py-2 text-neutral-500 max-w-xs truncate">{e.message}</td>
+                  <td className="py-2 text-right text-neutral-400 tabular-nums">{e.date}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

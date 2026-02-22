@@ -19,7 +19,7 @@ cleanup() {
     kill "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
-  log "Arrêté." 
+  log "Arrêté."
 }
 trap cleanup INT TERM
 
@@ -35,7 +35,7 @@ fi
 if [ ! -f "$BINARY" ]; then
   warn "Aucun binaire trouvé — lance 'cargo build' d'abord !"
   warn "Fallback: cargo run (lent au premier démarrage)"
-  cargo run &
+  cargo run --bin sauron-core &
 else
   "$BINARY" &
 fi
@@ -44,15 +44,15 @@ PIDS+=("$CORE_PID")
 
 # ── Attendre que le backend soit prêt ────────────────────────────────────────
 log "Attente du backend..."
-for i in $(seq 1 30); do
+for i in $(seq 1 120); do
   if curl -sf http://localhost:3001/admin/stats \
        -H "x-admin-key: super_secret_hackathon_key" > /dev/null 2>&1; then
     log "Backend prêt ✓"
     break
   fi
   sleep 1
-  if [ "$i" -eq 30 ]; then
-    echo -e "${RED}[error]${RST} Backend non disponible après 30s."
+  if [ "$i" -eq 120 ]; then
+    echo -e "${RED}[error]${RST} Backend non disponible après 120s."
     exit 1
   fi
 done

@@ -4,112 +4,84 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useDash } from "../context/DashContext";
 
-const NAV = [
-  {
-    section: "Platform",
-    items: [
-      { href: "/",             label: "Overview",      icon: "grid" },
-      { href: "/clients",      label: "Clients",       icon: "building" },
-      { href: "/tokens",       label: "Tokens",        icon: "coin" },
-      { href: "/users",        label: "Users",         icon: "users" },
-      { href: "/requests",     label: "Activity",      icon: "activity" },
-    ],
-  },
-  {
-    section: "Analytics",
-    items: [
-      { href: "/verifications", label: "Verifications", icon: "check" },
-      { href: "/rings",         label: "Rings",         icon: "ring" },
-      { href: "/anomalies",     label: "Anomalies",     icon: "alert" },
-      { href: "/insights",      label: "Insights",      icon: "insights" },
-    ],
-  },
-  {
-    section: "Compliance",
-    items: [
-      { href: "/gdpr",          label: "GDPR",          icon: "shield" },
-      { href: "/pipeline",      label: "Pipeline",      icon: "pipeline" },
-    ],
-  },
+const LINKS = [
+  { href: "/",               label: "Overview",       icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
+  { href: "/tokens",         label: "Tokens",         icon: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" },
+  { href: "/credits",        label: "Credits",        icon: "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" },
+  { href: "/verifications",  label: "Verifications",  icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" },
+  { href: "/rings",          label: "Rings",          icon: "M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" },
+  { href: "/clients",        label: "Clients",        icon: "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" },
+  { href: "/users",          label: "Users",          icon: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 110-8 4 4 0 010 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" },
+  { href: "/requests",       label: "Activity",       icon: "M13 10V3L4 14h7v7l9-11h-7z" },
+  { href: "/anomalies",      label: "Anomalies",      icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" },
+  { href: "/insights",       label: "ML Insights",    icon: "M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" },
+  { href: "/gdpr",           label: "GDPR",           icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" },
+  { href: "/pipeline",       label: "Pipeline",       icon: "M13 10V3L4 14h7v7l9-11h-7z" },
 ];
 
-const ICONS: Record<string, React.ReactNode> = {
-  grid:     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>,
-  building: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="7" width="18" height="14" rx="1"/><path d="M8 7V5a2 2 0 014 0v2M1 7h22"/></svg>,
-  coin:     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9"/><path d="M12 8v8M9 11h6M9 14h6"/></svg>,
-  users:    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
-  activity: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
-  check:    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M9 12l2 2 4-4M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
-  ring:     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>,
-  alert:    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
-  insights: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M18 20V10M12 20V4M6 20v-6"/></svg>,
-  shield:   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-  pipeline: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="2" y="7" width="20" height="4" rx="1"/><rect x="2" y="14" width="20" height="4" rx="1"/></svg>,
-};
+function SvgIcon({ d }: { d: string }) {
+  return (
+    <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d={d} />
+    </svg>
+  );
+}
 
 export default function Sidebar() {
   const pathname = usePathname();
   const { stats, offline } = useDash();
 
   return (
-    <nav
-      style={{ width: "var(--sw)", background: "var(--surface)", borderRight: "1px solid var(--border)" }}
-      className="fixed top-0 left-0 h-full flex flex-col z-10 overflow-y-auto"
-    >
+    <aside className="w-52 flex-shrink-0 border-r border-neutral-200 bg-neutral-50 min-h-screen flex flex-col">
       {/* Logo */}
-      <div style={{ borderBottom: "1px solid var(--border)" }} className="flex items-center gap-3 px-5 py-5">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{ background: "linear-gradient(135deg, #7c3aed, #a855f7)" }}>
-          <svg className="w-5 h-5 fill-white" viewBox="0 0 24 24">
-            <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
-          </svg>
-        </div>
-        <div>
-          <div className="text-sm font-extrabold tracking-widest" style={{ color: "var(--text)" }}>SAURON</div>
-          <div className="text-xs tracking-widest uppercase" style={{ color: "var(--text3)" }}>Admin Console</div>
+      <div className="px-4 pt-5 pb-4 border-b border-neutral-200">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-neutral-900">
+            <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
+              <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
+            </svg>
+          </div>
+          <div>
+            <div className="text-sm font-bold tracking-wider text-neutral-900">SAURON</div>
+            <div className="text-[10px] text-neutral-400 uppercase tracking-widest">Admin Console</div>
+          </div>
         </div>
       </div>
 
       {/* Nav */}
-      <div className="flex-1 py-4">
-        {NAV.map(({ section, items }) => (
-          <div key={section} className="mb-3">
-            <div className="px-5 pt-4 pb-1.5 text-[11px] font-semibold uppercase tracking-widest" style={{ color: "var(--text3)" }}>
-              {section}
-            </div>
-            {items.map(({ href, label, icon }) => {
-              const active = pathname === href;
-              return (
-                <Link key={href} href={href}
-                  className="flex items-center gap-3 mx-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
-                  style={{
-                    color:      active ? "#7c3aed" : "var(--text2)",
-                    background: active ? "rgba(124,58,237,.08)" : "transparent",
-                  }}>
-                  <span className="w-4 h-4 flex-shrink-0" style={{ opacity: active ? 1 : 0.65 }}>
-                    {ICONS[icon]}
-                  </span>
-                  {label}
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+      <div className="flex-1 px-3 py-4 space-y-0.5">
+        {LINKS.map(({ href, label, icon }) => {
+          const active = pathname === href;
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+                active
+                  ? "bg-neutral-900 text-white font-medium"
+                  : "text-neutral-600 hover:bg-neutral-200/60 hover:text-neutral-900"
+              }`}
+            >
+              <SvgIcon d={icon} />
+              {label}
+            </Link>
+          );
+        })}
       </div>
 
-      {/* Footer: live status */}
-      <div style={{ borderTop: "1px solid var(--border)", color: "var(--text3)" }} className="px-5 py-4 text-xs">
+      {/* Footer */}
+      <div className="border-t border-neutral-200 px-4 py-3 text-[10px] text-neutral-400">
         {offline ? (
-          <span className="text-red-500">⚠ Backend offline</span>
+          <span className="text-red-500 font-medium">Backend offline</span>
         ) : stats ? (
           <>
-            <div>{stats.total_clients} clients · {stats.total_users} users</div>
-            <div className="mt-0.5">A issued: {stats.total_tokens_a_issued} · B spent: {stats.total_tokens_b_spent}</div>
+            <div>{stats.total_clients} clients &middot; {stats.total_users} users</div>
+            <div className="mt-0.5">A: {stats.total_tokens_a_issued} &middot; B: {stats.total_tokens_b_spent}</div>
           </>
         ) : (
-          <span className="opacity-50">Connecting…</span>
+          <span>Connecting...</span>
         )}
       </div>
-    </nav>
+    </aside>
   );
 }

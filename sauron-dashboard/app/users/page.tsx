@@ -1,51 +1,63 @@
 "use client";
 
 import { useDash } from "../context/DashContext";
-import type { LiveUser } from "../context/DashContext";
+import { Kpi, Card, fmtNum } from "../shared";
 
 export default function UsersPage() {
-  const { users } = useDash();
+  const { users, loading } = useDash();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-8 h-8 border-4 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <h1 className="text-3xl font-bold mb-2" style={{ color: "var(--text)" }}>Users</h1>
-      <p className="text-sm mb-8" style={{ color: "var(--text3)" }}>
-        {users.length} registered users — live from Rust backend
-      </p>
+    <div className="space-y-6 max-w-[1200px]">
+      <h1 className="text-lg font-bold text-neutral-900">User Registry</h1>
 
-      <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <Kpi label="Total Users" value={fmtNum(users.length)} />
+      </div>
+
+      <Card>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-xs">
             <thead>
-              <tr style={{ background: "var(--surface2)", borderBottom: "1px solid var(--border)" }}>
-                {["First Name", "Last Name", "Nationality", "Key Image"].map(h => (
-                  <th key={h} className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text3)" }}>{h}</th>
-                ))}
+              <tr className="border-b border-neutral-200 text-neutral-400">
+                <th className="text-left py-2 font-medium">First Name</th>
+                <th className="text-left py-2 font-medium">Last Name</th>
+                <th className="text-left py-2 font-medium">Nationality</th>
+                <th className="text-left py-2 font-medium">Key Image</th>
               </tr>
             </thead>
             <tbody>
-              {users.length === 0 ? (
-                <tr><td colSpan={4} className="px-5 py-12 text-center" style={{ color: "var(--text3)" }}>No users yet — seed the database first.</td></tr>
-              ) : users.map((u: LiveUser, i: number) => (
-                <tr key={u.key_image_hex + i} style={{ borderBottom: i < users.length - 1 ? "1px solid var(--border)" : undefined, background: "var(--surface)" }}>
-                  <td className="px-6 py-4 font-medium" style={{ color: "var(--text)" }}>{u.first_name || "—"}</td>
-                  <td className="px-6 py-4" style={{ color: "var(--text2)" }}>{u.last_name || "—"}</td>
-                  <td className="px-6 py-4" style={{ color: "var(--text2)" }}>{u.nationality || "—"}</td>
-                  <td className="px-6 py-4 font-mono text-xs max-w-[200px] truncate" style={{ color: "var(--text3)" }}
-                    title={u.key_image_hex}>
-                    {u.key_image_hex ? u.key_image_hex.slice(0, 20) + "…" : "—"}
+              {users.map((u, i) => (
+                <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
+                  <td className="py-2 font-medium text-neutral-700">{u.first_name}</td>
+                  <td className="py-2 text-neutral-700">{u.last_name}</td>
+                  <td className="py-2 text-neutral-500">{u.nationality}</td>
+                  <td className="py-2 font-mono text-neutral-400 text-[10px]">
+                    {u.key_image_hex?.slice(0, 16)}...
                   </td>
                 </tr>
               ))}
+              {users.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="py-8 text-center text-neutral-400">
+                    No users registered
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-        {users.length > 0 && (
-          <div className="px-6 py-4 text-xs" style={{ background: "var(--surface2)", borderTop: "1px solid var(--border)", color: "var(--text3)" }}>
-            Showing {users.length} users
-          </div>
-        )}
-      </div>
+        <div className="mt-3 text-[10px] text-neutral-400 text-right">
+          {users.length} users
+        </div>
+      </Card>
     </div>
   );
 }
