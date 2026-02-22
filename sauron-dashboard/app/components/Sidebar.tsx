@@ -32,35 +32,36 @@ export default function Sidebar() {
   const { stats, offline } = useDash();
 
   return (
-    <aside className="w-52 flex-shrink-0 border-r border-neutral-200 bg-neutral-50 min-h-screen flex flex-col">
+    <aside className="w-52 flex-shrink-0 min-h-screen flex flex-col" style={{background:"#e8e8ed"}}>
       {/* Logo */}
-      <div className="px-4 pt-5 pb-4 border-b border-neutral-200">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-neutral-900">
-            <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
+      <div className="px-4 pt-6 pb-5">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-[10px] flex items-center justify-center" style={{background:"#007AFF"}}>
+            <svg className="w-5 h-5 fill-white" viewBox="0 0 24 24">
               <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
             </svg>
           </div>
           <div>
-            <div className="text-sm font-bold tracking-wider text-neutral-900">SAURON</div>
-            <div className="text-[10px] text-neutral-400 uppercase tracking-widest">Admin Console</div>
+            <div className="text-[15px] font-semibold text-[#1c1c1e] tracking-tight">Sauron</div>
+            <div className="text-[11px] text-[#8e8e93]">Admin Console</div>
           </div>
         </div>
       </div>
 
       {/* Nav */}
-      <div className="flex-1 px-3 py-4 space-y-0.5">
+      <div className="flex-1 px-2 space-y-0.5">
         {LINKS.map(({ href, label, icon }) => {
           const active = pathname === href;
           return (
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+              className={`flex items-center gap-2.5 px-3 py-[7px] rounded-lg text-[14px] transition-colors ${
                 active
-                  ? "bg-neutral-900 text-white font-medium"
-                  : "text-neutral-600 hover:bg-neutral-200/60 hover:text-neutral-900"
+                  ? "font-semibold text-white"
+                  : "text-[#3a3a3c] hover:bg-black/5"
               }`}
+              style={active ? {background:"#007AFF"} : {}}
             >
               <SvgIcon d={icon} />
               {label}
@@ -70,7 +71,7 @@ export default function Sidebar() {
       </div>
 
       {/* Footer */}
-      <div className="border-t border-neutral-200 px-4 py-3 text-[10px] text-neutral-400">
+      <div className="px-4 py-4 text-[11px] text-[#8e8e93]">
         {offline ? (
           <span className="text-red-500 font-medium">Backend offline</span>
         ) : stats ? (

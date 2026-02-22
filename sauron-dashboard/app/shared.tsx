@@ -27,17 +27,17 @@ export function Kpi({
   accent?: string;
 }) {
   return (
-    <div className="bg-white border border-neutral-200 rounded-lg p-4 flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-widest text-neutral-400">
+    <div className="bg-white rounded-2xl p-4 flex flex-col gap-1" style={{boxShadow:"0 1px 3px rgba(0,0,0,0.07),0 1px 2px rgba(0,0,0,0.04)"}}>
+      <span className="text-[11px] font-medium text-[#8e8e93] uppercase tracking-wide">
         {label}
       </span>
       <span
-        className={`text-2xl font-bold tabular-nums ${accent ?? "text-neutral-900"}`}
+        className={`text-[28px] font-bold tabular-nums leading-none ${accent ?? "text-[#1c1c1e]"}`}
       >
         {value}
       </span>
       {sub && (
-        <span className="text-[10px] text-neutral-400">{sub}</span>
+        <span className="text-xs text-[#8e8e93]">{sub}</span>
       )}
     </div>
   );
@@ -73,10 +73,11 @@ export function Card({
 }) {
   return (
     <div
-      className={`bg-white border border-neutral-200 rounded-lg p-5 ${className ?? ""}`}
+      className={`bg-white rounded-2xl p-5 ${className ?? ""}`}
+      style={{boxShadow:"0 1px 3px rgba(0,0,0,0.07),0 1px 2px rgba(0,0,0,0.04)"}}
     >
       {title && (
-        <h3 className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-3">
+        <h3 className="text-[11px] font-semibold text-[#8e8e93] uppercase tracking-wider mb-4">
           {title}
         </h3>
       )}
@@ -89,7 +90,7 @@ export function Card({
 export function Spinner() {
   return (
     <div className="flex items-center justify-center py-20">
-      <div className="w-8 h-8 border-4 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+      <div className="w-8 h-8 border-[3px] border-[#007AFF] border-t-transparent rounded-full animate-spin" />
     </div>
   );
 }

@@ -34,6 +34,11 @@ const SEV_COLORS: Record<string, string> = {
 export default function AnomaliesPage() {
   const [data, setData] = useState<AData | null>(null);
   const [filter, setFilter] = useState<string>("all");
+  const [resiliated, setResiiated] = useState<Set<number>>(new Set());
+
+  function resiliate(clientId: number) {
+    setResiiated((prev) => new Set(prev).add(clientId));
+  }
 
   useEffect(() => {
     sauronFetch<AData>("anomalies").then(setData).catch(() => {});
@@ -127,6 +132,7 @@ export default function AnomaliesPage() {
                 <th className="text-left py-2 font-medium">Client</th>
                 <th className="text-left py-2 font-medium">Description</th>
                 <th className="text-right py-2 font-medium">Date</th>
+                <th className="py-2 font-medium"></th>
               </tr>
             </thead>
             <tbody>
@@ -141,6 +147,18 @@ export default function AnomaliesPage() {
                   <td className="py-2 font-medium text-neutral-700">{e.name}</td>
                   <td className="py-2 text-neutral-500 max-w-xs truncate">{e.message}</td>
                   <td className="py-2 text-right text-neutral-400 tabular-nums">{e.date}</td>
+                  <td className="py-2 pl-3">
+                    {resiliated.has(e.client_id) ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-400 font-medium">Resiliated</span>
+                    ) : (
+                      <button
+                        onClick={() => resiliate(e.client_id)}
+                        className="text-[10px] px-2 py-0.5 rounded-full border border-red-300 text-red-600 hover:bg-red-50 transition font-medium whitespace-nowrap"
+                      >
+                        Resiliate user
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

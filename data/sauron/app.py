@@ -234,7 +234,13 @@ def api_overview():
     credit_a_retained   = round(credit_a_minted - credit_a_burned, 1)
     credit_b_face_value = round(credit_b_issued * CREDIT_B_USD, 2)
     kyc_revenue         = round(credit_a_minted * KYC_USD_PER_HEAD, 2)
-    query_revenue       = round(total_b_spent_live * CREDIT_B_USD, 2)
+    # Query revenue: derive from parquet spending (Rust doesn't track spending yet)
+    parquet_b_spent     = float(_credit_ledger.filter(pl.col("event_type") == "verify_spent")["amount"].abs().sum()) if _credit_ledger.height > 0 else 0.0
+    query_revenue       = round(max(total_b_spent_live, parquet_b_spent) * CREDIT_B_USD, 2)
+
+    # Credit A earned from parquets (historical / 2-year simulation)
+    parquet_a_earned    = float(_credit_ledger.filter((pl.col("credit_type") == "A") & (pl.col("amount") > 0))["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_b_purchased = float(_credit_ledger.filter((pl.col("credit_type") == "B") & (pl.col("event_type") == "purchase"))["amount"].sum()) if _credit_ledger.height > 0 else 0.0
 
     # ── Historical chart data from parquets (decorative) ──────────────────
     total_verif = int(_verifications["total"].sum())   if _verifications.height > 0 else 0
@@ -329,8 +335,11 @@ def api_overview():
             "query_revenue_usd":      query_revenue,
             "credit_a_total_minted":  round(credit_a_minted, 0),
             "credit_a_retained":      credit_a_retained,
+            "credit_a_earned":        round(parquet_a_earned, 0),
             "credit_b_issued":        round(credit_b_issued, 0),
+            "credit_b_purchased":     round(parquet_b_purchased, 0),
             "credit_b_face_value":    credit_b_face_value,
+            "exchange_rate":          EXCHANGE_A_TO_B,
             "gdpr_pending":           gdpr_pending,
         },
         "daily": {
@@ -422,8 +431,13 @@ def api_tokens():
             "credit_a_retained":      credit_a_retained,
             "credit_b_issued":        round(credit_b_issued,  0),
             "credit_b_spent":         round(credit_b_spent,   0),
+            "credit_b_converted":     round(float(_credit_ledger.filter(pl.col("event_type") == "convert_from_A")["amount"].sum()) if _credit_ledger.height > 0 else 0, 0),
             "credit_b_face_value":    credit_b_face_value,
+            "exchange_rate":          EXCHANGE_A_TO_B,
+            "credit_b_usd":           CREDIT_B_USD,
             "kyc_revenue_usd":        kyc_revenue,
+            "kyc_revenue_gross":       kyc_revenue,
+            "query_revenue_usd":       round(float(_credit_ledger.filter(pl.col("event_type") == "verify_spent")["amount"].abs().sum()) * CREDIT_B_USD if _credit_ledger.height > 0 else 0, 2),
         },
         "clients":            clients_out,
         "low_balance_alerts": low_b,

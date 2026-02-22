@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import "../chartSetup";
-import { Line, Bar } from "react-chartjs-2";
+import { Bar } from "react-chartjs-2";
 import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtUsd } from "../shared";
 
 interface TokensData {
@@ -29,11 +29,12 @@ export default function CreditsPage() {
       <h1 className="text-lg font-bold text-neutral-900">Credit Economy</h1>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-        <Kpi label="KYC Revenue" value={fmtUsd(cs.kyc_revenue_gross)} accent="text-green-600" />
+        <Kpi label="KYC Revenue" value={fmtUsd(cs.kyc_revenue_gross ?? cs.kyc_revenue_usd)} accent="text-green-600" />
+        <Kpi label="Query Revenue" value={fmtUsd(cs.query_revenue_usd)} accent="text-green-600" />
         <Kpi label="Credit A Minted" value={fmtNum(cs.credit_a_total_minted)} accent="text-blue-600" />
         <Kpi label="A Converted" value={fmtNum(cs.credit_a_converted)} />
         <Kpi label="B Converted" value={fmtNum(cs.credit_b_converted)} accent="text-orange-500" />
-        <Kpi label="Exchange Rate" value={`1A = ${cs.exchange_rate}B`} sub={`B @ ${fmtUsd(cs.credit_b_usd)}`} />
+        <Kpi label="Exchange Rate" value={cs.exchange_rate ? `1A = ${cs.exchange_rate}B` : "\u2014"} sub={cs.credit_b_usd ? `B @ ${fmtUsd(cs.credit_b_usd)}` : undefined} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -56,28 +57,25 @@ export default function CreditsPage() {
 
         <Card title="Monthly B Conversions">
           <div className="h-52">
-            <Line
-              data={{
-                labels: data.monthly_conversions.months,
-                datasets: [
-                  {
-                    label: "B Converted",
-                    data: data.monthly_conversions.b_converted,
-                    borderColor: "#f97316",
-                    backgroundColor: "rgba(249,115,22,0.08)",
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 2,
-                  },
-                ],
-              }}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: "#f3f4f6" } } },
-              }}
-            />
+            {(() => {
+              const pairs = data.monthly_conversions.months
+                .map((m, i) => ({ m, v: data.monthly_conversions.b_converted[i] }))
+                .filter((p) => p.v > 0);
+              return (
+                <Bar
+                  data={{
+                    labels: pairs.map((p) => p.m),
+                    datasets: [{ data: pairs.map((p) => p.v), backgroundColor: "#f97316", borderRadius: 4 }],
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: "#f3f4f6" } } },
+                  }}
+                />
+              );
+            })()}
           </div>
         </Card>
       </div>
