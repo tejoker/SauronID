@@ -57,36 +57,36 @@ export default function Sidebar() {
       className="fixed top-0 left-0 h-full flex flex-col z-10 overflow-y-auto"
     >
       {/* Logo */}
-      <div style={{ borderBottom: "1px solid var(--border)" }} className="flex items-center gap-2.5 px-4 py-4">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+      <div style={{ borderBottom: "1px solid var(--border)" }} className="flex items-center gap-3 px-5 py-5">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
           style={{ background: "linear-gradient(135deg, #7c3aed, #a855f7)" }}>
-          <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
+          <svg className="w-5 h-5 fill-white" viewBox="0 0 24 24">
             <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
           </svg>
         </div>
         <div>
           <div className="text-sm font-extrabold tracking-widest" style={{ color: "var(--text)" }}>SAURON</div>
-          <div className="text-[10px] tracking-widest uppercase" style={{ color: "var(--text3)" }}>Admin Console</div>
+          <div className="text-xs tracking-widest uppercase" style={{ color: "var(--text3)" }}>Admin Console</div>
         </div>
       </div>
 
       {/* Nav */}
-      <div className="flex-1 py-3">
+      <div className="flex-1 py-4">
         {NAV.map(({ section, items }) => (
-          <div key={section} className="mb-2">
-            <div className="px-4 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text3)" }}>
+          <div key={section} className="mb-3">
+            <div className="px-5 pt-4 pb-1.5 text-[11px] font-semibold uppercase tracking-widest" style={{ color: "var(--text3)" }}>
               {section}
             </div>
             {items.map(({ href, label, icon }) => {
               const active = pathname === href;
               return (
                 <Link key={href} href={href}
-                  className="flex items-center gap-2.5 mx-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                  className="flex items-center gap-3 mx-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
                   style={{
-                    color:      active ? "#a78bfa" : "var(--text2)",
-                    background: active ? "rgba(124,58,237,.13)" : "transparent",
+                    color:      active ? "#7c3aed" : "var(--text2)",
+                    background: active ? "rgba(124,58,237,.08)" : "transparent",
                   }}>
-                  <span className="w-4 h-4 flex-shrink-0" style={{ opacity: active ? 1 : 0.7 }}>
+                  <span className="w-4 h-4 flex-shrink-0" style={{ opacity: active ? 1 : 0.65 }}>
                     {ICONS[icon]}
                   </span>
                   {label}
@@ -98,7 +98,7 @@ export default function Sidebar() {
       </div>
 
       {/* Footer: live status */}
-      <div style={{ borderTop: "1px solid var(--border)", color: "var(--text3)" }} className="px-4 py-3 text-[11px]">
+      <div style={{ borderTop: "1px solid var(--border)", color: "var(--text3)" }} className="px-5 py-4 text-xs">
         {offline ? (
           <span className="text-red-500">⚠ Backend offline</span>
         ) : stats ? (

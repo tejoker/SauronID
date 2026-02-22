@@ -15,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <DashProvider>
           <Sidebar />
           <main
-            style={{ marginLeft: "var(--sw)", minHeight: "100vh", padding: "2rem" }}
+            style={{ marginLeft: "var(--sw)", minHeight: "100vh", padding: "2.5rem 3rem" }}
           >
             {children}
           </main>

@@ -91,7 +91,7 @@ export default function GdprPage() {
             onClick={handlePurge}
             disabled={purging || !userId.trim()}
             className="px-4 py-2 rounded-lg text-sm font-semibold transition-opacity disabled:opacity-40"
-            style={{ background: "rgba(239,68,68,.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,.3)" }}
+            style={{ background: "rgba(220,38,38,.08)", color: "#dc2626", border: "1px solid rgba(220,38,38,.25)" }}
           >
             {purging ? "…" : "Purge"}
           </button>
@@ -99,7 +99,7 @@ export default function GdprPage() {
         {purgeResult && (
           <div className="mt-3 text-xs px-3 py-2 rounded" style={{
             background: purgeResult.startsWith("✓") ? "rgba(34,197,94,.08)" : "rgba(239,68,68,.08)",
-            color:      purgeResult.startsWith("✓") ? "#22c55e" : "#ef4444",
+            color:      purgeResult.startsWith("✓") ? "#16a34a" : "#dc2626",
           }}>
             {purgeResult}
           </div>

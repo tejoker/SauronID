@@ -20,9 +20,9 @@ interface AnomalyData {
 }
 
 const SEVERITY_STYLE: Record<string, { bg: string; color: string }> = {
-  high:   { bg: "rgba(239,68,68,.12)",  color: "#ef4444" },
-  medium: { bg: "rgba(245,158,11,.12)", color: "#f59e0b" },
-  low:    { bg: "rgba(34,197,94,.12)",  color: "#22c55e" },
+  high:   { bg: "rgba(220,38,38,.1)",   color: "#dc2626" },
+  medium: { bg: "rgba(217,119,6,.1)",   color: "#d97706" },
+  low:    { bg: "rgba(22,163,74,.1)",   color: "#16a34a" },
 };
 
 export default function AnomaliesPage() {
