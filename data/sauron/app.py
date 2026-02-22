@@ -18,8 +18,8 @@ import httpx
 import numpy as np
 import polars as pl
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from gdpr_purge import run_purge as _run_gdpr_purge
 
@@ -32,7 +32,6 @@ DATA_DIR    = os.getenv("DATA_DIR",    str(Path(__file__).parent.parent))  # /ap
 
 BASE    = Path(__file__).parent
 DATA    = BASE / "data"
-STATIC  = BASE / "static"
 
 # ── Daily GDPR scheduler ─────────────────────────────────────────────────────
 async def _gdpr_daily_scheduler() -> None:
@@ -61,8 +60,13 @@ async def lifespan(app_: FastAPI):
     yield
     task.cancel()
 
-app = FastAPI(title="Sauron Dashboard", version="1.0.0", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+app = FastAPI(title="Sauron Analytics API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── lazy-loaded data ─────────────────────────────────────────────────────────
 _clients       : pl.DataFrame | None = None
@@ -209,41 +213,6 @@ def _load_analytics():
         _ring_curves      = pl.read_parquet(DATA / "ring_curves.parquet")
         _elasticity       = pl.read_parquet(DATA / "elasticity.parquet")
         _load_forecast    = pl.read_parquet(DATA / "load_forecast.parquet")
-
-
-# ── HTML pages ───────────────────────────────────────────────────────────────
-def _page(name: str) -> HTMLResponse:
-    f = STATIC / name
-    if not f.exists():
-        raise HTTPException(status_code=404, detail=f"{name} not found")
-    return HTMLResponse(f.read_text())
-
-@app.get("/",              response_class=HTMLResponse) 
-def page_overview():       return _page("index.html")
-
-@app.get("/tokens",        response_class=HTMLResponse)
-def page_tokens():         return _page("credits.html")
-
-@app.get("/verifications", response_class=HTMLResponse)
-def page_verifications():  return _page("verifications.html")
-
-@app.get("/rings",         response_class=HTMLResponse)
-def page_rings():          return _page("rings.html")
-
-@app.get("/clients",       response_class=HTMLResponse)
-def page_clients():        return _page("clients.html")
-
-@app.get("/anomalies",     response_class=HTMLResponse)
-def page_anomalies():      return _page("anomalies.html")
-
-@app.get("/insights",      response_class=HTMLResponse)
-def page_insights():       return _page("insights.html")
-
-@app.get("/gdpr",          response_class=HTMLResponse)
-def page_gdpr():           return _page("gdpr.html")
-
-@app.get("/pipeline",      response_class=HTMLResponse)
-def page_pipeline():       return _page("pipeline.html")
 
 
 # ── API: overview ─────────────────────────────────────────────────────────────

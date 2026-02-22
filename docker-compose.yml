@@ -2,6 +2,7 @@ services:
   # ── Rust backend (Sauron Core) ──────────────────────────────────────────────
   backend:
     build: ./core
+    image: hackeurope-24-backend:latest
     container_name: sauron-backend
     ports:
       - "3001:3001"
@@ -54,10 +55,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Sauron Dashboard (port 8002) — admin + analytics unified ─────────────
-  sauron-dashboard:
+  # ── Sauron Dashboard UI (Next.js — port 8003) ───────────────────────────────
+  sauron-dashboard-ui:
+    build:
+      context: ./sauron-dashboard
+      args:
+        NEXT_PUBLIC_API_URL: "http://localhost:3001"
+        NEXT_PUBLIC_DASH_API_URL: "http://localhost:8002"
+    container_name: sauron-dashboard-ui
+    ports:
+      - "8003:8003"
+    depends_on:
+      backend:
+        condition: service_healthy
+      sauron-analytics-api:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Sauron Analytics API (Python — port 8002) ─────────────────────────────
+  sauron-analytics-api:
     build: ./data/sauron
-    container_name: sauron-dashboard
+    container_name: sauron-analytics-api
     ports:
       - "8002:8002"
     environment:
