@@ -16,7 +16,7 @@ export const SITE_TYPE: Record<SiteName, "FULL_KYC" | "ZKP_ONLY"> = {
 };
 
 export const EXCHANGE_RATE = 3;
-export const API = "http://localhost:3000";
+export const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 export const SITES: { name: SiteName; color: string; bg: string; border: string; logo: string }[] = [
   // FULL_KYC

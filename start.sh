@@ -30,14 +30,14 @@ echo "[1/5] Building backend (cargo build --release)..."
 cd "$ROOT/core"
 cargo build --release 2>&1
 
-echo "[2/5] Starting sauron-core on :3000..."
+echo "[2/5] Starting sauron-core on :3001..."
 ./target/release/sauron-core &
 CORE_PID=$!
 
-# ── Seed (clients + users) ───────────────────────────────────────────────────
+# ── Seed (clients + users) ───────────────────────────────────────────────────────────
 echo "[3/5] Seeding database (10 clients + 10 users)..."
 cd "$ROOT/core"
-SAURON_URL=http://localhost:3000 bash seed.sh
+SAURON_URL=http://localhost:3001 bash seed.sh
 
 # ── KYC (Python) ─────────────────────────────────────────────────────────────
 echo "[4/5] Setting up KYC Python environment..."
@@ -57,17 +57,17 @@ KYC_PID=$!
 deactivate
 
 # ── Frontend (Next.js) ───────────────────────────────────────────────────────
-echo "[5/5] Building and starting Next.js on :3001..."
+echo "[5/5] Building and starting Next.js on :3000..."
 cd "$ROOT/admin"
 npm run build 2>&1
-npm run start -- -p 3001 &
+npm run start -- -p 3000 &
 NEXT_PID=$!
 
-# ── Ready ────────────────────────────────────────────────────────────────────
+# ── Ready ────────────────────────────────────────────────────────────────
 echo ""
-echo "  Backend  → http://localhost:3000"
+echo "  Frontend → http://localhost:3000"
+echo "  Backend  → http://localhost:3001"
 echo "  KYC      → http://localhost:8000"
-echo "  Frontend → http://localhost:3001"
 echo ""
 echo "  Press Ctrl+C to stop everything."
 echo ""

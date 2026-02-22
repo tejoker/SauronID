@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SERVER="${SAURON_URL:-http://localhost:3000}"
+SERVER="${SAURON_URL:-http://localhost:3001}"
 ADMIN_KEY="super_secret_hackathon_key"
 
 ok()   { echo "  ✓ $*"; }
@@ -35,7 +35,7 @@ for i in $(seq 1 30); do
     printf "."
     sleep 1
     if [[ $i -eq 30 ]]; then
-        echo " TIMEOUT. Make sure 'cargo run' is running on port 3000."
+        echo " TIMEOUT. Make sure 'cargo run' is running on port 3001."
         exit 1
     fi
 done

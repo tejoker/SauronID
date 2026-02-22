@@ -3,7 +3,6 @@ target/
 debug/
 **/*.rs.bk
 *.pdb
-Cargo.lock
 
 # Build artifacts
 *.so

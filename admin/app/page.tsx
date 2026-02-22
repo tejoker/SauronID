@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 
-const API = "http://localhost:3000";
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 const HEADERS = { "x-admin-key": "super_secret_hackathon_key" };
 
 interface UserRecord { key_image_hex: string; first_name: string; last_name: string; nationality: string; }

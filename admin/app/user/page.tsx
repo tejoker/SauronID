@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useWallet, SITES, getSiteTheme, API, SITE_TYPE, type SiteName } from "../context/WalletContext";
 import { showToast } from "../components/Toast";
 
-const KYC_API = "http://localhost:8000";
+const KYC_API = process.env.NEXT_PUBLIC_KYC_URL || "http://localhost:8000";
 
 // ISO 3-letter nationality → 2-letter country code
 const NAT_TO_COUNTRY: Record<string, string> = {

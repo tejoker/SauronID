@@ -1,0 +1,52 @@
+services:
+  # ── Rust backend (Sauron Core) ──────────────────────────────────────────────
+  backend:
+    build: ./core
+    container_name: sauron-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/admin/stats", "-H", "x-admin-key: super_secret_hackathon_key"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  # ── Seed (one-shot — réutilise l'image backend) ─────────────────────────────
+  seed:
+    image: hackeurope-24-backend:latest
+    container_name: sauron-seed
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - SAURON_URL=http://backend:3001
+    entrypoint: ["bash", "seed.sh"]
+    restart: "no"
+
+  # ── KYC Python service ─────────────────────────────────────────────────────
+  kyc:
+    build: ./KYC
+    container_name: sauron-kyc
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./KYC/.env
+    restart: unless-stopped
+
+  # ── Next.js frontend ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./admin
+      args:
+        NEXT_PUBLIC_API_URL: "http://localhost:3001"
+        NEXT_PUBLIC_KYC_URL: "http://localhost:8000"
+    container_name: sauron-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

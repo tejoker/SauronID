@@ -26,14 +26,14 @@ USER_PAYLOAD='{
 }'
 
 echo "Payload : $USER_PAYLOAD"
-curl -X POST http://localhost:3000/register \
+curl -X POST http://localhost:3001/register \
   -H "Content-Type: application/json" \
   -d "$USER_PAYLOAD"
 
 echo "\n=== Étape 2 : Récupération de la liste des utilisateurs (admin) ==="
 echo "Envoi d'une requête GET à /admin/users"
 
-curl -X GET http://localhost:3000/admin/users \
+curl -X GET http://localhost:3001/admin/users \
   -H "x-admin-key: super_secret_hackathon_key"
 
 echo "\n=== Étape 3 : Vérification d'une signature ==="
@@ -52,14 +52,14 @@ VERIFY_PAYLOAD='{
 }'
 
 echo "Payload : $VERIFY_PAYLOAD"
-curl -X POST http://localhost:3000/verify \
+curl -X POST http://localhost:3001/verify \
   -H "Content-Type: application/json" \
   -d "$VERIFY_PAYLOAD"
 
 echo "\n=== Étape 4 : Récupération de l'historique des requêtes (admin) ==="
 echo "Envoi d'une requête GET à /admin/requests"
 
-curl -X GET http://localhost:3000/admin/requests \
+curl -X GET http://localhost:3001/admin/requests \
   -H "x-admin-key: super_secret_hackathon_key"
 
 echo "\n=== Test complet terminé ==="

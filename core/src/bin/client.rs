@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use rand::Rng;
 use std::env;
 
-const SERVER: &str = "http://localhost:3000";
+const SERVER: &str = "http://localhost:3001";
 const ADMIN_KEY: &str = "super_secret_hackathon_key";
 
 // ─── OPRF ───────────────────────────────────────────
