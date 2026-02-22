@@ -1,0 +1,601 @@
+company_id,company_name,category,month,trend_index,estimated_customers,event_marker
+1,NexaCloud,tech,1,0.9033,5105,
+1,NexaCloud,tech,2,0.8507,4808,
+1,NexaCloud,tech,3,0.7676,4338,
+1,NexaCloud,tech,4,0.8508,4809,
+1,NexaCloud,tech,5,0.833,4708,
+1,NexaCloud,tech,6,0.9827,5554,
+1,NexaCloud,tech,7,1.0191,5760,
+1,NexaCloud,tech,8,0.9075,5129,
+1,NexaCloud,tech,9,1.1382,6433,
+1,NexaCloud,tech,10,1.0518,5945,
+1,NexaCloud,tech,11,1.551,8766,Black Friday
+1,NexaCloud,tech,12,1.9133,10814,Holiday gifting
+2,Pixelwave,tech,1,0.8062,1142,
+2,Pixelwave,tech,2,0.7483,1060,
+2,Pixelwave,tech,3,0.8481,1202,
+2,Pixelwave,tech,4,1.0,1417,
+2,Pixelwave,tech,5,0.8925,1265,
+2,Pixelwave,tech,6,1.069,1515,
+2,Pixelwave,tech,7,0.9698,1374,
+2,Pixelwave,tech,8,0.9948,1410,
+2,Pixelwave,tech,9,0.9871,1399,
+2,Pixelwave,tech,10,1.0951,1552,
+2,Pixelwave,tech,11,1.3528,1917,Black Friday
+2,Pixelwave,tech,12,2.1507,3048,Holiday gifting
+3,ByteForge,tech,1,0.6197,1498,
+3,ByteForge,tech,2,0.8742,2113,
+3,ByteForge,tech,3,0.9794,2367,
+3,ByteForge,tech,4,0.9539,2306,
+3,ByteForge,tech,5,0.9927,2399,
+3,ByteForge,tech,6,0.8044,1944,
+3,ByteForge,tech,7,0.9502,2297,
+3,ByteForge,tech,8,1.0999,2658,
+3,ByteForge,tech,9,0.8626,2085,
+3,ByteForge,tech,10,1.1041,2669,
+3,ByteForge,tech,11,1.6124,3897,Black Friday
+3,ByteForge,tech,12,1.8334,4431,Holiday gifting
+4,GridStack,tech,1,0.7846,601,
+4,GridStack,tech,2,0.8996,689,
+4,GridStack,tech,3,1.0109,774,
+4,GridStack,tech,4,0.9579,734,
+4,GridStack,tech,5,0.9044,693,
+4,GridStack,tech,6,1.0998,842,
+4,GridStack,tech,7,0.9545,731,
+4,GridStack,tech,8,0.9194,704,
+4,GridStack,tech,9,1.0044,769,
+4,GridStack,tech,10,0.8753,670,
+4,GridStack,tech,11,1.3391,1026,Black Friday
+4,GridStack,tech,12,2.1508,1648,Holiday gifting
+5,Fluxio,tech,1,0.7324,730,
+5,Fluxio,tech,2,0.8645,862,
+5,Fluxio,tech,3,0.8183,816,
+5,Fluxio,tech,4,0.9025,900,
+5,Fluxio,tech,5,0.9137,911,
+5,Fluxio,tech,6,1.1361,1133,
+5,Fluxio,tech,7,0.8213,819,
+5,Fluxio,tech,8,1.1561,1153,
+5,Fluxio,tech,9,0.9867,984,
+5,Fluxio,tech,10,1.1015,1098,
+5,Fluxio,tech,11,1.4481,1444,Black Friday
+5,Fluxio,tech,12,1.8841,1878,Holiday gifting
+6,SyncPath,tech,1,0.8554,149,
+6,SyncPath,tech,2,0.8427,147,
+6,SyncPath,tech,3,0.749,130,
+6,SyncPath,tech,4,0.8563,149,
+6,SyncPath,tech,5,1.0934,190,
+6,SyncPath,tech,6,0.9674,168,
+6,SyncPath,tech,7,0.9471,165,
+6,SyncPath,tech,8,1.0704,186,
+6,SyncPath,tech,9,1.1022,192,
+6,SyncPath,tech,10,1.1314,197,
+6,SyncPath,tech,11,1.5369,267,Black Friday
+6,SyncPath,tech,12,1.7765,309,Holiday gifting
+7,Orbitly,tech,1,0.8248,6094,
+7,Orbitly,tech,2,0.7368,5444,
+7,Orbitly,tech,3,0.8702,6430,
+7,Orbitly,tech,4,0.9495,7016,
+7,Orbitly,tech,5,0.8227,6079,
+7,Orbitly,tech,6,0.951,7027,
+7,Orbitly,tech,7,0.9784,7229,
+7,Orbitly,tech,8,1.068,7891,
+7,Orbitly,tech,9,1.213,8963,
+7,Orbitly,tech,10,0.8915,6587,
+7,Orbitly,tech,11,1.407,10396,Black Friday
+7,Orbitly,tech,12,1.5557,11495,Holiday gifting
+8,VaultNet,tech,1,0.6441,763,
+8,VaultNet,tech,2,0.8225,975,
+8,VaultNet,tech,3,1.0069,1193,
+8,VaultNet,tech,4,0.8595,1019,
+8,VaultNet,tech,5,0.8608,1020,
+8,VaultNet,tech,6,0.9441,1119,
+8,VaultNet,tech,7,0.9098,1078,
+8,VaultNet,tech,8,1.0922,1294,
+8,VaultNet,tech,9,0.9946,1179,
+8,VaultNet,tech,10,1.1419,1353,
+8,VaultNet,tech,11,1.7163,2034,Black Friday
+8,VaultNet,tech,12,1.7813,2111,Holiday gifting
+9,Crestdesk,tech,1,0.8836,5297,
+9,Crestdesk,tech,2,0.8473,5080,
+9,Crestdesk,tech,3,0.9711,5822,
+9,Crestdesk,tech,4,0.9698,5814,
+9,Crestdesk,tech,5,0.7244,4343,
+9,Crestdesk,tech,6,0.9255,5548,
+9,Crestdesk,tech,7,0.9712,5822,
+9,Crestdesk,tech,8,0.9945,5962,
+9,Crestdesk,tech,9,1.0766,6454,
+9,Crestdesk,tech,10,1.2032,7213,
+9,Crestdesk,tech,11,1.2932,7753,Black Friday
+9,Crestdesk,tech,12,1.4643,8778,Holiday gifting
+10,Luminary Tech,tech,1,0.7274,506,
+10,Luminary Tech,tech,2,0.727,506,
+10,Luminary Tech,tech,3,0.9562,666,
+10,Luminary Tech,tech,4,0.969,674,
+10,Luminary Tech,tech,5,1.0577,736,
+10,Luminary Tech,tech,6,0.9644,671,
+10,Luminary Tech,tech,7,0.9789,681,
+10,Luminary Tech,tech,8,1.0727,747,
+10,Luminary Tech,tech,9,1.0496,731,
+10,Luminary Tech,tech,10,0.9194,640,
+10,Luminary Tech,tech,11,1.3142,915,Black Friday
+10,Luminary Tech,tech,12,1.837,1279,Holiday gifting
+11,Aura Living,lifestyle,1,1.0258,1064,
+11,Aura Living,lifestyle,2,0.8441,875,
+11,Aura Living,lifestyle,3,0.8724,905,
+11,Aura Living,lifestyle,4,0.8747,907,
+11,Aura Living,lifestyle,5,0.9644,1000,
+11,Aura Living,lifestyle,6,1.0321,1070,
+11,Aura Living,lifestyle,7,1.5065,1562,Summer fashion
+11,Aura Living,lifestyle,8,1.3282,1377,Summer fashion
+11,Aura Living,lifestyle,9,0.8269,857,
+11,Aura Living,lifestyle,10,0.8693,901,
+11,Aura Living,lifestyle,11,1.4421,1495,Black Friday
+11,Aura Living,lifestyle,12,1.4403,1494,Christmas
+12,Chroma Style,lifestyle,1,1.1865,734,
+12,Chroma Style,lifestyle,2,0.8066,499,
+12,Chroma Style,lifestyle,3,0.817,506,
+12,Chroma Style,lifestyle,4,1.0108,626,
+12,Chroma Style,lifestyle,5,0.9007,558,
+12,Chroma Style,lifestyle,6,1.2969,803,
+12,Chroma Style,lifestyle,7,1.2998,805,Summer fashion
+12,Chroma Style,lifestyle,8,1.2831,794,Summer fashion
+12,Chroma Style,lifestyle,9,0.8529,528,
+12,Chroma Style,lifestyle,10,0.8408,520,
+12,Chroma Style,lifestyle,11,1.3591,841,Black Friday
+12,Chroma Style,lifestyle,12,1.7615,1090,Christmas
+13,Bloom & Co,lifestyle,1,1.1242,5349,
+13,Bloom & Co,lifestyle,2,0.7964,3789,
+13,Bloom & Co,lifestyle,3,0.6705,3190,
+13,Bloom & Co,lifestyle,4,0.9066,4314,
+13,Bloom & Co,lifestyle,5,1.2351,5877,
+13,Bloom & Co,lifestyle,6,1.285,6114,
+13,Bloom & Co,lifestyle,7,1.4031,6676,Summer fashion
+13,Bloom & Co,lifestyle,8,1.4665,6978,Summer fashion
+13,Bloom & Co,lifestyle,9,0.7883,3751,
+13,Bloom & Co,lifestyle,10,0.8493,4041,
+13,Bloom & Co,lifestyle,11,1.4278,6793,Black Friday
+13,Bloom & Co,lifestyle,12,1.3607,6474,Christmas
+14,Velvet Lane,lifestyle,1,0.9256,882,
+14,Velvet Lane,lifestyle,2,1.0367,988,
+14,Velvet Lane,lifestyle,3,0.8325,793,
+14,Velvet Lane,lifestyle,4,0.9203,877,
+14,Velvet Lane,lifestyle,5,0.9564,911,
+14,Velvet Lane,lifestyle,6,1.3221,1260,
+14,Velvet Lane,lifestyle,7,1.067,1017,Summer fashion
+14,Velvet Lane,lifestyle,8,1.4958,1425,Summer fashion
+14,Velvet Lane,lifestyle,9,0.846,806,
+14,Velvet Lane,lifestyle,10,0.8964,854,
+14,Velvet Lane,lifestyle,11,1.4543,1386,Black Friday
+14,Velvet Lane,lifestyle,12,1.5207,1449,Christmas
+15,Driftwood,lifestyle,1,0.9702,1118,
+15,Driftwood,lifestyle,2,0.7237,834,
+15,Driftwood,lifestyle,3,0.8579,988,
+15,Driftwood,lifestyle,4,0.9611,1107,
+15,Driftwood,lifestyle,5,1.0332,1190,
+15,Driftwood,lifestyle,6,1.2158,1401,
+15,Driftwood,lifestyle,7,1.6227,1869,Summer fashion
+15,Driftwood,lifestyle,8,1.3507,1556,Summer fashion
+15,Driftwood,lifestyle,9,0.8262,952,
+15,Driftwood,lifestyle,10,0.8711,1004,
+15,Driftwood,lifestyle,11,1.5537,1790,Black Friday
+15,Driftwood,lifestyle,12,1.5151,1745,Christmas
+16,Nomad Wear,lifestyle,1,0.9234,502,
+16,Nomad Wear,lifestyle,2,0.8822,480,
+16,Nomad Wear,lifestyle,3,0.8405,457,
+16,Nomad Wear,lifestyle,4,0.9269,504,
+16,Nomad Wear,lifestyle,5,1.0748,585,
+16,Nomad Wear,lifestyle,6,1.2987,706,
+16,Nomad Wear,lifestyle,7,1.3587,739,Summer fashion
+16,Nomad Wear,lifestyle,8,1.3624,741,Summer fashion
+16,Nomad Wear,lifestyle,9,0.7848,427,
+16,Nomad Wear,lifestyle,10,0.7973,434,
+16,Nomad Wear,lifestyle,11,1.2238,666,Black Friday
+16,Nomad Wear,lifestyle,12,1.4972,814,Christmas
+17,CasaVerde,lifestyle,1,1.1592,7448,
+17,CasaVerde,lifestyle,2,0.8311,5340,
+17,CasaVerde,lifestyle,3,0.7841,5038,
+17,CasaVerde,lifestyle,4,0.8944,5747,
+17,CasaVerde,lifestyle,5,1.1016,7078,
+17,CasaVerde,lifestyle,6,1.1007,7072,
+17,CasaVerde,lifestyle,7,1.6993,10918,Summer fashion
+17,CasaVerde,lifestyle,8,1.5952,10249,Summer fashion
+17,CasaVerde,lifestyle,9,1.01,6489,
+17,CasaVerde,lifestyle,10,1.1028,7085,
+17,CasaVerde,lifestyle,11,1.4434,9274,Black Friday
+17,CasaVerde,lifestyle,12,1.9062,12247,Christmas
+18,Lumis Home,lifestyle,1,1.1749,1276,
+18,Lumis Home,lifestyle,2,0.8603,934,
+18,Lumis Home,lifestyle,3,0.6641,721,
+18,Lumis Home,lifestyle,4,0.8989,976,
+18,Lumis Home,lifestyle,5,0.9895,1075,
+18,Lumis Home,lifestyle,6,1.4448,1569,
+18,Lumis Home,lifestyle,7,1.5268,1658,Summer fashion
+18,Lumis Home,lifestyle,8,1.4056,1526,Summer fashion
+18,Lumis Home,lifestyle,9,0.8385,911,
+18,Lumis Home,lifestyle,10,0.7082,769,
+18,Lumis Home,lifestyle,11,1.2204,1325,Black Friday
+18,Lumis Home,lifestyle,12,1.3494,1465,Christmas
+19,KINETIC,lifestyle,1,0.895,4449,
+19,KINETIC,lifestyle,2,0.8333,4142,
+19,KINETIC,lifestyle,3,0.8305,4128,
+19,KINETIC,lifestyle,4,0.867,4310,
+19,KINETIC,lifestyle,5,1.1226,5580,
+19,KINETIC,lifestyle,6,1.4268,7093,
+19,KINETIC,lifestyle,7,1.6811,8357,Summer fashion
+19,KINETIC,lifestyle,8,1.2701,6314,Summer fashion
+19,KINETIC,lifestyle,9,0.7359,3658,
+19,KINETIC,lifestyle,10,0.8019,3986,
+19,KINETIC,lifestyle,11,1.3939,6929,Black Friday
+19,KINETIC,lifestyle,12,1.6715,8309,Christmas
+20,Pure Form,lifestyle,1,1.0592,203,
+20,Pure Form,lifestyle,2,0.8207,158,
+20,Pure Form,lifestyle,3,0.9121,175,
+20,Pure Form,lifestyle,4,0.9516,183,
+20,Pure Form,lifestyle,5,0.9317,179,
+20,Pure Form,lifestyle,6,1.2714,244,
+20,Pure Form,lifestyle,7,1.5515,298,Summer fashion
+20,Pure Form,lifestyle,8,1.1536,221,Summer fashion
+20,Pure Form,lifestyle,9,0.9019,173,
+20,Pure Form,lifestyle,10,0.9205,177,
+20,Pure Form,lifestyle,11,1.4091,271,Black Friday
+20,Pure Form,lifestyle,12,1.619,311,Christmas
+21,TableRoot,food_living,1,1.0262,7711,
+21,TableRoot,food_living,2,0.9567,7189,
+21,TableRoot,food_living,3,0.977,7341,
+21,TableRoot,food_living,4,0.9776,7346,
+21,TableRoot,food_living,5,0.8768,6588,
+21,TableRoot,food_living,6,1.2394,9313,
+21,TableRoot,food_living,7,0.9665,7262,
+21,TableRoot,food_living,8,0.9779,7348,
+21,TableRoot,food_living,9,0.9602,7215,
+21,TableRoot,food_living,10,1.095,8228,
+21,TableRoot,food_living,11,1.0732,8064,
+21,TableRoot,food_living,12,1.0219,7679,Christmas feasting
+22,FreshGrid,food_living,1,1.0519,2670,
+22,FreshGrid,food_living,2,1.0656,2704,
+22,FreshGrid,food_living,3,1.105,2804,
+22,FreshGrid,food_living,4,0.8389,2129,
+22,FreshGrid,food_living,5,1.1869,3012,
+22,FreshGrid,food_living,6,0.9015,2288,
+22,FreshGrid,food_living,7,1.0526,2671,
+22,FreshGrid,food_living,8,1.1262,2858,
+22,FreshGrid,food_living,9,0.8953,2272,
+22,FreshGrid,food_living,10,1.0289,2611,
+22,FreshGrid,food_living,11,0.9681,2457,
+22,FreshGrid,food_living,12,1.307,3317,Christmas feasting
+23,Nourish & Co,food_living,1,0.9846,1026,
+23,Nourish & Co,food_living,2,0.9786,1020,
+23,Nourish & Co,food_living,3,0.9342,973,
+23,Nourish & Co,food_living,4,1.0483,1092,
+23,Nourish & Co,food_living,5,1.0399,1084,
+23,Nourish & Co,food_living,6,0.7665,799,
+23,Nourish & Co,food_living,7,0.9596,1000,
+23,Nourish & Co,food_living,8,0.9436,983,
+23,Nourish & Co,food_living,9,0.979,1020,
+23,Nourish & Co,food_living,10,1.0332,1077,
+23,Nourish & Co,food_living,11,0.8628,899,
+23,Nourish & Co,food_living,12,1.1884,1238,Christmas feasting
+24,HomeMarket,food_living,1,1.2313,9397,
+24,HomeMarket,food_living,2,1.0601,8091,
+24,HomeMarket,food_living,3,1.0235,7811,
+24,HomeMarket,food_living,4,1.1267,8599,
+24,HomeMarket,food_living,5,1.0257,7828,
+24,HomeMarket,food_living,6,1.1544,8810,
+24,HomeMarket,food_living,7,1.1237,8576,
+24,HomeMarket,food_living,8,1.0161,7755,
+24,HomeMarket,food_living,9,0.899,6861,
+24,HomeMarket,food_living,10,1.0237,7813,
+24,HomeMarket,food_living,11,1.1123,8489,
+24,HomeMarket,food_living,12,1.2101,9235,Christmas feasting
+25,DailyBasket,food_living,1,0.9889,223,
+25,DailyBasket,food_living,2,1.0396,235,
+25,DailyBasket,food_living,3,0.9229,209,
+25,DailyBasket,food_living,4,0.9057,205,
+25,DailyBasket,food_living,5,0.9168,207,
+25,DailyBasket,food_living,6,0.9909,224,
+25,DailyBasket,food_living,7,1.0684,241,
+25,DailyBasket,food_living,8,1.0078,228,
+25,DailyBasket,food_living,9,1.0416,235,
+25,DailyBasket,food_living,10,0.9454,214,
+25,DailyBasket,food_living,11,1.0608,240,
+25,DailyBasket,food_living,12,1.1162,252,Christmas feasting
+26,PantryBox,food_living,1,1.0187,1746,
+26,PantryBox,food_living,2,1.1546,1979,
+26,PantryBox,food_living,3,1.0165,1742,
+26,PantryBox,food_living,4,1.1526,1976,
+26,PantryBox,food_living,5,1.0826,1856,
+26,PantryBox,food_living,6,0.8238,1412,
+26,PantryBox,food_living,7,0.9095,1559,
+26,PantryBox,food_living,8,0.7997,1371,
+26,PantryBox,food_living,9,0.8791,1507,
+26,PantryBox,food_living,10,1.0477,1796,
+26,PantryBox,food_living,11,0.9102,1560,
+26,PantryBox,food_living,12,1.1375,1950,Christmas feasting
+27,GreenTree Foods,food_living,1,1.0105,8252,
+27,GreenTree Foods,food_living,2,1.018,8313,
+27,GreenTree Foods,food_living,3,0.9685,7909,
+27,GreenTree Foods,food_living,4,0.9394,7671,
+27,GreenTree Foods,food_living,5,1.0626,8677,
+27,GreenTree Foods,food_living,6,0.9516,7771,
+27,GreenTree Foods,food_living,7,1.0637,8686,
+27,GreenTree Foods,food_living,8,1.0246,8367,
+27,GreenTree Foods,food_living,9,0.9711,7930,
+27,GreenTree Foods,food_living,10,1.1139,9096,
+27,GreenTree Foods,food_living,11,1.0439,8524,
+27,GreenTree Foods,food_living,12,1.2388,10116,Christmas feasting
+28,CityBite,food_living,1,1.0615,788,
+28,CityBite,food_living,2,0.96,712,
+28,CityBite,food_living,3,1.0487,778,
+28,CityBite,food_living,4,0.9963,739,
+28,CityBite,food_living,5,1.1202,831,
+28,CityBite,food_living,6,0.9293,690,
+28,CityBite,food_living,7,1.1745,871,
+28,CityBite,food_living,8,1.063,789,
+28,CityBite,food_living,9,1.2193,905,
+28,CityBite,food_living,10,0.882,654,
+28,CityBite,food_living,11,1.0251,761,
+28,CityBite,food_living,12,1.2225,907,Christmas feasting
+29,NestEats,food_living,1,1.1846,1247,
+29,NestEats,food_living,2,0.8948,942,
+29,NestEats,food_living,3,0.8867,934,
+29,NestEats,food_living,4,0.9868,1039,
+29,NestEats,food_living,5,0.8593,905,
+29,NestEats,food_living,6,1.05,1106,
+29,NestEats,food_living,7,0.9963,1049,
+29,NestEats,food_living,8,1.2025,1266,
+29,NestEats,food_living,9,1.0069,1060,
+29,NestEats,food_living,10,0.9791,1031,
+29,NestEats,food_living,11,1.1514,1212,
+29,NestEats,food_living,12,1.1658,1228,Christmas feasting
+30,UrbanGrain,food_living,1,1.175,811,
+30,UrbanGrain,food_living,2,0.9343,645,
+30,UrbanGrain,food_living,3,0.9528,657,
+30,UrbanGrain,food_living,4,1.1088,765,
+30,UrbanGrain,food_living,5,0.9211,636,
+30,UrbanGrain,food_living,6,0.8785,606,
+30,UrbanGrain,food_living,7,0.949,655,
+30,UrbanGrain,food_living,8,0.9133,630,
+30,UrbanGrain,food_living,9,1.1789,813,
+30,UrbanGrain,food_living,10,0.8127,561,
+30,UrbanGrain,food_living,11,1.0045,693,
+30,UrbanGrain,food_living,12,1.2248,845,Christmas feasting
+31,Waybound,travel,1,1.2102,9435,Winter getaways
+31,Waybound,travel,2,0.9594,7479,
+31,Waybound,travel,3,1.0631,8288,
+31,Waybound,travel,4,0.9354,7292,
+31,Waybound,travel,5,1.3716,10693,
+31,Waybound,travel,6,1.725,13448,
+31,Waybound,travel,7,2.1406,16688,Summer holidays
+31,Waybound,travel,8,1.7121,13348,Summer holidays
+31,Waybound,travel,9,0.8547,6663,
+31,Waybound,travel,10,0.7088,5526,
+31,Waybound,travel,11,1.0234,7978,
+31,Waybound,travel,12,1.3909,10843,Ski season
+32,Skim Travel,travel,1,1.3669,3313,Winter getaways
+32,Skim Travel,travel,2,0.9454,2292,
+32,Skim Travel,travel,3,0.8673,2102,
+32,Skim Travel,travel,4,1.1349,2751,
+32,Skim Travel,travel,5,1.3028,3158,
+32,Skim Travel,travel,6,1.3656,3310,
+32,Skim Travel,travel,7,1.7807,4316,Summer holidays
+32,Skim Travel,travel,8,1.7002,4121,Summer holidays
+32,Skim Travel,travel,9,0.7735,1875,
+32,Skim Travel,travel,10,0.7509,1820,
+32,Skim Travel,travel,11,1.0404,2522,
+32,Skim Travel,travel,12,1.5032,3644,Ski season
+33,Meridian Air,travel,1,1.0346,3524,Winter getaways
+33,Meridian Air,travel,2,1.1293,3846,
+33,Meridian Air,travel,3,0.9388,3198,
+33,Meridian Air,travel,4,1.0749,3661,
+33,Meridian Air,travel,5,1.2096,4120,
+33,Meridian Air,travel,6,1.3339,4543,
+33,Meridian Air,travel,7,1.8665,6357,Summer holidays
+33,Meridian Air,travel,8,1.8943,6452,Summer holidays
+33,Meridian Air,travel,9,0.8024,2733,
+33,Meridian Air,travel,10,0.7285,2481,
+33,Meridian Air,travel,11,0.91,3099,
+33,Meridian Air,travel,12,1.4059,4788,Ski season
+34,BluePath,travel,1,1.2086,2061,Winter getaways
+34,BluePath,travel,2,0.8613,1469,
+34,BluePath,travel,3,0.9717,1657,
+34,BluePath,travel,4,0.9966,1699,
+34,BluePath,travel,5,1.0516,1793,
+34,BluePath,travel,6,1.3273,2263,
+34,BluePath,travel,7,1.7221,2936,Summer holidays
+34,BluePath,travel,8,1.9848,3384,Summer holidays
+34,BluePath,travel,9,0.9126,1556,
+34,BluePath,travel,10,0.7891,1345,
+34,BluePath,travel,11,0.9833,1677,
+34,BluePath,travel,12,1.4306,2439,Ski season
+35,Nomadex,travel,1,1.3642,201,Winter getaways
+35,Nomadex,travel,2,0.8017,118,
+35,Nomadex,travel,3,0.8173,120,
+35,Nomadex,travel,4,0.9482,139,
+35,Nomadex,travel,5,1.1254,165,
+35,Nomadex,travel,6,1.2393,182,
+35,Nomadex,travel,7,1.7467,257,Summer holidays
+35,Nomadex,travel,8,1.9874,292,Summer holidays
+35,Nomadex,travel,9,0.836,123,
+35,Nomadex,travel,10,0.8031,118,
+35,Nomadex,travel,11,0.9251,136,
+35,Nomadex,travel,12,1.3244,195,Ski season
+36,SkyBridge,travel,1,1.0316,7799,Winter getaways
+36,SkyBridge,travel,2,0.9602,7259,
+36,SkyBridge,travel,3,0.7417,5607,
+36,SkyBridge,travel,4,1.042,7878,
+36,SkyBridge,travel,5,1.1527,8714,
+36,SkyBridge,travel,6,1.2185,9212,
+36,SkyBridge,travel,7,1.8125,13702,Summer holidays
+36,SkyBridge,travel,8,1.7209,13010,Summer holidays
+36,SkyBridge,travel,9,0.6979,5276,
+36,SkyBridge,travel,10,0.5846,4420,
+36,SkyBridge,travel,11,0.8926,6748,
+36,SkyBridge,travel,12,1.1361,8589,Ski season
+37,TerraRoute,travel,1,1.1685,1572,Winter getaways
+37,TerraRoute,travel,2,0.8703,1171,
+37,TerraRoute,travel,3,1.0806,1453,
+37,TerraRoute,travel,4,1.0889,1465,
+37,TerraRoute,travel,5,1.2582,1692,
+37,TerraRoute,travel,6,1.3658,1837,
+37,TerraRoute,travel,7,1.7446,2346,Summer holidays
+37,TerraRoute,travel,8,1.767,2377,Summer holidays
+37,TerraRoute,travel,9,0.8417,1132,
+37,TerraRoute,travel,10,0.7102,955,
+37,TerraRoute,travel,11,0.9525,1281,
+37,TerraRoute,travel,12,1.6173,2175,Ski season
+38,WanderlustCo,travel,1,1.1559,2296,Winter getaways
+38,WanderlustCo,travel,2,0.9092,1806,
+38,WanderlustCo,travel,3,1.135,2254,
+38,WanderlustCo,travel,4,0.9577,1902,
+38,WanderlustCo,travel,5,1.2677,2518,
+38,WanderlustCo,travel,6,1.4934,2966,
+38,WanderlustCo,travel,7,1.7945,3564,Summer holidays
+38,WanderlustCo,travel,8,1.5517,3082,Summer holidays
+38,WanderlustCo,travel,9,0.8028,1594,
+38,WanderlustCo,travel,10,0.5738,1140,
+38,WanderlustCo,travel,11,0.9652,1917,
+38,WanderlustCo,travel,12,1.751,3477,Ski season
+39,Crestline Travel,travel,1,1.221,646,Winter getaways
+39,Crestline Travel,travel,2,1.0294,545,
+39,Crestline Travel,travel,3,0.7721,408,
+39,Crestline Travel,travel,4,1.1,582,
+39,Crestline Travel,travel,5,1.3738,727,
+39,Crestline Travel,travel,6,1.5426,816,
+39,Crestline Travel,travel,7,1.7871,945,Summer holidays
+39,Crestline Travel,travel,8,1.8027,954,Summer holidays
+39,Crestline Travel,travel,9,0.7165,379,
+39,Crestline Travel,travel,10,0.6655,352,
+39,Crestline Travel,travel,11,0.8809,466,
+39,Crestline Travel,travel,12,1.421,752,Ski season
+40,Orbita,travel,1,1.0931,270,Winter getaways
+40,Orbita,travel,2,0.7873,194,
+40,Orbita,travel,3,0.9132,226,
+40,Orbita,travel,4,1.0112,250,
+40,Orbita,travel,5,1.0182,251,
+40,Orbita,travel,6,1.4178,350,
+40,Orbita,travel,7,1.8812,465,Summer holidays
+40,Orbita,travel,8,1.7362,429,Summer holidays
+40,Orbita,travel,9,0.7675,190,
+40,Orbita,travel,10,0.7795,193,
+40,Orbita,travel,11,0.9301,230,
+40,Orbita,travel,12,1.3811,341,Ski season
+41,Fortio,investment,1,1.1248,8356,New Year portfolios
+41,Fortio,investment,2,1.0363,7699,
+41,Fortio,investment,3,1.1261,8366,
+41,Fortio,investment,4,1.2434,9237,Tax-loss harvesting
+41,Fortio,investment,5,0.9348,6945,
+41,Fortio,investment,6,0.8833,6562,
+41,Fortio,investment,7,0.7348,5459,
+41,Fortio,investment,8,0.8315,6177,
+41,Fortio,investment,9,1.0501,7801,
+41,Fortio,investment,10,1.2132,9013,Year-end planning
+41,Fortio,investment,11,1.5834,11763,Year-end planning
+41,Fortio,investment,12,1.0881,8083,
+42,Crestwealth,investment,1,1.122,1438,New Year portfolios
+42,Crestwealth,investment,2,1.1454,1468,
+42,Crestwealth,investment,3,1.0357,1328,
+42,Crestwealth,investment,4,1.2292,1576,Tax-loss harvesting
+42,Crestwealth,investment,5,1.0829,1388,
+42,Crestwealth,investment,6,0.9258,1187,
+42,Crestwealth,investment,7,0.7944,1018,
+42,Crestwealth,investment,8,0.8972,1150,
+42,Crestwealth,investment,9,0.8431,1081,
+42,Crestwealth,investment,10,1.0517,1348,Year-end planning
+42,Crestwealth,investment,11,1.1892,1525,Year-end planning
+42,Crestwealth,investment,12,1.1529,1478,
+43,Pinnacle Capital,investment,1,1.2451,9557,New Year portfolios
+43,Pinnacle Capital,investment,2,1.088,8351,
+43,Pinnacle Capital,investment,3,1.0713,8223,
+43,Pinnacle Capital,investment,4,1.1622,8921,Tax-loss harvesting
+43,Pinnacle Capital,investment,5,1.0757,8257,
+43,Pinnacle Capital,investment,6,1.025,7868,
+43,Pinnacle Capital,investment,7,0.766,5880,
+43,Pinnacle Capital,investment,8,0.744,5711,
+43,Pinnacle Capital,investment,9,0.9359,7184,
+43,Pinnacle Capital,investment,10,1.0319,7921,Year-end planning
+43,Pinnacle Capital,investment,11,1.1566,8878,Year-end planning
+43,Pinnacle Capital,investment,12,1.1392,8744,
+44,NexaFund,investment,1,1.2915,2664,New Year portfolios
+44,NexaFund,investment,2,1.0773,2222,
+44,NexaFund,investment,3,0.9469,1953,
+44,NexaFund,investment,4,1.3571,2800,Tax-loss harvesting
+44,NexaFund,investment,5,1.0083,2080,
+44,NexaFund,investment,6,0.8293,1711,
+44,NexaFund,investment,7,0.9309,1920,
+44,NexaFund,investment,8,0.8299,1712,
+44,NexaFund,investment,9,0.9493,1958,
+44,NexaFund,investment,10,1.1921,2459,Year-end planning
+44,NexaFund,investment,11,1.0131,2090,Year-end planning
+44,NexaFund,investment,12,1.2415,2561,
+45,EquiVault,investment,1,1.6228,1092,New Year portfolios
+45,EquiVault,investment,2,1.1052,744,
+45,EquiVault,investment,3,1.007,678,
+45,EquiVault,investment,4,1.0048,676,Tax-loss harvesting
+45,EquiVault,investment,5,0.9441,635,
+45,EquiVault,investment,6,0.8772,590,
+45,EquiVault,investment,7,0.7403,498,
+45,EquiVault,investment,8,0.7209,485,
+45,EquiVault,investment,9,1.1,740,
+45,EquiVault,investment,10,1.3964,940,Year-end planning
+45,EquiVault,investment,11,1.1038,743,Year-end planning
+45,EquiVault,investment,12,1.1374,765,
+46,Verdant Finance,investment,1,1.3844,2132,New Year portfolios
+46,Verdant Finance,investment,2,0.8265,1273,
+46,Verdant Finance,investment,3,0.9782,1506,
+46,Verdant Finance,investment,4,1.2633,1945,Tax-loss harvesting
+46,Verdant Finance,investment,5,0.957,1474,
+46,Verdant Finance,investment,6,0.7643,1177,
+46,Verdant Finance,investment,7,0.8722,1343,
+46,Verdant Finance,investment,8,0.7466,1150,
+46,Verdant Finance,investment,9,0.9612,1480,
+46,Verdant Finance,investment,10,1.1951,1840,Year-end planning
+46,Verdant Finance,investment,11,1.3128,2022,Year-end planning
+46,Verdant Finance,investment,12,1.0541,1623,
+47,HarborPlan,investment,1,1.2947,4977,New Year portfolios
+47,HarborPlan,investment,2,0.9639,3705,
+47,HarborPlan,investment,3,1.0787,4147,
+47,HarborPlan,investment,4,1.1446,4400,Tax-loss harvesting
+47,HarborPlan,investment,5,1.0521,4044,
+47,HarborPlan,investment,6,0.7935,3050,
+47,HarborPlan,investment,7,0.8396,3227,
+47,HarborPlan,investment,8,0.8946,3439,
+47,HarborPlan,investment,9,0.9355,3596,
+47,HarborPlan,investment,10,1.2366,4753,Year-end planning
+47,HarborPlan,investment,11,1.1877,4566,Year-end planning
+47,HarborPlan,investment,12,0.9404,3615,
+48,StellarInvest,investment,1,1.2671,881,New Year portfolios
+48,StellarInvest,investment,2,1.041,723,
+48,StellarInvest,investment,3,0.8522,592,
+48,StellarInvest,investment,4,1.2696,882,Tax-loss harvesting
+48,StellarInvest,investment,5,1.0496,729,
+48,StellarInvest,investment,6,0.9334,649,
+48,StellarInvest,investment,7,0.884,614,
+48,StellarInvest,investment,8,0.864,600,
+48,StellarInvest,investment,9,0.9955,692,
+48,StellarInvest,investment,10,1.0154,706,Year-end planning
+48,StellarInvest,investment,11,1.0967,762,Year-end planning
+48,StellarInvest,investment,12,1.1288,785,
+49,TrustPath,investment,1,1.3583,2131,New Year portfolios
+49,TrustPath,investment,2,0.8946,1404,
+49,TrustPath,investment,3,0.9285,1457,
+49,TrustPath,investment,4,1.2223,1918,Tax-loss harvesting
+49,TrustPath,investment,5,1.0052,1577,
+49,TrustPath,investment,6,0.9464,1485,
+49,TrustPath,investment,7,0.7677,1205,
+49,TrustPath,investment,8,0.8913,1398,
+49,TrustPath,investment,9,0.9733,1527,
+49,TrustPath,investment,10,1.078,1691,Year-end planning
+49,TrustPath,investment,11,1.4408,2261,Year-end planning
+49,TrustPath,investment,12,1.128,1770,
+50,ApexWealth,investment,1,1.1844,570,New Year portfolios
+50,ApexWealth,investment,2,1.1111,534,
+50,ApexWealth,investment,3,1.0197,490,
+50,ApexWealth,investment,4,1.3461,647,Tax-loss harvesting
+50,ApexWealth,investment,5,0.9515,458,
+50,ApexWealth,investment,6,0.7502,361,
+50,ApexWealth,investment,7,0.7325,352,
+50,ApexWealth,investment,8,0.7851,378,
+50,ApexWealth,investment,9,0.9049,435,
+50,ApexWealth,investment,10,1.0198,491,Year-end planning
+50,ApexWealth,investment,11,1.2584,605,Year-end planning
+50,ApexWealth,investment,12,0.8931,430,

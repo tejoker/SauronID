@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { WalletProvider } from "./context/WalletContext";
+import { ClientProvider } from "./context/ClientContext";
 import NavBar from "./components/NavBar";
 import { ToastContainer } from "./components/Toast";
 
@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sauron KYC Network",
-  description: "Zero-Knowledge KYC Infrastructure — HackEurope 2024",
+  title: "Sauron — Client Simulator",
+  description: "B2B Client Portal — Zero-Knowledge KYC Infrastructure",
 };
 
 export default function RootLayout({
@@ -30,11 +30,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-white text-neutral-900`}
       >
-        <WalletProvider>
+        <ClientProvider>
           <NavBar />
           <main>{children}</main>
           <ToastContainer />
-        </WalletProvider>
+        </ClientProvider>
       </body>
     </html>
   );

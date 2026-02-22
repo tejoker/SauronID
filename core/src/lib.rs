@@ -6,3 +6,4 @@ pub mod state;
 pub mod admin;
 pub mod sites;
 pub mod billing;
+pub mod merkle;

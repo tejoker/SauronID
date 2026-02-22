@@ -1,0 +1,5 @@
+generation,birth_years,global_male_pct,global_female_pct,source
+gen_z,1997-2012,51.50,48.50,UN DESA World Population Prospects 2024
+millennials,1981-1996,50.80,49.20,UN DESA World Population Prospects 2024
+gen_x,1965-1980,49.80,50.20,UN DESA World Population Prospects 2024
+boomers,1946-1964,46.50,53.50,UN DESA World Population Prospects 2024

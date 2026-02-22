@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sauron — Credit Economy</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#08090c;--surface:#0f1014;--surface2:#151820;--border:#1e2230;--accent:#3b82f6;--accent2:#7c3aed;--success:#22c55e;--warning:#f59e0b;--danger:#ef4444;--text:#f1f5f9;--text2:#94a3b8;--text3:#475569;--radius:14px;--sw:220px;--credit-a:#a78bfa;--credit-b:#3b82f6}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",sans-serif;display:flex;min-height:100vh;-webkit-font-smoothing:antialiased}
+.sidebar{width:var(--sw);min-height:100vh;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;position:fixed;top:0;left:0;z-index:10}
+.sb-logo{display:flex;align-items:center;gap:10px;padding:0 18px 22px;border-bottom:1px solid var(--border);margin-bottom:14px}
+.logo-eye{width:32px;height:32px;background:linear-gradient(135deg,var(--accent2),#a855f7);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo-eye svg{width:18px;height:18px;fill:#fff}
+.sb-title{font-size:1.05rem;font-weight:800;letter-spacing:.06em;color:var(--text)}
+.sb-sub{font-size:.6rem;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
+.nav-sec{padding:0 10px}
+.nav-lbl{font-size:.6rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;padding:8px 10px 4px}
+.nav-link{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;text-decoration:none;color:var(--text2);font-size:.85rem;font-weight:500;transition:background .13s,color .13s}
+.nav-link:hover{background:var(--surface2);color:var(--text)}
+.nav-link.active{background:rgba(124,58,237,.13);color:#a78bfa}
+.nav-link svg{width:16px;height:16px;flex-shrink:0;opacity:.8}
+.nav-link.active svg{opacity:1}
+.sb-footer{margin-top:auto;padding:16px 18px 0;border-top:1px solid var(--border);font-size:.72rem;color:var(--text3)}
+.main{margin-left:var(--sw);flex:1;padding:32px;min-height:100vh}
+.ph{margin-bottom:26px}
+.ph-eye{font-size:.68rem;font-weight:600;color:#a78bfa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px}
+.ph-title{font-size:1.55rem;font-weight:700}
+.ph-sub{font-size:.83rem;color:var(--text2);margin-top:3px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:14px;margin-bottom:22px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+.kpi-lbl{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:7px}
+.kpi-val{font-size:1.6rem;font-weight:700;line-height:1}
+.kpi-sub{font-size:.71rem;color:var(--text2);margin-top:5px}
+.kpi-a{color:var(--credit-a)}
+.kpi-b{color:var(--credit-b)}
+.kpi-green{color:var(--success)}
+.kpi-warn{color:var(--warning)}
+.kpi-red{color:var(--danger)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.card-title{font-size:.85rem;font-weight:600}
+.card-sub{font-size:.7rem;color:var(--text3);margin-top:2px}
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+thead th{text-align:left;padding:8px 12px;font-size:.67rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid var(--border);transition:background .1s;cursor:pointer}
+tbody tr:hover{background:var(--surface2)}
+tbody td{padding:10px 12px;color:var(--text2)}
+tbody td:first-child{color:var(--text);font-weight:500}
+.badge{display:inline-block;padding:2px 7px;border-radius:20px;font-size:.65rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.badge-fullkyc{background:rgba(34,197,94,.12);color:#4ade80}
+.badge-zkp{background:rgba(245,158,11,.12);color:#fbbf24}
+.badge-a{background:rgba(167,139,250,.15);color:#a78bfa}
+.badge-b{background:rgba(59,130,246,.15);color:#60a5fa}
+.runway-bar{display:inline-block;width:60px;height:5px;background:var(--border);border-radius:4px;vertical-align:middle;margin-right:5px;overflow:hidden}
+.runway-fill{display:block;height:100%;border-radius:4px;transition:width .3s}
+.alert-box{background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.25);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px}
+.alert-title{font-size:.8rem;font-weight:600;color:var(--danger);margin-bottom:8px}
+.alert-list{display:flex;flex-wrap:wrap;gap:6px}
+.alert-chip{font-size:.72rem;background:rgba(239,68,68,.12);color:var(--danger);padding:3px 9px;border-radius:20px}
+.legend-row{display:flex;gap:18px;margin-bottom:8px}
+.leg-item{display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--text2)}
+.leg-dot{width:10px;height:10px;border-radius:3px}
+.margin-bar{display:flex;gap:0;height:8px;border-radius:4px;overflow:hidden;margin-top:6px}
+</style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="logo-eye"><svg viewBox="0 0 24 24"><path d="M12 4.5C7.305 4.5 3.135 7.28 1.5 12c1.635 4.72 5.805 7.5 10.5 7.5s8.865-2.78 10.5-7.5C20.865 7.28 16.695 4.5 12 4.5zm0 12a4.5 4.5 0 110-9 4.5 4.5 0 010 9zm0-7.2a2.7 2.7 0 100 5.4 2.7 2.7 0 000-5.4z"/></svg></div>
+    <div><div class="sb-title">SAURON</div><div class="sb-sub">ZKP Platform</div></div>
+  </div>
+  <div class="nav-sec">
+    <div class="nav-lbl">Platform</div>
+    <a class="nav-link" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Overview</a>
+    <a class="nav-link active" href="/tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 3"/></svg>Credits</a>
+    <a class="nav-link" href="/verifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Verifications</a>
+    <a class="nav-link" href="/rings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="9"/></svg>Rings</a>
+  </div>
+  <div class="nav-sec" style="margin-top:14px">
+    <div class="nav-lbl">Clients</div>
+    <a class="nav-link" href="/clients"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>Clients</a>
+    <a class="nav-link" href="/anomalies"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Anomalies</a>
+    <a class="nav-link" href="/insights"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Insights</a>
+  </div>
+  <div class="sb-footer">Sauron v1.0 · ZKP-attested</div>
+</nav>
+
+<main class="main">
+  <div class="ph">
+    <div class="ph-eye">Credit Economy</div>
+    <div class="ph-title">Credit A &amp; Credit B Ledger</div>
+    <div class="ph-sub">FULL_KYC issuers earn Credit A · ZKP_ONLY clients purchase and spend Credit B · 1 Credit A ↔ 2 Credit B</div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-lbl">Credit A Issued</div><div class="kpi-val kpi-a" id="kv-a-total">—</div><div class="kpi-sub">Earned by FULL_KYC issuers from KYC</div></div>
+    <div class="kpi"><div class="kpi-lbl">Credit A in Circulation</div><div class="kpi-val kpi-a" id="kv-a-circ">—</div><div class="kpi-sub">Current issuer balances</div></div>
+    <div class="kpi"><div class="kpi-lbl">Credit B Sold</div><div class="kpi-val kpi-b" id="kv-b-purchased">—</div><div class="kpi-sub">Purchased by ZKP_ONLY clients</div></div>
+    <div class="kpi"><div class="kpi-lbl">Credit B Spent</div><div class="kpi-val kpi-b" id="kv-b-spent">—</div><div class="kpi-sub">Consumed on verifications</div></div>
+    <div class="kpi"><div class="kpi-lbl">Revenue (USD)</div><div class="kpi-val kpi-green" id="kv-rev">—</div><div class="kpi-sub">@$0.25 per Credit B</div></div>
+    <div class="kpi"><div class="kpi-lbl">Platform Margin</div><div class="kpi-val kpi-green" id="kv-margin">—</div><div class="kpi-sub">After Credit A compensation</div></div>
+    <div class="kpi"><div class="kpi-lbl">Low B Alerts</div><div class="kpi-val kpi-warn" id="kv-alerts">—</div><div class="kpi-sub">ZKP_ONLY clients with &lt; 20 Credit B</div></div>
+  </div>
+
+  <div id="alertBox"></div>
+
+  <div class="grid2">
+    <div class="card" style="margin-bottom:0">
+      <div class="card-hd"><div><div class="card-title">Monthly Credit A Earned</div><div class="card-sub">Credit A issued to FULL_KYC issuers by month</div></div></div>
+      <div style="height:200px"><canvas id="cCreditA"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <div class="card-hd"><div><div class="card-title">Monthly Credit B Purchased</div><div class="card-sub">Credit B sold to ZKP_ONLY clients; platform revenue (USD)</div></div></div>
+      <div style="height:200px"><canvas id="cCreditB"></canvas></div>
+    </div>
+  </div>
+  <br>
+
+  <div class="grid2">
+    <div class="card" style="margin-bottom:0" id="detailCard">
+      <div class="card-hd"><div><div class="card-title" id="detailTitle">Select a client</div><div class="card-sub" id="detailSub">Click a row below for credit history</div></div></div>
+      <div style="height:200px"><canvas id="cClient"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <div class="card-hd"><div><div class="card-title">Credit Economy Split</div><div class="card-sub">Credit A (issuer supply) vs Credit B (ZKP_ONLY demand)</div></div></div>
+      <div style="height:200px;display:flex;align-items:center;justify-content:center"><canvas id="cSplit"></canvas></div>
+    </div>
+  </div>
+  <br>
+
+  <div class="card">
+    <div class="card-hd"><div><div class="card-title">Client Credit Ledger</div><div class="card-sub">FULL_KYC issuers show Credit A balance · ZKP_ONLY clients show Credit B balance · Click row for history</div></div></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Client</th><th>Type</th><th>Credit</th><th>Balance</th><th>30d Flow</th><th>Runway / Growth</th>
+        </tr></thead>
+        <tbody id="tblBody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+Chart.defaults.color='#475569'; Chart.defaults.borderColor='#1e2230';
+const TYPE_BADGE={FULL_KYC:'badge-fullkyc',ZKP_ONLY:'badge-zkp'};
+const TYPE_LABEL={FULL_KYC:'Full KYC',ZKP_ONLY:'ZKP Only'};
+let clientChart=null, splitChart=null;
+
+async function load() {
+  const data = await fetch('/api/tokens').then(r=>r.json());
+
+  // KPIs
+  const ac  = data.clients;
+  const aIssuers   = ac.filter(c=>c.credit_type==='A');
+  const bAcquirers = ac.filter(c=>c.credit_type==='B');
+  const totalA   = aIssuers.reduce((s,c)=>s+c.balance,0);
+  const totalRev = data.monthly_credit_b.revenue.reduce((s,v)=>s+v,0);
+  const totalBPurchased = data.monthly_credit_b.credit_b.reduce((s,v)=>s+v,0);
+  const totalBSpent = bAcquirers.reduce((s,c)=>s+(c.flow_30d||0),0);
+
+  document.getElementById('kv-a-total').textContent     = data.monthly_credit_a.credit_a.reduce((s,v)=>s+v,0).toLocaleString(undefined,{maximumFractionDigits:0});
+  document.getElementById('kv-a-circ').textContent      = totalA.toLocaleString(undefined,{maximumFractionDigits:0});
+  document.getElementById('kv-b-purchased').textContent = totalBPurchased.toLocaleString(undefined,{maximumFractionDigits:0});
+  document.getElementById('kv-b-spent').textContent     = totalBSpent.toLocaleString(undefined,{maximumFractionDigits:1});
+  document.getElementById('kv-rev').textContent         = '$'+totalRev.toLocaleString(undefined,{maximumFractionDigits:0});
+  document.getElementById('kv-margin').textContent      = '$'+(totalRev - totalA * 0.125).toLocaleString(undefined,{maximumFractionDigits:0});
+  document.getElementById('kv-alerts').textContent      = data.low_balance_alerts.length;
+
+  // Alert box
+  if (data.low_balance_alerts.length) {
+    document.getElementById('alertBox').innerHTML = `
+      <div class="alert-box">
+        <div class="alert-title">⚠ Low Credit B Balance (${data.low_balance_alerts.length} clients)</div>
+        <div class="alert-list">${data.low_balance_alerts.map(a=>`<span class="alert-chip">${a.name} — ${a.balance.toFixed(0)} B</span>`).join('')}</div>
+      </div>`;
+  }
+
+  // Credit A monthly chart
+  const ma = data.monthly_credit_a;
+  new Chart(document.getElementById('cCreditA'), {
+    type:'bar',
+    data:{
+      labels: ma.months.map(m=>m.slice(2)),
+      datasets:[{label:'Credit A Earned',data:ma.credit_a.map(v=>Math.round(v)),backgroundColor:'rgba(167,139,250,.35)',borderColor:'#a78bfa',borderWidth:1}]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{font:{size:9}}},y:{beginAtZero:true,ticks:{font:{size:9}}}}}
+  });
+
+  // Credit B monthly chart
+  const mb = data.monthly_credit_b;
+  new Chart(document.getElementById('cCreditB'), {
+    type:'bar',
+    data:{
+      labels: mb.months.map(m=>m.slice(2)),
+      datasets:[
+        {label:'Credit B Purchased',data:mb.credit_b.map(v=>Math.round(v)),backgroundColor:'rgba(59,130,246,.3)',borderColor:'#3b82f6',borderWidth:1,yAxisID:'y'},
+        {label:'Revenue ($)',data:mb.revenue.map(v=>Math.round(v)),type:'line',borderColor:'#22c55e',backgroundColor:'transparent',tension:.3,pointRadius:2,borderWidth:2,yAxisID:'y2'},
+      ]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{boxWidth:10,font:{size:9}}}},scales:{y:{beginAtZero:true,ticks:{font:{size:9}}},y2:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}}}}}
+  });
+
+  // Split donut
+  const totalAAll = data.monthly_credit_a.credit_a.reduce((s,v)=>s+v,0);
+  splitChart = new Chart(document.getElementById('cSplit'), {
+    type:'doughnut',
+    data:{
+      labels:['Credit A (Supply)','Credit B (Demand)'],
+      datasets:[{data:[Math.round(totalAAll), Math.round(totalBPurchased)],backgroundColor:['rgba(167,139,250,.6)','rgba(59,130,246,.6)'],borderColor:['#a78bfa','#3b82f6'],borderWidth:2}]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:10},boxWidth:12}}}}
+  });
+
+  // Table
+  document.getElementById('tblBody').innerHTML = [...ac].sort((a,b)=>b.balance-a.balance).map(c=>{
+    const isA = c.credit_type==='A';
+    const balColor = !isA && c.balance<20 ? 'var(--danger)' : !isA && c.balance<50 ? 'var(--warning)' : 'var(--text)';
+    const rw = c.runway_days >= 9999 ? '∞' : c.runway_days+'d';
+    const rwPct = Math.min(100, c.runway_days >= 9999 ? 100 : c.runway_days/180*100);
+    const rwCol = isA ? '#a78bfa' : c.runway_days < 30 ? '#ef4444' : c.runway_days < 90 ? '#f59e0b' : '#22c55e';
+    const flowLabel = isA ? '+'+c.flow_30d.toLocaleString(undefined,{maximumFractionDigits:0}) : '-'+c.flow_30d.toLocaleString(undefined,{maximumFractionDigits:0});
+    const flowColor = isA ? 'var(--credit-a)' : 'var(--text2)';
+    return `<tr onclick="loadClient(${c.client_id},'${c.name}',${isA})">
+      <td>${c.name}</td>
+      <td><span class="badge ${TYPE_BADGE[c.type]||'badge-fullkyc'}">${TYPE_LABEL[c.type]||c.type}</span></td>
+      <td><span class="badge ${isA?'badge-a':'badge-b'}">Credit ${c.credit_type}</span></td>
+      <td style="color:${balColor};font-weight:600">${c.balance.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+      <td style="color:${flowColor}">${flowLabel}</td>
+      <td><span class="runway-bar"><span class="runway-fill" style="width:${rwPct}%;background:${rwCol}"></span></span> ${isA ? 'Growing ↑' : rw}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadClient(id, name, isA) {
+  const data = await fetch(`/api/tokens/${id}`).then(r=>r.json());
+  document.getElementById('detailTitle').textContent = name;
+  const lastBal = data.balance.at(-1);
+  document.getElementById('detailSub').textContent = `Credit ${isA?'A':'B'} · ${data.events.length} events · balance: ${(lastBal||0).toFixed(0)}`;
+  if (clientChart) clientChart.destroy();
+  const color = isA ? '#a78bfa' : '#3b82f6';
+  const bgColor = isA ? 'rgba(167,139,250,.07)' : 'rgba(59,130,246,.07)';
+  clientChart = new Chart(document.getElementById('cClient'), {
+    type:'line',
+    data:{
+      labels: data.dates.map(d=>d.slice(5)),
+      datasets:[{label:`Credit ${isA?'A':'B'} Balance`,data:data.balance,borderColor:color,backgroundColor:bgColor,fill:true,tension:.2,pointRadius:0,borderWidth:2}]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{beginAtZero:false,ticks:{font:{size:9}}}}}
+  });
+}
+
+load();
+</script>
+</body></html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sauron — Ingest Pipeline</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#08090c;--surface:#0f1014;--surface2:#151820;--border:#1e2230;
+  --accent:#3b82f6;--accent2:#7c3aed;
+  --success:#22c55e;--warning:#f59e0b;--danger:#ef4444;
+  --text:#f1f5f9;--text2:#94a3b8;--text3:#475569;
+  --radius:14px;--sw:220px;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",sans-serif;display:flex;min-height:100vh;-webkit-font-smoothing:antialiased}
+.sidebar{width:var(--sw);min-height:100vh;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;position:fixed;top:0;left:0;z-index:10}
+.sb-logo{display:flex;align-items:center;gap:10px;padding:0 18px 22px;border-bottom:1px solid var(--border);margin-bottom:14px}
+.logo-eye{width:32px;height:32px;background:linear-gradient(135deg,var(--accent2),#a855f7);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo-eye svg{width:18px;height:18px;fill:#fff}
+.sb-title{font-size:1.05rem;font-weight:800;letter-spacing:.06em;color:var(--text)}
+.sb-sub{font-size:.6rem;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
+.nav-sec{padding:0 10px;margin-bottom:2px}
+.nav-lbl{font-size:.6rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;padding:8px 10px 4px}
+.nav-link{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;text-decoration:none;color:var(--text2);font-size:.85rem;font-weight:500;transition:background .13s,color .13s}
+.nav-link:hover{background:var(--surface2);color:var(--text)}
+.nav-link.active{background:rgba(124,58,237,.13);color:#a78bfa}
+.nav-link svg{width:16px;height:16px;flex-shrink:0;opacity:.8}
+.nav-link.active svg{opacity:1}
+.sb-footer{margin-top:auto;padding:16px 18px 0;border-top:1px solid var(--border);font-size:.72rem;color:var(--text3)}
+.main{margin-left:var(--sw);flex:1;padding:32px;min-height:100vh}
+.ph{margin-bottom:26px}
+.ph-eye{font-size:.68rem;font-weight:600;color:#a78bfa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px}
+.ph-title{font-size:1.55rem;font-weight:700}
+.ph-sub{font-size:.83rem;color:var(--text2);margin-top:3px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:22px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.kpi-lbl{font-size:.68rem;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:8px}
+.kpi-val{font-size:1.75rem;font-weight:700;line-height:1}
+.kpi-sub{font-size:.73rem;color:var(--text2);margin-top:5px}
+.kpi-accent{color:var(--accent)}
+.kpi-success{color:var(--success)}
+.kpi-warn{color:var(--warning)}
+.kpi-violet{color:#a78bfa}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.card-title{font-size:.85rem;font-weight:600}
+.card-sub{font-size:.7rem;color:var(--text3);margin-top:2px}
+.badge{display:inline-block;padding:2px 7px;border-radius:20px;font-size:.65rem;font-weight:600}
+.b-ok{background:rgba(34,197,94,.12);color:#4ade80}
+.b-warn{background:rgba(245,158,11,.12);color:#fbbf24}
+.b-err{background:rgba(239,68,68,.12);color:#f87171}
+.pipe-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.pipe-item{background:var(--surface2);border-radius:8px;padding:14px}
+.pipe-lbl{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.pipe-val{font-size:1.1rem;font-weight:700}
+.stream-log{max-height:300px;overflow-y:auto;font-family:"JetBrains Mono","Fira Code",monospace;font-size:.73rem;line-height:1.65;background:var(--surface2);border-radius:8px;padding:14px}
+.stream-log div{border-bottom:1px solid var(--border);padding:3px 0}
+.stream-log .ts{color:var(--text3)}
+.stream-log .fraud{color:var(--danger)}
+.stream-log .ok{color:var(--success)}
+.canvas-wrap{position:relative}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="logo-eye"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg></div>
+    <div><div class="sb-title">SAURON</div><div class="sb-sub">Admin Console</div></div>
+  </div>
+  <div class="nav-sec">
+    <div class="nav-lbl">Platform</div>
+    <a class="nav-link" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Overview</a>
+    <a class="nav-link" href="/tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 9h4.5a2.5 2.5 0 0 1 0 5H9"/></svg>Credits</a>
+    <a class="nav-link" href="/verifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/></svg>Verifications</a>
+    <a class="nav-link" href="/rings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>Rings</a>
+    <div class="nav-lbl" style="margin-top:10px">Clients</div>
+    <a class="nav-link" href="/clients"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Directory</a>
+    <a class="nav-link" href="/anomalies"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Anomalies</a>
+    <div class="nav-lbl" style="margin-top:10px">Analytics</div>
+    <a class="nav-link" href="/insights"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>ML Insights</a>
+    <div class="nav-lbl" style="margin-top:10px">Compliance</div>
+    <a class="nav-link" href="/gdpr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>GDPR Retention</a>
+    <div class="nav-lbl" style="margin-top:10px">Infrastructure</div>
+    <a class="nav-link active" href="/pipeline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Pipeline</a>
+  </div>
+  <div class="sb-footer">ZKP-powered identity platform<br>&copy; 2026 Sauron</div>
+</nav>
+
+<main class="main">
+  <div class="ph">
+    <div class="ph-eye">Infrastructure</div>
+    <div class="ph-title">Ingest Pipeline</div>
+    <div class="ph-sub">Real-time ingestion health — fraud scoring, notifications, and throughput</div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-lbl">Status</div><div class="kpi-val" id="kv-status"><span class="badge b-warn">CONNECTING</span></div><div class="kpi-sub">Pipeline health</div></div>
+    <div class="kpi"><div class="kpi-lbl">Transactions / sec</div><div class="kpi-val kpi-accent" id="kv-tps">—</div><div class="kpi-sub">Current throughput</div></div>
+    <div class="kpi"><div class="kpi-lbl">Total Processed</div><div class="kpi-val kpi-violet" id="kv-total">—</div><div class="kpi-sub">Since startup</div></div>
+    <div class="kpi"><div class="kpi-lbl">Fraud Detections</div><div class="kpi-val kpi-warn" id="kv-fraud">—</div><div class="kpi-sub">Flagged transactions</div></div>
+    <div class="kpi"><div class="kpi-lbl">Avg Latency</div><div class="kpi-val" id="kv-lat">—</div><div class="kpi-sub">End-to-end scoring</div></div>
+    <div class="kpi"><div class="kpi-lbl">Error Rate</div><div class="kpi-val kpi-warn" id="kv-errors">—</div><div class="kpi-sub">Processing errors</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><div><div class="card-title">Pipeline Metrics</div><div class="card-sub">Component-level statistics from the ingest server</div></div></div>
+    <div class="pipe-grid" id="pipe-detail">
+      <div class="pipe-item"><div class="pipe-lbl">Waiting…</div><div class="pipe-val">—</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><div><div class="card-title">Throughput (last 60 polls)</div><div class="card-sub">Transactions per second over time</div></div></div>
+    <div class="canvas-wrap" style="height:200px"><canvas id="cTps"></canvas></div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><div><div class="card-title">Live Fraud Stream</div><div class="card-sub">SSE feed — latest flagged events</div></div></div>
+    <div class="stream-log" id="fraud-log"><div style="color:var(--text3)">Connecting to fraud stream…</div></div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.getElementById(s);
+const fmt = n => n == null ? '—' : typeof n === 'number' ? n.toLocaleString() : n;
+
+// ── TPS chart ──
+const tpsData = [];
+const tpsChart = new Chart($('cTps'), {
+  type: 'line',
+  data: { labels: [], datasets: [{
+    label: 'TPS', data: tpsData, borderColor: '#3b82f6',
+    backgroundColor: 'rgba(59,130,246,.08)', fill: true, tension: .3, pointRadius: 0
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: { x: { display: false }, y: { beginAtZero: true, grid: { color: '#1e2230' }, ticks: { color: '#94a3b8' } } },
+    plugins: { legend: { display: false } }
+  }
+});
+
+let prevTotal = null;
+
+async function pollPipeline() {
+  try {
+    const r = await fetch('/api/pipeline-stats');
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+
+    $('kv-status').innerHTML = '<span class="badge b-ok">ONLINE</span>';
+    $('kv-total').textContent = fmt(d.total_processed ?? d.processed);
+    $('kv-fraud').textContent = fmt(d.fraud_flagged ?? d.fraud_count ?? 0);
+    $('kv-lat').textContent = d.avg_latency_ms != null ? d.avg_latency_ms.toFixed(1) + ' ms' : '—';
+    $('kv-errors').textContent = fmt(d.errors ?? 0);
+
+    // TPS calculation
+    const cur = d.total_processed ?? d.processed ?? 0;
+    if (prevTotal !== null) {
+      const tps = Math.max(0, cur - prevTotal) / 3; // polled every 3s
+      $('kv-tps').textContent = tps.toFixed(1);
+      tpsData.push(tps);
+      tpsChart.data.labels.push('');
+      if (tpsData.length > 60) { tpsData.shift(); tpsChart.data.labels.shift(); }
+      tpsChart.update('none');
+    }
+    prevTotal = cur;
+
+    // Detail grid
+    const grid = $('pipe-detail');
+    const items = Object.entries(d).filter(([k]) => !['status','ok'].includes(k)).slice(0, 12);
+    grid.innerHTML = items.map(([k, v]) =>
+      `<div class="pipe-item"><div class="pipe-lbl">${k.replace(/_/g, ' ')}</div><div class="pipe-val">${typeof v === 'number' ? v.toLocaleString() : v}</div></div>`
+    ).join('');
+  } catch {
+    $('kv-status').innerHTML = '<span class="badge b-err">OFFLINE</span>';
+    $('kv-tps').textContent = '—';
+  }
+}
+
+// ── Fraud SSE stream ──
+function connectStream() {
+  const log = $('fraud-log');
+  const es = new EventSource('/api/fraud-stream');
+  es.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      const div = document.createElement('div');
+      const cls = d.fraud_score > 0.7 ? 'fraud' : 'ok';
+      div.innerHTML = `<span class="ts">${new Date().toLocaleTimeString()}</span> ` +
+        `<span class="${cls}">${d.user_id ?? d.persona_id ?? '?'}</span> — ` +
+        `score: ${(d.fraud_score ?? 0).toFixed(3)}, amt: $${(d.amount ?? 0).toFixed(2)}`;
+      log.prepend(div);
+      if (log.children.length > 100) log.lastChild.remove();
+    } catch {}
+  };
+  es.onerror = () => { es.close(); setTimeout(connectStream, 5000); };
+}
+
+pollPipeline();
+setInterval(pollPipeline, 3000);
+connectStream();
+</script>
+</body>
+</html>

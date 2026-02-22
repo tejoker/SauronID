@@ -1,8 +1,24 @@
 #!/bin/bash
 set -euo pipefail
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Sauron seed script — delegates to data/seed_sauron.py if CSVs are available,
+# falls back to minimal inline seed (10 users, 10 clients) otherwise.
+# ──────────────────────────────────────────────────────────────────────────────
+
 SERVER="${SAURON_URL:-http://localhost:3001}"
 ADMIN_KEY="super_secret_hackathon_key"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Look for data dir: first sibling (local dev), then /app/data (Docker)
+if [[ -d "${SCRIPT_DIR}/../data" ]]; then
+    DATA_DIR="$(cd "${SCRIPT_DIR}/../data" && pwd)"
+elif [[ -d "${SCRIPT_DIR}/data" ]]; then
+    DATA_DIR="${SCRIPT_DIR}/data"
+else
+    DATA_DIR=""
+fi
+SEED_PY="${DATA_DIR:+${DATA_DIR}/seed_sauron.py}"
 
 ok()   { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*" >&2; }
@@ -27,18 +43,33 @@ echo
 
 printf "Waiting for server..."
 for i in $(seq 1 30); do
-    if curl -sf "$SERVER/health" >/dev/null 2>&1 || \
-       curl -o /dev/null -sw "%{http_code}" "$SERVER/oprf" 2>/dev/null | grep -qE '^(200|405|422)'; then
+    if curl -sf "$SERVER/admin/stats" -H "x-admin-key: $ADMIN_KEY" >/dev/null 2>&1; then
         echo " ready."
         break
     fi
     printf "."
     sleep 1
     if [[ $i -eq 30 ]]; then
-        echo " TIMEOUT. Make sure 'cargo run' is running on port 3001."
+        echo " TIMEOUT. Make sure backend is running on $SERVER."
         exit 1
     fi
 done
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Try Python seeder — reads companies.csv & personas.csv (harmonized data)
+# ──────────────────────────────────────────────────────────────────────────────
+if [[ -n "$SEED_PY" && -f "$SEED_PY" && -f "$DATA_DIR/companies.csv" && -f "$DATA_DIR/personas.csv" ]]; then
+    echo
+    echo "--- Using unified Python seeder (data/seed_sauron.py) ---"
+    SEED_USERS="${SEED_USERS:-200}"
+    python3 "$SEED_PY" --server "$SERVER" --users "$SEED_USERS" --no-wait
+    echo
+    echo "=== Seed complete (Python seeder). ==="
+    exit 0
+fi
+
+echo
+echo "--- CSVs not found, falling back to inline seed ---"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Create 5 FULL_KYC clients (banks / crypto exchanges)
@@ -120,6 +151,4 @@ print(f'  Tokens A issued: {s.get(\"total_tokens_a_issued\", \"?\")}')
 " 2>/dev/null || echo "  (could not fetch stats)"
 
 echo
-echo "=== Seed complete. ==="
-
-echo "[INFO] Opération terminée. Le dashboard est peuplé."
+echo "=== Seed complete (inline fallback). ==="

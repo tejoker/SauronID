@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sauron — ML Insights</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#08090c;--surface:#0f1014;--surface2:#151820;--border:#1e2230;--accent:#3b82f6;--accent2:#7c3aed;--success:#22c55e;--warning:#f59e0b;--danger:#ef4444;--text:#f1f5f9;--text2:#94a3b8;--text3:#475569;--radius:14px;--sw:220px}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",sans-serif;display:flex;min-height:100vh;-webkit-font-smoothing:antialiased}
+.sidebar{width:var(--sw);min-height:100vh;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;position:fixed;top:0;left:0;z-index:10}
+.sb-logo{display:flex;align-items:center;gap:10px;padding:0 18px 22px;border-bottom:1px solid var(--border);margin-bottom:14px}
+.logo-eye{width:32px;height:32px;background:linear-gradient(135deg,var(--accent2),#a855f7);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo-eye svg{width:18px;height:18px;fill:#fff}
+.sb-title{font-size:1.05rem;font-weight:800;letter-spacing:.06em;color:var(--text)}
+.sb-sub{font-size:.6rem;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
+.nav-sec{padding:0 10px;margin-bottom:2px}
+.nav-lbl{font-size:.6rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;padding:8px 10px 4px}
+.nav-link{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;text-decoration:none;color:var(--text2);font-size:.85rem;font-weight:500;transition:background .13s,color .13s}
+.nav-link:hover{background:var(--surface2);color:var(--text)}
+.nav-link.active{background:rgba(124,58,237,.13);color:#a78bfa}
+.nav-link svg{width:16px;height:16px;flex-shrink:0;opacity:.8}
+.nav-link.active svg{opacity:1}
+.sb-footer{margin-top:auto;padding:16px 18px 0;border-top:1px solid var(--border);font-size:.72rem;color:var(--text3)}
+.main{margin-left:var(--sw);flex:1;padding:32px;min-height:100vh}
+.ph{margin-bottom:26px}
+.ph-eye{font-size:.68rem;font-weight:600;color:#a78bfa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px}
+.ph-title{font-size:1.55rem;font-weight:700}
+.ph-sub{font-size:.83rem;color:var(--text2);margin-top:3px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:22px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.kpi-lbl{font-size:.68rem;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:8px}
+.kpi-val{font-size:1.75rem;font-weight:700;line-height:1}
+.kpi-sub{font-size:.73rem;color:var(--text2);margin-top:5px}
+.kpi-accent{color:var(--accent)}.kpi-success{color:var(--success)}.kpi-warn{color:var(--warning)}.kpi-violet{color:#a78bfa}.kpi-danger{color:var(--danger)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.card-full{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.card-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.card-title{font-size:.85rem;font-weight:600}
+.card-sub{font-size:.7rem;color:var(--text3);margin-top:2px}
+.badge{display:inline-block;padding:2px 7px;border-radius:20px;font-size:.65rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.bh{background:rgba(239,68,68,.12);color:#f87171}.bm{background:rgba(245,158,11,.12);color:#fbbf24}.bl{background:rgba(148,163,184,.1);color:#94a3b8}
+.section-gap{margin-bottom:16px}
+.score-table{width:100%;border-collapse:collapse;font-size:.78rem}
+.score-table th{color:var(--text3);font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;font-weight:600;padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)}
+.score-table td{padding:8px 10px;border-bottom:1px solid rgba(30,34,48,.6);color:var(--text2)}
+.score-table tr:hover td{background:var(--surface2)}
+.score-table td:first-child{color:var(--text);font-weight:500}
+.ring-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.ring-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px}
+.ring-card-name{font-size:.8rem;font-weight:600;margin-bottom:4px}
+.ring-card-sub{font-size:.68rem;color:var(--text3);margin-bottom:12px}
+.ring-sat-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.ring-sat-label{font-size:.72rem;color:var(--text2)}.ring-sat-val{font-size:.82rem;font-weight:700;color:#a78bfa}
+.ring-track{width:100%;background:var(--border);border-radius:4px;height:8px;margin-bottom:8px;overflow:hidden}
+.ring-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--accent2),#a78bfa)}
+.ring-stat{font-size:.68rem;color:var(--text3)}
+.heatmap-wrap{overflow-x:auto}
+.heatmap-table{border-collapse:collapse;font-size:.62rem;white-space:nowrap}
+.heatmap-table th{color:var(--text3);padding:3px 5px;font-weight:500;text-align:center}
+.heatmap-table td{padding:3px 5px;border:1px solid rgba(30,34,48,.4);text-align:center;border-radius:2px;min-width:36px}
+.heatmap-table td.cohort-label{color:var(--text2);text-align:left;font-weight:500;background:transparent;border:none;min-width:70px}
+.elast-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+.elast-row:last-child{border-bottom:none}
+.elast-metric{font-size:.78rem;color:var(--text);font-weight:500}
+.elast-desc{font-size:.68rem;color:var(--text3);margin-top:2px}
+.elast-val{font-size:1.1rem;font-weight:700;color:var(--accent)}
+.anom-list{display:flex;flex-direction:column;gap:7px;max-height:340px;overflow-y:auto}
+.anom-item{background:var(--surface2);border-radius:8px;padding:9px 12px;font-size:.76rem}
+.anom-top{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.anom-name{font-weight:500}.anom-msg{color:var(--text2);line-height:1.4}
+.anom-meta{font-size:.65rem;color:var(--text3);margin-top:2px}
+.tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:.63rem;font-weight:600;letter-spacing:.04em;background:rgba(124,58,237,.15);color:#a78bfa}
+</style>
+</head>
+<body>
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="logo-eye"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg></div>
+    <div><div class="sb-title">SAURON</div><div class="sb-sub">Admin Console</div></div>
+  </div>
+  <div class="nav-sec">
+    <div class="nav-lbl">Platform</div>
+    <a class="nav-link" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Overview</a>
+    <a class="nav-link" href="/tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 9h4.5a2.5 2.5 0 0 1 0 5H9"/></svg>Credits</a>
+    <a class="nav-link" href="/verifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/></svg>Verifications</a>
+    <a class="nav-link" href="/rings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>Rings</a>
+    <div class="nav-lbl" style="margin-top:10px">Clients</div>
+    <a class="nav-link" href="/clients"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Directory</a>
+    <a class="nav-link" href="/anomalies"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Anomalies</a>
+    <div class="nav-lbl" style="margin-top:10px">Analytics</div>
+    <a class="nav-link active" href="/insights"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>ML Insights</a>
+    <div class="nav-lbl" style="margin-top:10px">Compliance</div>
+    <a class="nav-link" href="/gdpr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>GDPR Retention</a>
+    <div class="nav-lbl" style="margin-top:10px">Infrastructure</div>
+    <a class="nav-link" href="/pipeline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Pipeline</a>
+  </div>
+  <div class="sb-footer">ZKP-powered identity platform<br>&copy; 2026 Sauron</div>
+</nav>
+
+<main class="main">
+  <div class="ph">
+    <div class="ph-eye">ML Analytics — All Three Tiers</div>
+    <div class="ph-title">Platform Intelligence</div>
+    <div class="ph-sub">Tier 1: churn &amp; trust &nbsp;&middot;&nbsp; Tier 2: forecasts &amp; cohorts &nbsp;&middot;&nbsp; Tier 3: elasticity &amp; load prediction</div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-lbl">Avg Churn Risk</div><div class="kpi-val kpi-warn" id="kv-churn">—</div><div class="kpi-sub">Logistic regression probability</div></div>
+    <div class="kpi"><div class="kpi-lbl">Avg Trust Score</div><div class="kpi-val kpi-accent" id="kv-trust">—</div><div class="kpi-sub">Bayesian Beta posterior mean</div></div>
+    <div class="kpi"><div class="kpi-lbl">ML Anomalies</div><div class="kpi-val kpi-danger" id="kv-anom">—</div><div class="kpi-sub">Isolation Forest detections</div></div>
+    <div class="kpi"><div class="kpi-lbl">At-Risk Clients</div><div class="kpi-val kpi-warn" id="kv-atrisk">—</div><div class="kpi-sub">Churn &gt; 50%</div></div>
+  </div>
+
+  <div class="grid2 section-gap">
+    <div class="card">
+      <div class="card-hd"><div><div class="card-title">Platform Revenue Forecast</div><div class="card-sub">XGBoost &middot; 3-month ahead &middot; 80% CI</div></div></div>
+      <div style="height:220px"><canvas id="cRevenue"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-hd"><div><div class="card-title">Verification Load Forecast</div><div class="card-sub">Linear trend + weekday seasonality &middot; 28 days</div></div></div>
+      <div style="height:220px"><canvas id="cLoad"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card-full section-gap">
+    <div class="card-hd"><div><div class="card-title">Client Risk Scores</div><div class="card-sub">Churn risk, Bayesian trust — sorted by churn risk</div></div></div>
+    <div style="overflow-x:auto">
+    <table class="score-table">
+      <thead><tr><th>Client</th><th>Type</th><th>Churn Risk</th><th>Trust</th><th>Runway</th><th>Burn Rate</th></tr></thead>
+      <tbody id="healthTbody"></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="grid2 section-gap">
+    <div class="card">
+      <div class="card-hd"><div><div class="card-title">Ring Saturation (S-Curve Fit)</div><div class="card-sub">Logistic growth &middot; projected 95% saturation</div></div></div>
+      <div class="ring-grid" id="ringCards"></div>
+    </div>
+    <div class="card">
+      <div class="card-hd"><div><div class="card-title">ML-Detected Anomalies</div><div class="card-sub">Isolation Forest &middot; top events by score</div></div><div id="anomKpis" style="font-size:.7rem;color:var(--text3)"></div></div>
+      <div class="anom-list" id="anomList"></div>
+    </div>
+  </div>
+
+  <div class="card-full section-gap">
+    <div class="card-hd"><div><div class="card-title">Cohort Analysis</div><div class="card-sub">Monthly verifications per client, grouped by join-month cohort</div></div></div>
+    <div class="heatmap-wrap" id="cohortWrap"><div style="color:var(--text3);font-size:.78rem">Loading…</div></div>
+  </div>
+
+  <div class="card-full section-gap">
+    <div class="card-hd"><div><div class="card-title">Demand Elasticity</div><div class="card-sub">Credit volume trend &amp; full KYC / attribute query cross-elasticity</div></div></div>
+    <div id="elastList"></div>
+  </div>
+</main>
+
+<script>
+const CHART_DEFAULTS = {
+  color:'#94a3b8',
+  plugins:{legend:{display:false},tooltip:{backgroundColor:'#151820',titleColor:'#f1f5f9',bodyColor:'#94a3b8',borderColor:'#1e2230',borderWidth:1}},
+  scales:{x:{ticks:{color:'#475569',font:{size:10}},grid:{color:'rgba(30,34,48,.6)'}},y:{ticks:{color:'#475569',font:{size:10}},grid:{color:'rgba(30,34,48,.6)'}}}
+};
+function churnColor(v){if(v<0.2)return'#22c55e';if(v<0.5)return'#f59e0b';return'#ef4444';}
+
+async function loadSummary(){
+  const d=await fetch('/api/insights').then(r=>r.json());
+  document.getElementById('kv-churn').textContent=(d.avg_churn_risk*100).toFixed(1)+'%';
+  document.getElementById('kv-trust').textContent=d.avg_trust_score.toFixed(1);
+  document.getElementById('kv-anom').textContent=d.ml_anomalies_detected.toLocaleString();
+  document.getElementById('kv-atrisk').textContent=d.at_risk_clients.length;
+}
+async function loadClients(){
+  const d=await fetch('/api/insights/clients').then(r=>r.json());
+  const tbody=document.getElementById('healthTbody');
+  const TL={FULL_KYC:'Full Identification',ZKP_ONLY:'Non-Reg Acquirer'};
+  tbody.innerHTML=d.clients.map(c=>{
+    const cc=churnColor(c.churn_risk);
+    const tc=c.trust_score>=90?'#22c55e':c.trust_score>=75?'#f59e0b':'#ef4444';
+    const rw=c.runway_days>=9999?'∞':c.runway_days+'d';
+    const br=c.burn_rate>0?c.burn_rate.toFixed(1)+'/d':'—';
+    return '<tr><td>'+c.name+'</td><td><span class="badge bl">'+(TL[c.type]||c.type)+'</span></td><td><span style="color:'+cc+';font-weight:600">'+(c.churn_risk*100).toFixed(1)+'%</span></td><td><span style="color:'+tc+';font-weight:600">'+c.trust_score+'</span></td><td style="color:'+(c.runway_days<60?'var(--danger)':'var(--text2)')+'">'+rw+'</td><td>'+br+'</td></tr>';
+  }).join('');
+}
+async function loadForecast(){
+  const d=await fetch('/api/insights/forecast').then(r=>r.json());
+  const labels=[...d.actual.map(r=>r.month),...d.forecast.map(r=>r.month)];
+  const actual=[...d.actual.map(r=>r.revenue_actual),...d.forecast.map(()=>null)];
+  const fcst=[...d.actual.map(()=>null),...d.forecast.map(r=>r.revenue_forecast)];
+  const lastActualIdx=d.actual.length-1;
+  const fcstConn=fcst.map((v,i)=>i===lastActualIdx?d.actual[lastActualIdx].revenue_actual:v);
+  const ciLo=[...d.actual.map(()=>null),...d.forecast.map(r=>r.ci_lo)];
+  const ciHi=[...d.actual.map(()=>null),...d.forecast.map(r=>r.ci_hi)];
+  new Chart(document.getElementById('cRevenue'),{type:'line',data:{labels,datasets:[{label:'Actual',data:actual,borderColor:'#3b82f6',borderWidth:2,pointRadius:3,tension:.3,spanGaps:false},{label:'Forecast',data:fcstConn,borderColor:'#a78bfa',borderWidth:2,borderDash:[5,3],pointRadius:3,tension:.3,spanGaps:false},{label:'CI 80%',data:ciHi,borderColor:'rgba(124,58,237,.2)',fill:'+1',tension:.3,pointRadius:0,borderWidth:0},{label:'CI lo',data:ciLo,borderColor:'rgba(124,58,237,.2)',fill:false,tension:.3,pointRadius:0,borderWidth:0}]},options:{...CHART_DEFAULTS,responsive:true,maintainAspectRatio:false,plugins:{...CHART_DEFAULTS.plugins,legend:{display:true,labels:{color:'#94a3b8',boxWidth:12,font:{size:10}}}}}});
+}
+async function loadLoad(){
+  const d=await fetch('/api/insights/load').then(r=>r.json());
+  const all=[...d.historical,...d.forecast];
+  const labels=all.map(r=>r.date.slice(5));
+  const histData=all.map(r=>r.is_forecast?null:r.load_actual);
+  const fcData=all.map(r=>r.is_forecast?r.load_forecast:null);
+  const ciLo=all.map(r=>r.is_forecast?r.ci_lo:null);
+  const ciHi=all.map(r=>r.is_forecast?r.ci_hi:null);
+  const bridgeIdx=d.historical.length-1;
+  fcData[bridgeIdx]=histData[bridgeIdx];
+  new Chart(document.getElementById('cLoad'),{type:'line',data:{labels,datasets:[{label:'Actual',data:histData,borderColor:'#22c55e',borderWidth:1.5,pointRadius:2,tension:.3,spanGaps:false},{label:'Forecast',data:fcData,borderColor:'#f59e0b',borderWidth:2,borderDash:[5,3],pointRadius:2,tension:.3,spanGaps:false},{label:'CI hi',data:ciHi,borderColor:'rgba(245,158,11,.15)',fill:'+1',tension:.3,pointRadius:0,borderWidth:0},{label:'CI lo',data:ciLo,borderColor:'rgba(245,158,11,.15)',fill:false,tension:.3,pointRadius:0,borderWidth:0}]},options:{...CHART_DEFAULTS,responsive:true,maintainAspectRatio:false,plugins:{...CHART_DEFAULTS.plugins,legend:{display:true,labels:{color:'#94a3b8',boxWidth:12,font:{size:10}}}}}});
+}
+async function loadRings(){
+  const d=await fetch('/api/insights/rings').then(r=>r.json());
+  document.getElementById('ringCards').innerHTML=d.curves.map(r=>{
+    const pct=r.saturation_pct||0;const satFmt=r.projected_saturation_date?r.projected_saturation_date:'>2030';
+    return '<div class="ring-card"><div class="ring-card-name">'+r.ring_label+'</div><div class="ring-card-sub">L = '+r.L.toLocaleString(undefined,{maximumFractionDigits:0})+' · k = '+r.k.toFixed(4)+'</div><div class="ring-sat-row"><span class="ring-sat-label">Current saturation</span><span class="ring-sat-val">'+pct.toFixed(1)+'%</span></div><div class="ring-track"><div class="ring-fill" style="width:'+Math.min(pct,100)+'%"></div></div><div class="ring-stat">'+r.current_count.toLocaleString()+' members · 95% sat: '+satFmt+'</div></div>';
+  }).join('');
+}
+async function loadAnomalies(){
+  const d=await fetch('/api/insights/anomalies-ml').then(r=>r.json());
+  document.getElementById('anomKpis').textContent=d.total.toLocaleString()+' total';
+  document.getElementById('anomList').innerHTML=d.events.slice(0,50).map(e=>{
+    const sc=parseFloat(e.anomaly_score??0);
+    return '<div class="anom-item"><div class="anom-top"><span class="anom-name">'+e.name+'</span><span class="badge '+(e.severity==='high'?'bh':e.severity==='medium'?'bm':'bl')+'">'+e.severity+'</span><span class="tag">'+(e.anomaly_type||'').replace(/_/g,' ')+'</span></div><div class="anom-msg">'+e.message+'</div><div class="anom-meta">'+e.date+' · score '+sc.toFixed(3)+'</div></div>';
+  }).join('');
+}
+async function loadCohorts(){
+  const d=await fetch('/api/insights/cohorts').then(r=>r.json());
+  const wrap=document.getElementById('cohortWrap');
+  if(!d.cohorts.length){wrap.innerHTML='<div style="color:var(--text3);font-size:.78rem">No cohort data</div>';return;}
+  const allVals=d.grid.flat().filter(v=>v!==null&&v!==undefined);
+  const maxV=Math.max(...allVals,1);
+  function cellColor(v){if(v===null||v===undefined)return'transparent';const pct=Math.min(v/maxV,1);return'rgba('+Math.round(124*pct)+','+Math.round(58*pct)+','+Math.round(237*pct)+','+(0.12+pct*0.6)+')';}
+  let html='<table class="heatmap-table"><thead><tr><th>Cohort</th>';
+  d.months.forEach((m,i)=>{html+='<th style="'+(i%3!==0?'opacity:.35':'')+'">'+ m.slice(5)+'</th>';});
+  html+='</tr></thead><tbody>';
+  d.cohorts.forEach((c,ci)=>{
+    html+='<tr><td class="cohort-label">'+c+'</td>';
+    d.months.forEach((_,mi)=>{const v=d.grid[ci][mi];const disp=v!==null&&v!==undefined?v.toFixed(0):'';html+='<td style="background:'+cellColor(v)+';color:'+(v>0?'#f1f5f9':'#475569')+'">'+disp+'</td>';});
+    html+='</tr>';
+  });
+  html+='</tbody></table>';
+  wrap.innerHTML=html;
+}
+async function loadElasticity(){
+  const d=await fetch('/api/insights/elasticity').then(r=>r.json());
+  document.getElementById('elastList').innerHTML=d.metrics.map(m=>{
+    const pFmt=m.p_value!==null&&m.p_value!==undefined?'<span style="font-size:.68rem;color:'+(m.p_value<0.05?'#22c55e':'#94a3b8')+'">p='+m.p_value+'</span>':'';
+    return '<div class="elast-row"><div><div class="elast-metric">'+m.metric.replace(/_/g,' ')+'</div><div class="elast-desc">'+m.description+'</div></div><div style="text-align:right"><div class="elast-val">'+(+m.value).toFixed(4)+'</div>'+pFmt+'</div></div>';
+  }).join('');
+}
+Promise.all([loadSummary(),loadClients(),loadForecast(),loadLoad(),loadRings(),loadAnomalies(),loadCohorts(),loadElasticity()]).catch(console.error);
+</script>
+</body></html>

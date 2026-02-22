@@ -42,6 +42,9 @@ temp/
 *.tmp
 *.bak
 
+# Data artifacts
+transactions.parquet
+
 # Documentation build
 doc/
 docs/target/

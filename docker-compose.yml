@@ -23,6 +23,9 @@ services:
         condition: service_healthy
     environment:
       - SAURON_URL=http://backend:3001
+      - SEED_USERS=200
+    volumes:
+      - ./data:/app/data:ro
     entrypoint: ["bash", "seed.sh"]
     restart: "no"
 
@@ -46,6 +49,25 @@ services:
     container_name: sauron-frontend
     ports:
       - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Sauron Dashboard (port 8002) — admin + analytics unified ─────────────
+  sauron-dashboard:
+    build: ./data/sauron
+    container_name: sauron-dashboard
+    ports:
+      - "8002:8002"
+    environment:
+      - SAURON_URL=http://backend:3001
+      - DATA_DIR=/app/csvdata
+    volumes:
+      - ./data/companies.csv:/app/csvdata/companies.csv:ro
+      - ./data/company_trends.csv:/app/csvdata/company_trends.csv:ro
+      - ./data/personas.csv:/app/csvdata/personas.csv:ro
+      - ./data/config.py:/app/csvdata/config.py:ro
     depends_on:
       backend:
         condition: service_healthy

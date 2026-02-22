@@ -1,6 +1,6 @@
 use axum::{
     routing::{get, post},
-    extract::{State, Json},
+    extract::{State, Json, Path},
     http::StatusCode,
     Router,
     middleware,
@@ -50,12 +50,19 @@ async fn main() {
         .route("/dev/get_kyc",       post(dev_get_kyc))
         .route("/dev/sites",         get(dev_get_sites))
         .route("/dev/clients",       get(dev_get_clients))
+        .route("/dev/client/{name}",       get(dev_get_client_detail))
+        .route("/dev/client/{name}/users", get(dev_get_client_users))
+        .route("/dev/exchange",      post(dev_exchange))
+        .route("/dev/buy_tokens",    post(dev_buy_tokens))
         // ZKP
         .route("/zkp/build_ring",    post(handle_build_ring))
         .route("/zkp/verify_proof",  post(handle_verify_proof))
         .route("/zkp/client_ring",   get(handle_zkp_client_ring))
         // DEV ZKP (frontend-friendly — crypto côté serveur)
         .route("/dev/zkp_login",     post(dev_zkp_login))
+        // DATA: analytics pré-calculées (stats, forecast, fraud)
+        .route("/data/{data_type}/{company_id}", get(data_get).post(data_put))
+        .route("/data/companies",    get(data_companies))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -109,13 +116,31 @@ struct RegisterRequest {
     client_signature: ring::RingSignature,
     /// Valeur aveugle choisie aléatoirement par le site (simulation blind token).
     blinded_token_a: String,
+    /// [MERKLE] Commitment cryptographique du client : SHA256(secret_client) encodé en hex.
+    /// Le client conserve son secret ; Sauron s'engage sur le commitment dans l'arbre de Merkle.
+    /// Champ optionnel — si absent, la réponse n'inclut pas de preuve Merkle.
+    #[serde(default)]
+    commitment: Option<String>,
 }
 
 #[derive(Serialize)]
 struct RegisterResponse {
+    /// Statut de l'opération.
+    status: String,
     /// Token A signé par le serveur : "blind_value:signature"
     /// Le site le stocke et l'utilisera lors de l'échange (Flux 2).
     signed_token_a: String,
+    /// [MERKLE] Nouvelle racine de l'arbre de Merkle après insertion du commitment.
+    /// Présent uniquement si un `commitment` a été envoyé dans la requête.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merkle_root: Option<String>,
+    /// [MERKLE] Chemin de preuve : hashes frères de la feuille vers la racine (hex).
+    /// Le client conserve ces données pour prouver que Sauron a ingéré son KYC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merkle_proof: Option<Vec<String>>,
+    /// [MERKLE] Index de la feuille dans l'arbre (0-based). Requis pour vérifier la preuve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leaf_index: Option<usize>,
 }
 
 async fn handle_register(
@@ -153,20 +178,64 @@ async fn handle_register(
         ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
 
-    // Mettre à jour le groupe en mémoire + signer Token A.
+    // Mettre à jour le groupe en mémoire + signer Token A + insérer le commitment Merkle.
     let signed_token_a;
+    let mut merkle_root_out: Option<String> = None;
+    let mut merkle_proof_out: Option<Vec<String>> = None;
+    let mut leaf_index_out: Option<usize> = None;
     {
         let mut st = state.write().unwrap();
         st.user_group.add_member(pk_point);
         let sig = sign_token(&st.token_secret.clone(), "TOKEN_A", &payload.blinded_token_a);
         signed_token_a = format!("{}:{}", payload.blinded_token_a, sig);
         st.total_tokens_a_issued += 1;
+
+        // ── Merkle Commitment Ledger ─────────────────────────────
+        if let Some(ref commitment_hex) = payload.commitment {
+            match st.merkle_ledger.add_commitment(commitment_hex) {
+                Ok(receipt) => {
+                    // Persister la feuille en DB pour reconstruction au redémarrage.
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64;
+                    {
+                        let db = st.db.lock().unwrap();
+                        let _ = db.execute(
+                            "INSERT OR IGNORE INTO merkle_leaves (commitment_hex, registered_at) VALUES (?1, ?2)",
+                            params![commitment_hex, ts],
+                        );
+                    }
+                    println!(
+                        "[MERKLE] Feuille #{} insérée | root={} | preuves={}",
+                        receipt.leaf_index, &receipt.merkle_root[..16], receipt.merkle_proof.len()
+                    );
+                    merkle_root_out  = Some(receipt.merkle_root);
+                    merkle_proof_out = Some(receipt.merkle_proof);
+                    leaf_index_out   = Some(receipt.leaf_index);
+                }
+                Err(e) => {
+                    // Le commitment est invalide : on rejette la requête pour éviter
+                    // d'accepter un KYC sans pouvoir émettre la preuve.
+                    eprintln!("[MERKLE][ERREUR] commitment invalide : {}", e);
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+            }
+        }
+        // ────────────────────────────────────────────────────────
+
         st.log("REGISTER", "OK", &hex_ki[..16]);
-        println!("[FLUX 1] POST /register | group_size={} token_a_issued={}",
-            st.user_group.members.len(), st.total_tokens_a_issued);
+        println!("[FLUX 1] POST /register | group_size={} token_a_issued={} merkle_leaves={}",
+            st.user_group.members.len(), st.total_tokens_a_issued, st.merkle_ledger.len());
     }
 
-    Ok(Json(RegisterResponse { signed_token_a }))
+    Ok(Json(RegisterResponse {
+        status: "success".to_string(),
+        signed_token_a,
+        merkle_root: merkle_root_out,
+        merkle_proof: merkle_proof_out,
+        leaf_index: leaf_index_out,
+    }))
 }
 
 // ─────────────────────────────────────────────────────
@@ -401,6 +470,10 @@ struct DevRegisterRequest {
     date_of_birth: String,
     #[serde(default)]
     nationality: String,
+    /// [MERKLE] Commitment optionnel (SHA256 hex). Si absent, le serveur en génère un
+    /// automatiquement à partir du key_image (mode démo / seeder).
+    #[serde(default)]
+    commitment: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -408,6 +481,17 @@ struct DevRegisterResponse {
     signed_token_a: String,
     public_key_hex: String,
     message: String,
+    /// [MERKLE] Nouvelle racine Merkle après insertion du KYC (préparation Solana).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merkle_root: Option<String>,
+    /// [MERKLE] Chemin de preuve Merkle pour ce commitment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merkle_proof: Option<Vec<String>>,
+    /// [MERKLE] Index de la feuille (0-based).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leaf_index: Option<usize>,
+    /// [MERKLE] Commitment utilisé (auto-généré si non fourni).
+    commitment: String,
 }
 
 async fn dev_register_user(
@@ -443,17 +527,74 @@ async fn dev_register_user(
         ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
-    // 4. Mettre à jour le groupe en mémoire.
+    // 4. Mettre à jour le groupe en mémoire + Merkle.
     let pk_point = user_identity.public;
+    let mut merkle_root_out: Option<String> = None;
+    let mut merkle_proof_out: Option<Vec<String>> = None;
+    let mut leaf_index_out: Option<usize> = None;
+    let commitment_used: String;
     let signed_token_a = {
         let mut st = state.write().unwrap();
         st.user_group.add_member(pk_point);
         let sig = sign_token(&st.token_secret.clone(), "TOKEN_A", &blinded_token_a);
         let token_a = format!("{}:{}", blinded_token_a, sig);
-        // NOTE: dev path — ne compte pas comme Token A réel (pas un vrai Flux 1)
+
+        // ── Commitment Merkle (client-side simulation) ─────────────────
+        // Si le client n'a pas fourni de commitment, on en génère un déterministe
+        // à partir du key_image (simulation du comportement client).
+        use sha2::{Sha256, Digest as _};
+        let effective_commitment = payload.commitment.clone().unwrap_or_else(|| {
+            let mut h = Sha256::new();
+            h.update(b"DEV_AUTO_COMMITMENT:");
+            h.update(hex_ki.as_bytes());
+            hex::encode(h.finalize())
+        });
+        commitment_used = effective_commitment.clone();
+
+        match st.merkle_ledger.add_commitment(&effective_commitment) {
+            Ok(receipt) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                {
+                    let db = st.db.lock().unwrap();
+                    let _ = db.execute(
+                        "INSERT OR IGNORE INTO merkle_leaves (commitment_hex, registered_at) VALUES (?1, ?2)",
+                        params![effective_commitment, ts],
+                    );
+                }
+                merkle_root_out  = Some(receipt.merkle_root);
+                merkle_proof_out = Some(receipt.merkle_proof);
+                leaf_index_out   = Some(receipt.leaf_index);
+            }
+            Err(e) => {
+                eprintln!("[MERKLE][DEV][WARN] commitment invalide ou doublon : {}", e);
+            }
+        }
+        // ──────────────────────────────────────────────────
+
+        // 5. Incrémenter le solde Token A du client + enregistrer la relation.
+        if !payload.site_name.is_empty() {
+            {
+                let db = st.db.lock().unwrap();
+                let _ = db.execute(
+                    "UPDATE clients SET tokens_a = tokens_a + 1 WHERE name = ?1",
+                    params![payload.site_name],
+                );
+                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+                let _ = db.execute(
+                    "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
+                     VALUES (?1, ?2, 'register', ?3)",
+                    params![payload.site_name, hex_ki, ts],
+                );
+            }
+            st.total_tokens_a_issued += 1;
+        }
+
         st.log("DEV_REGISTER", "OK", &hex_ki[..16]);
-        println!("[FLUX 1][DEV] register_user | email={} | group_size={}",
-            payload.email, st.user_group.members.len());
+        println!("[FLUX 1][DEV] register_user | email={} | site={} | group_size={} | merkle_leaves={}",
+            payload.email, payload.site_name, st.user_group.members.len(), st.merkle_ledger.len());
         token_a
     };
 
@@ -461,6 +602,10 @@ async fn dev_register_user(
         signed_token_a,
         public_key_hex: hex_pk,
         message: format!("{} registered (dev)", payload.email),
+        merkle_root: merkle_root_out,
+        merkle_proof: merkle_proof_out,
+        leaf_index: leaf_index_out,
+        commitment: commitment_used,
     }))
 }
 
@@ -528,17 +673,31 @@ async fn dev_get_kyc(
         ).map_err(|_| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Profile not found"}))))?
     };
 
-    // 5. Brûler le Token B.
+    // 5. Brûler le Token B + décrémenter solde du client.
     let tv = token_value(&payload.token_b).to_string();
     {
         let mut st = state.write().unwrap();
         {
             let db = st.db.lock().unwrap();
             let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            if !payload.site_name.is_empty() {
+                let _ = db.execute(
+                    "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
+                    params![payload.site_name],
+                );
+                // Enregistrer la relation user→client (kyc_retrieval)
+                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+                let _ = db.execute(
+                    "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
+                     VALUES (?1, ?2, 'kyc_retrieval', ?3)",
+                    params![payload.site_name, hex_ki, ts],
+                );
+            }
         }
         st.total_tokens_b_burned += 1;
         st.log("DEV_GET_KYC", "OK", &payload.email);
-        println!("[DEV/FLUX3] get_kyc | email={} | total_consumed={}", payload.email, st.total_tokens_b_burned);
+        println!("[DEV/FLUX3] get_kyc | site={} email={} | total_consumed={}",
+            payload.site_name, payload.email, st.total_tokens_b_burned);
     }
 
     Ok(Json(GetKycResponse { profile }))
@@ -560,6 +719,8 @@ struct DevClientRecord {
     private_key_hex: String,
     key_image_hex:   String,
     client_type:     String,
+    tokens_a:        i64,
+    tokens_b:        i64,
 }
 
 async fn dev_get_clients(
@@ -568,7 +729,7 @@ async fn dev_get_clients(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type FROM clients ORDER BY id"
+        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_a, tokens_b FROM clients ORDER BY id"
     ).unwrap();
     let records: Vec<DevClientRecord> = stmt.query_map([], |row| {
         Ok(DevClientRecord {
@@ -577,9 +738,201 @@ async fn dev_get_clients(
             private_key_hex: row.get(2)?,
             key_image_hex:   row.get(3)?,
             client_type:     row.get(4)?,
+            tokens_a:        row.get(5)?,
+            tokens_b:        row.get(6)?,
         })
     }).unwrap().flatten().collect();
     Json(records)
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /dev/client/{name} — détails + soldes d'un client
+// ─────────────────────────────────────────────────────
+
+async fn dev_get_client_detail(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Path(name): Path<String>,
+) -> Result<Json<DevClientRecord>, StatusCode> {
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    db.query_row(
+        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_a, tokens_b
+         FROM clients WHERE name = ?1",
+        params![name],
+        |row| Ok(DevClientRecord {
+            name:            row.get(0)?,
+            public_key_hex:  row.get(1)?,
+            private_key_hex: row.get(2)?,
+            key_image_hex:   row.get(3)?,
+            client_type:     row.get(4)?,
+            tokens_a:        row.get(5)?,
+            tokens_b:        row.get(6)?,
+        }),
+    ).map(Json).map_err(|_| StatusCode::NOT_FOUND)
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /dev/client/{name}/users — utilisateurs associés à un client
+// ─────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ClientUserRecord {
+    first_name: String,
+    last_name:  String,
+    email:      String,
+    nationality: String,
+    source:     String,
+    timestamp:  i64,
+}
+
+async fn dev_get_client_users(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Path(name): Path<String>,
+) -> Json<Vec<ClientUserRecord>> {
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT u.first_name, u.last_name, u.email, u.nationality, r.source, r.timestamp
+         FROM user_registrations r
+         JOIN users u ON u.key_image_hex = r.user_key_image_hex
+         WHERE r.client_name = ?1
+         ORDER BY r.timestamp DESC"
+    ).unwrap();
+    let records: Vec<ClientUserRecord> = stmt.query_map(params![name], |row| {
+        Ok(ClientUserRecord {
+            first_name:  row.get(0)?,
+            last_name:   row.get(1)?,
+            email:       row.get(2)?,
+            nationality: row.get(3)?,
+            source:      row.get(4)?,
+            timestamp:   row.get(5)?,
+        })
+    }).unwrap().flatten().collect();
+    Json(records)
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /dev/exchange — échange simplifié Token A → Token B (soldes DB)
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DevExchangeRequest {
+    site_name: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
+struct DevExchangeResponse {
+    tokens_a_burned: i64,
+    tokens_b_received: i64,
+    new_tokens_a: i64,
+    new_tokens_b: i64,
+}
+
+async fn dev_exchange(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<DevExchangeRequest>,
+) -> Result<Json<DevExchangeResponse>, (StatusCode, String)> {
+    if payload.count < 1 {
+        return Err((StatusCode::BAD_REQUEST, "count must be >= 1".into()));
+    }
+
+    let rate;
+    {
+        let st = state.read().unwrap();
+        rate = st.token_a_to_b_rate as i64;
+    }
+    let tokens_b_to_add = payload.count * rate;
+
+    let mut st = state.write().unwrap();
+    let db = st.db.lock().unwrap();
+
+    // Vérifier le solde Token A du client
+    let current_a: i64 = db.query_row(
+        "SELECT tokens_a FROM clients WHERE name = ?1",
+        params![payload.site_name],
+        |row| row.get(0),
+    ).map_err(|_| (StatusCode::NOT_FOUND, format!("Client '{}' not found", payload.site_name)))?;
+
+    if current_a < payload.count {
+        return Err((StatusCode::BAD_REQUEST,
+            format!("Not enough Token A: have {}, need {}", current_a, payload.count)));
+    }
+
+    // Effectuer l'échange
+    let _ = db.execute(
+        "UPDATE clients SET tokens_a = tokens_a - ?1, tokens_b = tokens_b + ?2 WHERE name = ?3",
+        params![payload.count, tokens_b_to_add, payload.site_name],
+    );
+
+    let (new_a, new_b): (i64, i64) = db.query_row(
+        "SELECT tokens_a, tokens_b FROM clients WHERE name = ?1",
+        params![payload.site_name],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+
+    drop(db);
+    st.total_tokens_a_burned += payload.count as usize;
+    st.total_tokens_b_issued += tokens_b_to_add as usize;
+    st.log("EXCHANGE", "OK", &format!("site={} burned={} received={}", payload.site_name, payload.count, tokens_b_to_add));
+    println!("[FLUX 2][DEV] exchange | site={} | burned={}A → received={}B",
+        payload.site_name, payload.count, tokens_b_to_add);
+
+    Ok(Json(DevExchangeResponse {
+        tokens_a_burned: payload.count,
+        tokens_b_received: tokens_b_to_add,
+        new_tokens_a: new_a,
+        new_tokens_b: new_b,
+    }))
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /dev/buy_tokens — achat direct de Token B (fiat simulé)
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DevBuyTokensRequest {
+    site_name: String,
+    amount: i64,
+}
+
+#[derive(Serialize)]
+struct DevBuyTokensResponse {
+    tokens_b_added: i64,
+    new_tokens_b: i64,
+}
+
+async fn dev_buy_tokens(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<DevBuyTokensRequest>,
+) -> Result<Json<DevBuyTokensResponse>, (StatusCode, String)> {
+    if payload.amount < 1 || payload.amount > 10_000 {
+        return Err((StatusCode::BAD_REQUEST, "amount must be 1..10000".into()));
+    }
+
+    let mut st = state.write().unwrap();
+    let db = st.db.lock().unwrap();
+
+    let _ = db.execute(
+        "UPDATE clients SET tokens_b = tokens_b + ?1 WHERE name = ?2",
+        params![payload.amount, payload.site_name],
+    );
+
+    let new_b: i64 = db.query_row(
+        "SELECT tokens_b FROM clients WHERE name = ?1",
+        params![payload.site_name],
+        |row| row.get(0),
+    ).map_err(|_| (StatusCode::NOT_FOUND, format!("Client '{}' not found", payload.site_name)))?;
+
+    drop(db);
+    st.total_tokens_b_issued += payload.amount as usize;
+    st.log("BUY_TOKENS", "OK", &format!("site={} amount={}", payload.site_name, payload.amount));
+    println!("[DEV] buy_tokens | site={} | amount={}", payload.site_name, payload.amount);
+
+    Ok(Json(DevBuyTokensResponse {
+        tokens_b_added: payload.amount,
+        new_tokens_b: new_b,
+    }))
 }
 
 // ─────────────────────────────────────────────────────
@@ -916,7 +1269,7 @@ async fn dev_zkp_login(
         return Err((StatusCode::INTERNAL_SERVER_ERROR, "Internal ring signature failure".into()));
     }
 
-    // 7. Brûler Token B + journaliser
+    // 7. Brûler Token B + décrémenter solde client + journaliser
     let ring_size = user_ring_points.len();
     let client_ring_size = client_ring_points.len();
     {
@@ -924,6 +1277,10 @@ async fn dev_zkp_login(
         {
             let db = st.db.lock().unwrap();
             let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            let _ = db.execute(
+                "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
+                params![payload.site_name],
+            );
         }
         st.total_tokens_b_burned += 1;
         let log_claims: Vec<String> = {
@@ -953,4 +1310,76 @@ async fn dev_zkp_login(
     }
 
     Ok(Json(DevZkpLoginResponse { verified: true, ring_size, client_ring_size, proved_claims }))
+}
+
+// ─────────────────────────────────────────────────────
+//  DATA: Analytics pré-calculées (stats, forecast, fraud)
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DataPayload {
+    data: serde_json::Value,
+}
+
+/// GET /data/{data_type}/{company_id} — renvoie le blob JSON stocké.
+async fn data_get(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Path((data_type, company_id)): Path<(String, i64)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let valid = ["stats", "forecast", "fraud_summary", "fraud_recent"];
+    if !valid.contains(&data_type.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, format!("data_type must be one of: {:?}", valid)));
+    }
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    let result: Result<String, _> = db.query_row(
+        "SELECT data_json FROM company_data WHERE company_id = ?1 AND data_type = ?2",
+        params![company_id, data_type],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(json_str) => {
+            let val: serde_json::Value = serde_json::from_str(&json_str)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Bad JSON in DB: {e}")))?;
+            Ok(Json(val))
+        }
+        Err(_) => Err((StatusCode::NOT_FOUND, format!("No {data_type} data for company {company_id}"))),
+    }
+}
+
+/// POST /data/{data_type}/{company_id} — stocke un blob JSON (pour le seed).
+async fn data_put(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Path((data_type, company_id)): Path<(String, i64)>,
+    Json(payload): Json<DataPayload>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let valid = ["stats", "forecast", "fraud_summary", "fraud_recent"];
+    if !valid.contains(&data_type.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, format!("data_type must be one of: {:?}", valid)));
+    }
+    let json_str = serde_json::to_string(&payload.data)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON: {e}")))?;
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    db.execute(
+        "INSERT OR REPLACE INTO company_data (company_id, data_type, data_json) VALUES (?1, ?2, ?3)",
+        params![company_id, data_type, json_str],
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+    Ok(Json(serde_json::json!({"ok": true, "company_id": company_id, "data_type": data_type})))
+}
+
+/// GET /data/companies — liste tous les company_id qui ont des données.
+async fn data_companies(
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT DISTINCT company_id FROM company_data ORDER BY company_id"
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+    let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(Json(serde_json::json!({"company_ids": ids})))
 }

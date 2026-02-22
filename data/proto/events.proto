@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package trustid;
+
+// ── Enums ─────────────────────────────────────────────────────────────────
+
+enum ActionType {
+  ACTION_UNKNOWN       = 0;
+  ACTION_TRANSACTION   = 1;
+  ACTION_LOGIN_ATTEMPT = 2;
+  ACTION_API_CALL      = 3;
+}
+
+enum RiskLevel {
+  RISK_PASS  = 0;
+  RISK_WATCH = 1;
+  RISK_BLOCK = 2;
+}
+
+// ── Inbound: company → server ─────────────────────────────────────────────
+
+// A single event sent by a company host.
+// Delta encoding: fields with value 0 / empty are unchanged from the
+// previous event for the same (company_id, user_id) pair.
+// The receiver maintains per-stream state and applies deltas before scoring.
+message Event {
+  uint32 company_id        = 1;  // mandatory — identifies the company
+  uint64 user_id           = 2;  // mandatory — identifies the end-user
+  ActionType action_type   = 3;  // mandatory
+
+  // Only set on ACTION_TRANSACTION; 0 = delta (no change)
+  float  amount_usd        = 4;
+
+  // Unix epoch milliseconds; 0 = server-assigned (not recommended)
+  int64  timestamp_ms      = 5;
+
+  // Optional: credit balance after this event (for balance tracking)
+  // Negative sentinel -1 means "not included in this event"
+  float  credit_balance    = 6;
+
+  // Optional: set to true on failed login / failed auth
+  bool   auth_failed       = 7;
+}
+
+// ── Outbound: server → company ────────────────────────────────────────────
+
+message Decision {
+  uint32     company_id    = 1;
+  uint64     user_id       = 2;
+  int64      timestamp_ms  = 3;
+  RiskLevel  risk_level    = 4;  // PASS / WATCH / BLOCK
+  bool       is_fraud      = 5;  // XGBoost model output
+  float      fraud_score   = 6;  // raw model probability
+  float      z_score       = 7;  // per-company amount z-score (last event)
+  string     reason        = 8;  // human-readable flag reason
+  float      credit_balance = 9; // echoed back for confirmation
+}
+
+// ── Batch wrapper (optional) ──────────────────────────────────────────────
+
+// Company may send multiple events in one TCP frame.
+message EventBatch {
+  repeated Event events = 1;
+}

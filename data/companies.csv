@@ -1,0 +1,51 @@
+company_id,name,category,size_tier,client_type,countries_served,base_monthly_customers
+1,NexaCloud,tech,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,5652
+2,Pixelwave,tech,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1417
+3,ByteForge,tech,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,2417
+4,GridStack,tech,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,766
+5,Fluxio,tech,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,997
+6,SyncPath,tech,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,174
+7,Orbitly,tech,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,7389
+8,VaultNet,tech,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1185
+9,Crestdesk,tech,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,5995
+10,Luminary Tech,tech,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,696
+11,Aura Living,lifestyle,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1037
+12,Chroma Style,lifestyle,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,619
+13,Bloom & Co,lifestyle,enterprise,ZKP_ONLY,usa;china;fr;uk;ire;swe,4758
+14,Velvet Lane,lifestyle,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,953
+15,Driftwood,lifestyle,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1152
+16,Nomad Wear,lifestyle,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,544
+17,CasaVerde,lifestyle,enterprise,ZKP_ONLY,usa;china;fr;uk;ire;swe,6425
+18,Lumis Home,lifestyle,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1086
+19,KINETIC,lifestyle,enterprise,ZKP_ONLY,usa;china;fr;uk;ire;swe,4971
+20,Pure Form,lifestyle,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,192
+21,TableRoot,food_living,enterprise,ZKP_ONLY,usa;china;fr;uk;ire;swe,7514
+22,FreshGrid,food_living,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,2538
+23,Nourish & Co,food_living,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1042
+24,HomeMarket,food_living,enterprise,ZKP_ONLY,usa;china;fr;uk;ire;swe,7632
+25,DailyBasket,food_living,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,226
+26,PantryBox,food_living,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1714
+27,GreenTree Foods,food_living,enterprise,ZKP_ONLY,usa;china;fr;uk;ire;swe,8166
+28,CityBite,food_living,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,742
+29,NestEats,food_living,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1053
+30,UrbanGrain,food_living,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,690
+31,Waybound,travel,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,7796
+32,Skim Travel,travel,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,2424
+33,Meridian Air,travel,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,3406
+34,BluePath,travel,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1705
+35,Nomadex,travel,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,147
+36,SkyBridge,travel,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,7560
+37,TerraRoute,travel,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1345
+38,WanderlustCo,travel,sme,ZKP_ONLY,usa;china;fr;uk;ire;swe,1986
+39,Crestline Travel,travel,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,529
+40,Orbita,travel,startup,ZKP_ONLY,usa;china;fr;uk;ire;swe,247
+41,Fortio,investment,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,7429
+42,Crestwealth,investment,sme,FULL_KYC,usa;china;fr;uk;ire;swe,1282
+43,Pinnacle Capital,investment,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,7676
+44,NexaFund,investment,sme,FULL_KYC,usa;china;fr;uk;ire;swe,2063
+45,EquiVault,investment,startup,FULL_KYC,usa;china;fr;uk;ire;swe,673
+46,Verdant Finance,investment,sme,FULL_KYC,usa;china;fr;uk;ire;swe,1540
+47,HarborPlan,investment,enterprise,FULL_KYC,usa;china;fr;uk;ire;swe,3844
+48,StellarInvest,investment,startup,FULL_KYC,usa;china;fr;uk;ire;swe,695
+49,TrustPath,investment,sme,FULL_KYC,usa;china;fr;uk;ire;swe,1569
+50,ApexWealth,investment,startup,FULL_KYC,usa;china;fr;uk;ire;swe,481

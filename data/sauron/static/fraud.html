@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fraud Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0f14; --s1: #161b24; --s2: #1e2535; --border: #252c3a;
+      --accent: #4f8ef7; --green: #22c55e; --amber: #f59e0b; --red: #ef4444;
+      --text: #e2e8f0; --muted: #64748b; --r: 12px;
+    }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-height: 100vh; }
+    nav {
+      height: 58px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 28px; background: var(--s1); border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 200;
+    }
+    .brand { font-weight: 700; font-size: 1rem; }
+    .brand em { color: var(--red); font-style: normal; }
+    .nav-right { display: flex; gap: 12px; align-items: center; }
+    .back-btn {
+      padding: 6px 16px; border-radius: 8px; border: 1px solid var(--border);
+      background: transparent; color: var(--muted); font-size: .82rem; font-weight: 500;
+      cursor: pointer; transition: all .15s; text-decoration: none;
+    }
+    .back-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .co-label { font-size: .85rem; color: var(--muted); }
+    .co-label strong { color: var(--text); }
+    .shell { max-width: 1300px; margin: 0 auto; padding: 28px 20px 80px; }
+
+    /* KPI cards */
+    .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px,1fr)); gap: 12px; margin-bottom: 28px; }
+    .kpi {
+      background: var(--s1); border: 1px solid var(--border); border-radius: var(--r);
+      padding: 18px 16px;
+    }
+    .kpi-label { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+    .kpi-val { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .kpi-sub { font-size: .75rem; color: var(--muted); margin-top: 4px; }
+    .kpi.alert .kpi-val { color: var(--red); }
+    .kpi.ok    .kpi-val { color: var(--green); }
+    .kpi.info  .kpi-val { color: var(--accent); }
+
+    /* Layout grid */
+    .two-col { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* Card */
+    .card {
+      background: var(--s1); border: 1px solid var(--border); border-radius: var(--r);
+      padding: 20px;
+    }
+    .card-title { font-size: .82rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 16px; }
+
+    /* Table */
+    .tbl-wrap { overflow-x: auto; max-height: 480px; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+    thead th {
+      position: sticky; top: 0; background: var(--s1);
+      padding: 8px 10px; text-align: left; color: var(--muted);
+      font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid rgba(37,44,58,.6); transition: background .1s; }
+    tbody tr:hover { background: var(--s2); }
+    tbody td { padding: 8px 10px; font-variant-numeric: tabular-nums; color: var(--text); }
+    .prob-bar-wrap { width: 80px; }
+    .prob-bar-bg { height: 6px; background: var(--s2); border-radius: 3px; overflow: hidden; }
+    .prob-bar { height: 6px; border-radius: 3px; }
+    .badge {
+      display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: .7rem; font-weight: 600;
+    }
+    .b-alert { background: rgba(239,68,68,.18); color: var(--red); }
+    .b-rule  { background: rgba(245,158,11,.18); color: var(--amber); }
+    .b-clean { background: rgba(34,197,94,.12); color: var(--green); }
+    .b-fraud { background: rgba(239,68,68,.25); color: #ff8080; border: 1px solid rgba(239,68,68,.4); }
+
+    /* Donut chart container */
+    .donut-wrap { position: relative; height: 220px; }
+    .donut-legend { margin-top: 14px; }
+    .donut-legend li {
+      display: flex; align-items: center; gap: 8px;
+      font-size: .78rem; color: var(--muted); margin-bottom: 6px;
+    }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Model badge */
+    .model-info { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .minfo-item { font-size: .76rem; color: var(--muted); }
+    .minfo-item strong { color: var(--text); }
+
+    /* Shimmer */
+    .shimmer {
+      background: linear-gradient(90deg, var(--s2) 25%, #283045 50%, var(--s2) 75%);
+      background-size: 200% 100%; animation: shim 1.2s infinite;
+      border-radius: 8px;
+    }
+    @keyframes shim { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+    .refresh-btn {
+      padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: transparent; color: var(--muted); font-size: .78rem;
+      cursor: pointer; transition: all .15s; float: right;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .live-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); margin-right: 6px;
+      animation: blink 1.8s infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+  </style>
+</head>
+<body>
+<nav>
+  <div class="brand"><em>FD</em> Fraud</div>
+  <div class="nav-right">
+    <span class="co-label" id="coLabel">Loading…</span>
+    <a class="back-btn" href="/">Back to Selector</a>
+  </div>
+</nav>
+
+<div class="shell">
+  <div class="kpi-row" id="kpiRow">
+    <div class="shimmer" style="height:90px"></div>
+    <div class="shimmer" style="height:90px"></div>
+    <div class="shimmer" style="height:90px"></div>
+    <div class="shimmer" style="height:90px"></div>
+    <div class="shimmer" style="height:90px"></div>
+  </div>
+
+  <div class="two-col">
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center">
+        <span class="live-dot"></span> Recent Transactions
+        <button class="refresh-btn" id="refreshBtn" onclick="loadAll()">Refresh</button>
+      </div>
+      <div class="tbl-wrap" id="tblWrap">
+        <div class="shimmer" style="height:300px"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-title">Fraud Type Breakdown</div>
+        <div class="donut-wrap">
+          <canvas id="donutCanvas"></canvas>
+        </div>
+        <ul class="donut-legend" id="donutLegend"></ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Model Info</div>
+        <div class="model-info" id="modelInfo">
+          <div class="shimmer" style="height:60px;width:100%"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const params    = new URLSearchParams(location.search);
+const companyId = parseInt(params.get('company_id') || '1');
+let donutChart  = null;
+
+const TYPE_COLORS = {
+  account_takeover: '#ef4444',
+  amount_anomaly:   '#f59e0b',
+  velocity:         '#a855f7',
+  unknown:          '#64748b',
+};
+
+function fAmt(v) {
+  if (v >= 1e6) return `$${(v/1e6).toFixed(2)}M`;
+  if (v >= 1e3) return `$${(v/1e3).toFixed(1)}K`;
+  return `$${v.toFixed(2)}`;
+}
+function fDate(s) {
+  const d = new Date(s);
+  return d.toLocaleDateString('en-US', { month:'short', day:'numeric' })
+    + ' ' + d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12: false });
+}
+function probColor(p) {
+  if (p >= 0.7) return '#ef4444';
+  if (p >= 0.4) return '#f59e0b';
+  return '#22c55e';
+}
+
+async function fetchCoName() {
+  try {
+    const r = await fetch('/api/companies');
+    const companies = await r.json();
+    const co = companies.find(c => parseInt(c.company_id) === companyId);
+    if (co) {
+      document.getElementById('coLabel').innerHTML = `<strong>${co.name}</strong>`;
+      document.title = `Fraud · ${co.name}`;
+    }
+  } catch (_) {}
+}
+
+async function loadAll() {
+  await Promise.all([loadSummary(), loadRecent()]);
+}
+
+async function loadSummary() {
+  try {
+    const r = await fetch(`/api/fraud/summary/${companyId}`);
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('kpiRow').innerHTML = `<div style="color:var(--amber);font-size:.85rem;grid-column:1/-1">${d.error}</div>`;
+      return;
+    }
+    renderKPIs(d);
+    renderDonut(d);
+    renderModelInfo(d);
+  } catch (e) {
+    document.getElementById('kpiRow').innerHTML =
+      `<div style="color:var(--red);font-size:.85rem;grid-column:1/-1">Error: ${e.message}</div>`;
+  }
+}
+
+async function loadRecent() {
+  try {
+    const r = await fetch(`/api/fraud/recent/${companyId}?limit=200`);
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('tblWrap').innerHTML =
+        `<div style="color:var(--amber);font-size:.85rem;padding:12px">${d.error}</div>`;
+      return;
+    }
+    renderTable(d.transactions);
+  } catch (e) {
+    document.getElementById('tblWrap').innerHTML =
+      `<div style="color:var(--red);font-size:.85rem;padding:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderKPIs(d) {
+  const alertRate = d.n_recent_total > 0 ? (d.n_recent_alerts / d.n_recent_total * 100) : 0;
+  document.getElementById('kpiRow').innerHTML = `
+    <div class="kpi ${d.n_recent_alerts > 0 ? 'alert' : 'ok'}">
+      <div class="kpi-label">Fraud Alerts</div>
+      <div class="kpi-val">${d.n_recent_alerts}</div>
+      <div class="kpi-sub">of ${d.n_recent_total} recent txns</div>
+    </div>
+    <div class="kpi info">
+      <div class="kpi-label">Alert Rate</div>
+      <div class="kpi-val">${alertRate.toFixed(2)}%</div>
+      <div class="kpi-sub">threshold ${d.threshold}</div>
+    </div>
+    <div class="kpi info">
+      <div class="kpi-label">Rule Flags</div>
+      <div class="kpi-val">${d.n_recent_rule_flags}</div>
+      <div class="kpi-sub">velocity/z-score</div>
+    </div>
+    <div class="kpi ${d.fraud_rate_pct > 1 ? 'alert' : 'ok'}">
+      <div class="kpi-label">Actual Fraud Rate</div>
+      <div class="kpi-val">${d.fraud_rate_pct.toFixed(3)}%</div>
+      <div class="kpi-sub">${d.n_actual_fraud} confirmed frauds</div>
+    </div>
+    <div class="kpi info">
+      <div class="kpi-label">Model F1</div>
+      <div class="kpi-val">${(d.model_f1 * 100).toFixed(1)}%</div>
+      <div class="kpi-sub">on test set</div>
+    </div>`;
+}
+
+function renderDonut(d) {
+  const types  = Object.keys(d.fraud_type_counts);
+  const counts = types.map(t => d.fraud_type_counts[t]);
+  const colors = types.map(t => TYPE_COLORS[t] || '#64748b');
+
+  if (donutChart) { donutChart.destroy(); donutChart = null; }
+
+  if (types.length === 0) {
+    document.getElementById('donutCanvas').parentElement.innerHTML =
+      '<div style="color:var(--muted);font-size:.82rem;padding:20px 0">No fraud in recent window</div>';
+    return;
+  }
+
+  const ctx = document.getElementById('donutCanvas').getContext('2d');
+  donutChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: types,
+      datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '62%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2535', borderColor: '#252c3a', borderWidth: 1,
+          callbacks: {
+            label: ctx => ` ${ctx.label}: ${ctx.raw} txns`,
+          },
+        },
+      },
+    },
+  });
+
+  const legend = document.getElementById('donutLegend');
+  legend.innerHTML = types.map((t, i) =>
+    `<li><span class="legend-dot" style="background:${colors[i]}"></span>${t.replace(/_/g,' ')} — ${counts[i]}</li>`
+  ).join('');
+}
+
+function renderModelInfo(d) {
+  document.getElementById('modelInfo').innerHTML = `
+    <div class="minfo-item">Train samples: <strong>${d.n_train.toLocaleString()}</strong></div>
+    <div class="minfo-item">Train fraud: <strong>${d.n_fraud_train}</strong></div>
+    <div class="minfo-item">Test fraud: <strong>${d.n_fraud_test}</strong></div>
+    <div class="minfo-item">Best F1: <strong>${(d.model_f1*100).toFixed(1)}%</strong></div>
+    <div class="minfo-item">Threshold: <strong>${d.threshold}</strong></div>`;
+}
+
+function renderTable(txns) {
+  if (!txns || txns.length === 0) {
+    document.getElementById('tblWrap').innerHTML =
+      '<div style="color:var(--muted);font-size:.82rem;padding:16px">No transactions found.</div>';
+    return;
+  }
+
+  const rows = txns.map(t => {
+    const prob     = t.fraud_prob;
+    const barColor = probColor(prob);
+    let statusBadge;
+    if (t.fraud_alert)      statusBadge = `<span class="badge b-alert">ALERT</span>`;
+    else if (t.rule_flag)   statusBadge = `<span class="badge b-rule">RULE</span>`;
+    else                    statusBadge = `<span class="badge b-clean">OK</span>`;
+    const fraudBadge = t.is_fraud
+      ? `<span class="badge b-fraud">${(t.fraud_type||'fraud').replace(/_/g,' ')}</span>`
+      : '';
+
+    return `<tr>
+      <td style="color:var(--muted);font-size:.72rem">${fDate(t.timestamp)}</td>
+      <td>${t.transaction_id}</td>
+      <td style="color:var(--muted)">${t.customer_id}</td>
+      <td style="text-align:right">${fAmt(t.amount_usd)}</td>
+      <td>
+        <div class="prob-bar-wrap">
+          <div style="font-size:.72rem;color:${barColor};margin-bottom:3px">${(prob*100).toFixed(1)}%</div>
+          <div class="prob-bar-bg"><div class="prob-bar" style="width:${(prob*100).toFixed(0)}%;background:${barColor}"></div></div>
+        </div>
+      </td>
+      <td>${statusBadge}</td>
+      <td>${fraudBadge}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('tblWrap').innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th><th>Txn ID</th><th>Customer</th>
+          <th style="text-align:right">Amount</th>
+          <th>Fraud Prob</th><th>Status</th><th>Label</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+fetchCoName();
+loadAll();
+</script>
+</body>
+</html>
