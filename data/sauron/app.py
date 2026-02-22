@@ -566,8 +566,10 @@ def api_rings():
             pl.first("member_count").alias("first_count"),
         )
         .with_columns(
-            ((pl.col("count") - pl.col("first_count")) / pl.col("first_count") * 100)
-            .round(1).alias("growth_pct")
+            pl.when(pl.col("first_count") > 0)
+            .then(((pl.col("count") - pl.col("first_count")) / pl.col("first_count") * 100).round(1))
+            .otherwise(pl.lit(None))
+            .alias("growth_pct")
         )
         .sort("ring_id")
     )
@@ -750,6 +752,8 @@ def api_insights_forecast():
 def api_insights_anomalies_ml():
     _load()
     _load_analytics()
+    if _anomalies_ml is None or _anomalies_ml.is_empty():
+        return {"events": [], "by_type": [], "by_severity": [], "total": 0}
     with_client = (
         _anomalies_ml
         .join(_clients.select(["client_id","name","type"]), on="client_id")

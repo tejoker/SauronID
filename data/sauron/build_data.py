@@ -110,7 +110,7 @@ for r in type_counts.iter_rows(named=True):
 
 # ── Credit economy constants ────────────────────────────────────────────────
 CREDIT_A_PER_KYC = 1.0    # 1 Credit A earned per full KYC completed
-KYC_USD_PER_HEAD = 1.00   # $1/KYC break-even (pass-through cost)
+KYC_USD_PER_HEAD = 2.00   # $2/KYC (1 Credit A = 5B × $0.40)
 TOTAL_FIELDS     = 80     # total identity fields in a Sauron ring profile
 BASE_B_RATE      = 10.0   # Credit B cost to access all 80 fields in one request
 CREDIT_B_USD     = 0.40   # 1 Credit B = $0.40 USD (Sauron sale price)
@@ -307,12 +307,12 @@ print("Building ring snapshots…")
 
 ring_rows = []
 ring_base = {
-    "ring_adult":      15_000,
-    "ring_social":      8_000,
-    "ring_financial":   6_000,
-    "ring_healthcare":  3_000,
-    "ring_gaming":     12_000,
-    "ring_crypto":      4_000,
+    "ring_adult":      0,
+    "ring_social":     0,
+    "ring_financial":  0,
+    "ring_healthcare": 0,
+    "ring_gaming":     0,
+    "ring_crypto":     0,
 }
 
 # Ring enrollment: persona_sauron_join + 0-45 day delay
