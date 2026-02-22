@@ -56,9 +56,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 &
 KYC_PID=$!
 deactivate
 
-# ── Frontend (Next.js) ───────────────────────────────────────────────────────
-echo "[5/5] Building and starting Next.js on :3000..."
-cd "$ROOT/admin"
+# ── Partner Portal (Next.js) ─────────────────────────────────────────────────
+echo "[5/5] Building and starting Partner Portal (Next.js) on :3000..."
+cd "$ROOT/partner-portal"
 npm run build 2>&1
 npm run start -- -p 3000 &
 NEXT_PID=$!

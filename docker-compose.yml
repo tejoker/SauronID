@@ -39,14 +39,14 @@ services:
       - ./KYC/.env
     restart: unless-stopped
 
-  # ── Next.js frontend ───────────────────────────────────────────────────────
-  frontend:
+  # ── Partner Portal (Next.js — B2B Client Simulator) ─────────────────────────
+  partner-portal:
     build:
-      context: ./admin
+      context: ./partner-portal
       args:
         NEXT_PUBLIC_API_URL: "http://localhost:3001"
         NEXT_PUBLIC_KYC_URL: "http://localhost:8000"
-    container_name: sauron-frontend
+    container_name: sauron-partner-portal
     ports:
       - "3000:3000"
     depends_on:
