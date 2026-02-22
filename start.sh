@@ -26,16 +26,21 @@ cleanup() {
 trap cleanup INT TERM
 
 # ── Backend (Rust) ───────────────────────────────────────────────────────────
-echo "[1/4] Building backend (cargo build --release)..."
+echo "[1/5] Building backend (cargo build --release)..."
 cd "$ROOT/core"
 cargo build --release 2>&1
 
-echo "[2/4] Starting sauron-core on :3000..."
+echo "[2/5] Starting sauron-core on :3000..."
 ./target/release/sauron-core &
 CORE_PID=$!
 
+# ── Seed (clients + users) ───────────────────────────────────────────────────
+echo "[3/5] Seeding database (10 clients + 10 users)..."
+cd "$ROOT/core"
+SAURON_URL=http://localhost:3000 bash seed.sh
+
 # ── KYC (Python) ─────────────────────────────────────────────────────────────
-echo "[3/4] Setting up KYC Python environment..."
+echo "[4/5] Setting up KYC Python environment..."
 cd "$ROOT/KYC"
 
 if [ ! -d ".venv" ]; then
@@ -52,7 +57,7 @@ KYC_PID=$!
 deactivate
 
 # ── Frontend (Next.js) ───────────────────────────────────────────────────────
-echo "[4/4] Building and starting Next.js on :3001..."
+echo "[5/5] Building and starting Next.js on :3001..."
 cd "$ROOT/admin"
 npm run build 2>&1
 npm run start -- -p 3001 &

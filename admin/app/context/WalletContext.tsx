@@ -2,16 +2,34 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 
-export type SiteName = "Monzo" | "Revolut" | "Binance" | "N26";
-export const SITE_NAMES: SiteName[] = ["Monzo", "Revolut", "Binance", "N26"];
+export type SiteName =
+  | "Monzo" | "Revolut" | "Binance" | "N26"
+  | "Discord" | "Tinder" | "Airbnb" | "Uber" | "Twitch";
+
+export const FULL_KYC_SITES: SiteName[] = ["Monzo", "Revolut", "Binance", "N26"];
+export const ZKP_SITES: SiteName[]      = ["Discord", "Tinder", "Airbnb", "Uber", "Twitch"];
+export const SITE_NAMES: SiteName[]     = [...FULL_KYC_SITES, ...ZKP_SITES];
+
+export const SITE_TYPE: Record<SiteName, "FULL_KYC" | "ZKP_ONLY"> = {
+  Monzo: "FULL_KYC", Revolut: "FULL_KYC", Binance: "FULL_KYC", N26: "FULL_KYC",
+  Discord: "ZKP_ONLY", Tinder: "ZKP_ONLY", Airbnb: "ZKP_ONLY", Uber: "ZKP_ONLY", Twitch: "ZKP_ONLY",
+};
+
 export const EXCHANGE_RATE = 3;
 export const API = "http://localhost:3000";
 
 export const SITES: { name: SiteName; color: string; bg: string; border: string; logo: string }[] = [
-  { name: "Monzo",   color: "text-orange-600", bg: "bg-orange-50",  border: "border-orange-300", logo: "" },
-  { name: "Revolut", color: "text-violet-600", bg: "bg-violet-50",  border: "border-violet-300", logo: "" },
-  { name: "Binance", color: "text-amber-600",  bg: "bg-amber-50",   border: "border-amber-300",  logo: "" },
-  { name: "N26",     color: "text-sky-700",    bg: "bg-sky-50",     border: "border-sky-300",    logo: "" },
+  // FULL_KYC
+  { name: "Monzo",   color: "text-orange-600", bg: "bg-orange-50",  border: "border-orange-300", logo: "🏦" },
+  { name: "Revolut", color: "text-violet-600", bg: "bg-violet-50",  border: "border-violet-300", logo: "💳" },
+  { name: "Binance", color: "text-amber-600",  bg: "bg-amber-50",   border: "border-amber-300",  logo: "₿"  },
+  { name: "N26",     color: "text-sky-700",    bg: "bg-sky-50",     border: "border-sky-300",    logo: "🏧" },
+  // ZKP_ONLY
+  { name: "Discord", color: "text-indigo-600", bg: "bg-indigo-50",  border: "border-indigo-300", logo: "💬" },
+  { name: "Tinder",  color: "text-pink-600",   bg: "bg-pink-50",    border: "border-pink-300",   logo: "🔥" },
+  { name: "Airbnb",  color: "text-rose-600",   bg: "bg-rose-50",    border: "border-rose-300",   logo: "🏠" },
+  { name: "Uber",    color: "text-neutral-700", bg: "bg-neutral-50", border: "border-neutral-300", logo: "🚗" },
+  { name: "Twitch",  color: "text-purple-600", bg: "bg-purple-50",  border: "border-purple-300", logo: "🎮" },
 ];
 
 export function getSiteTheme(name: SiteName) {
@@ -39,7 +57,7 @@ function buildDefault(): Record<SiteName, SiteWallet> {
   return Object.fromEntries(SITE_NAMES.map((n) => [n, { tokensA: [], tokensB: [] }])) as unknown as Record<SiteName, SiteWallet>;
 }
 
-const STORAGE_KEY = "sauron_wallets_v4";
+const STORAGE_KEY = "sauron_wallets_v5";
 const WalletContext = createContext<WalletContextType | null>(null);
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
@@ -51,7 +69,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) setWallets(JSON.parse(raw));
-      const site = localStorage.getItem("sauron_active_site_v4") as SiteName | null;
+      const site = localStorage.getItem("sauron_active_site_v5") as SiteName | null;
       if (site && SITE_NAMES.includes(site)) setActiveSiteRaw(site);
     } catch {}
   }, []);
@@ -62,7 +80,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const setActiveSite = useCallback((s: SiteName) => {
     setActiveSiteRaw(s);
-    if (typeof window !== "undefined") localStorage.setItem("sauron_active_site_v4", s);
+    if (typeof window !== "undefined") localStorage.setItem("sauron_active_site_v5", s);
   }, []);
 
   const update = useCallback((site: SiteName, fn: (w: SiteWallet) => SiteWallet) => {

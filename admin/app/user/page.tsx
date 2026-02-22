@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useWallet, SITES, getSiteTheme, API, type SiteName } from "../context/WalletContext";
+import { useWallet, SITES, getSiteTheme, API, SITE_TYPE, type SiteName } from "../context/WalletContext";
 import { showToast } from "../components/Toast";
 
 const KYC_API = "http://localhost:8000";
@@ -40,10 +40,17 @@ interface LoginForm    { email: string; password: string; }
 
 
 const SITE_DESCRIPTIONS: Record<SiteName, string> = {
+  // FULL_KYC
   Monzo:   "Digital bank account",
   Revolut: "Financial super-app",
   Binance: "Crypto exchange",
   N26:     "Mobile banking",
+  // ZKP_ONLY
+  Discord: "Age-verified chat",
+  Tinder:  "Verified identity dating",
+  Airbnb:  "Trusted host & guest",
+  Uber:    "Verified rider",
+  Twitch:  "Age-restricted streams",
 };
 
 // ─── Site banner ──────────────────────────────────────────────────────────────
@@ -665,6 +672,194 @@ function LoginTab({ site }: { site: SiteName }) {
   );
 }
 
+// ─── ZKP Login tab ────────────────────────────────────────────────────────────
+
+interface ZkpProofResult {
+  proved_claims: string[];
+  ring_size: number;
+  client_ring_size: number;
+  tokenBSpent: string;
+}
+
+function ZkpLoginTab({ site }: { site: SiteName }) {
+  const { wallets, spendTokenB, returnTokenB } = useWallet();
+  const wallet = wallets[site];
+  const theme = getSiteTheme(site);
+  const [email,       setEmail]       = useState("");
+  const [password,    setPassword]    = useState("");
+  const [minAge,      setMinAge]      = useState("");
+  const [nationality, setNationality] = useState("");
+  const [busy,        setBusy]        = useState(false);
+  const [result,      setResult]      = useState<ZkpProofResult | null>(null);
+  const [error,       setError]       = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+
+    if (wallet.tokensB.length === 0) {
+      const msg = `${site} has no Token B. Exchange Token A first (Site Treasury tab).`;
+      setError(msg);
+      showToast("error", "No Token B", msg);
+      return;
+    }
+
+    const tokenB = spendTokenB(site);
+    if (!tokenB) { setError("Token B was consumed by a concurrent request."); return; }
+
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        email,
+        password,
+        site_name: site,
+        token_b: tokenB,
+      };
+      const parsedAge = minAge ? parseInt(minAge, 10) : null;
+      if (parsedAge && !isNaN(parsedAge)) body.min_age = parsedAge;
+      if (nationality.trim()) body.required_nationality = nationality.trim().toUpperCase();
+
+      const res = await fetch(`${API}/dev/zkp_login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        returnTokenB(site, tokenB);
+        throw new Error(data.error ?? data ?? "ZKP login failed");
+      }
+
+      setResult({
+        proved_claims:    data.proved_claims,
+        ring_size:        data.ring_size,
+        client_ring_size: data.client_ring_size,
+        tokenBSpent:      tokenB,
+      });
+      showToast("success", `ZKP Login — ${site}`,
+        `Proved: ${data.proved_claims.join(", ")} • ring size ${data.ring_size}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setError(msg);
+      showToast("error", "ZKP Login failed", msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      {result && (
+        <SuccessOverlay title={`ZKP Login Verified — ${site}`} onClose={() => setResult(null)}>
+          <div className="space-y-3 text-sm">
+            <div className={`${theme.bg} ${theme.border} border rounded-lg p-4`}>
+              <p className={`${theme.color} font-bold mb-2`}>Proof Accepted ✓</p>
+              <div className="flex flex-wrap gap-1.5">
+                {result.proved_claims.map((c) => (
+                  <span key={c}
+                    className={`inline-block text-xs px-2.5 py-1 rounded-full font-medium ${theme.bg} ${theme.color} border ${theme.border}`}>
+                    {c}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-4 space-y-1">
+              <p className="text-xs text-neutral-400">
+                User ring: <span className="font-mono text-neutral-700">{result.ring_size} members</span>
+              </p>
+              <p className="text-xs text-neutral-400">
+                Client ring: <span className="font-mono text-neutral-700">{result.client_ring_size} ZKP_ONLY clients</span>
+              </p>
+            </div>
+            <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-4">
+              <p className="text-xs text-neutral-400 mb-1">Token B spent by {site}</p>
+              <p className="font-mono text-[10px] text-orange-600 break-all">{result.tokenBSpent}</p>
+            </div>
+            <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 text-xs text-neutral-500">
+              {site} proved it's a registered ZKP_ONLY client (client ring sig) and that a Sauron-registered user
+              meets the criteria (user ring sig). Sauron does not learn who the user is or which site asked.
+            </div>
+          </div>
+        </SuccessOverlay>
+      )}
+
+      <form onSubmit={submit} className="space-y-4 max-w-lg mx-auto">
+        <div className={`rounded-xl border-2 border-dashed ${theme.border} p-4 text-center`}>
+          <p className={`text-xs font-bold uppercase tracking-wide ${theme.color} mb-1`}>Zero-Knowledge Proof Login</p>
+          <p className="text-xs text-neutral-400">
+            Prove you hold a valid Sauron identity — no personal data is revealed to {site}.
+          </p>
+        </div>
+
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">Sauron Email</label>
+          <input
+            type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500"
+            placeholder="alice@example.com"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">Sauron Password</label>
+          <input
+            type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500"
+            placeholder="••••••••"
+          />
+        </div>
+
+        <div className="border border-neutral-100 rounded-lg p-4 space-y-3 bg-neutral-50">
+          <p className="text-xs font-medium text-neutral-500 uppercase tracking-wide">Optional ZKP Claims</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-neutral-400 mb-1 block">Min Age</label>
+              <input
+                type="number" min={0} max={120} value={minAge}
+                onChange={(e) => setMinAge(e.target.value)}
+                className="w-full bg-white border border-neutral-200 text-neutral-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neutral-400"
+                placeholder="e.g. 18"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-neutral-400 mb-1 block">Nationality (3-letter)</label>
+              <input
+                type="text" maxLength={3} value={nationality}
+                onChange={(e) => setNationality(e.target.value)}
+                className="w-full bg-white border border-neutral-200 text-neutral-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neutral-400 uppercase"
+                placeholder="e.g. FRA"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="border border-neutral-200 rounded-lg p-3 text-xs text-neutral-400">
+          Dual ring signature — user ring (filtered) + {site} client ring. No PII leaves the server.
+        </div>
+
+        {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
+
+        <button
+          type="submit"
+          disabled={busy || !email || !password || wallet.tokensB.length === 0}
+          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${
+            wallet.tokensB.length === 0
+              ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
+              : busy || !email || !password
+              ? "border-neutral-200 text-neutral-400"
+              : `${theme.bg} ${theme.color} ${theme.border} hover:opacity-80`
+          }`}
+        >
+          {busy
+            ? "Proving..."
+            : wallet.tokensB.length === 0
+            ? "No Token B"
+            : `Prove Identity to ${site} (1 Token B)`}
+        </button>
+      </form>
+    </>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function UserExperience() {
@@ -672,6 +867,7 @@ export default function UserExperience() {
   const wallet = wallets[activeSite];
   const theme = getSiteTheme(activeSite);
   const [tab, setTab] = useState<Tab>("register");
+  const isZkp = SITE_TYPE[activeSite] === "ZKP_ONLY";
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
@@ -680,6 +876,11 @@ export default function UserExperience() {
       <div className="max-w-4xl mx-auto px-6 py-8">
         <div className="flex items-center gap-4 mb-6 border border-neutral-200 rounded-lg px-5 py-3">
           <span className="text-xs text-neutral-400 flex-1">{activeSite} wallet</span>
+          {isZkp && (
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${theme.bg} ${theme.color} ${theme.border}`}>
+              ZKP_ONLY
+            </span>
+          )}
           <span className="flex items-center gap-1.5 text-sm">
             <span className="text-green-600 font-bold tabular-nums">{wallet.tokensA.length}</span>
             <span className="text-neutral-400 text-xs">Token A</span>
@@ -691,52 +892,68 @@ export default function UserExperience() {
           </span>
         </div>
 
-        <div className="flex border border-neutral-200 rounded-lg overflow-hidden mb-6">
-          <button
-            onClick={() => setTab("register")}
-            className={`flex-1 py-2.5 text-sm font-medium transition-all ${
-              tab === "register"
-                ? `${theme.bg} ${theme.color} border-b-2 ${theme.border}`
-                : "text-neutral-400 hover:text-neutral-700"
-            }`}
-          >
-            Create Account
-          </button>
-          <button
-            onClick={() => setTab("login")}
-            className={`flex-1 py-2.5 text-sm font-medium transition-all relative ${
-              tab === "login"
-                ? "bg-neutral-900 text-white"
-                : "text-neutral-400 hover:text-neutral-700"
-            }`}
-          >
-            Login (KYC)
-            {wallet.tokensB.length === 0 && (
-              <span className="absolute top-1.5 right-3 w-1.5 h-1.5 rounded-full bg-red-500" />
-            )}
-          </button>
-        </div>
+        {isZkp ? (
+          /* ── ZKP_ONLY sites: just show the ZKP login panel ── */
+          <div className="border border-neutral-200 rounded-xl p-8">
+            <div className="mb-6">
+              <h2 className="text-base font-semibold text-neutral-900">ZKP Login — {activeSite}</h2>
+              <p className="text-xs text-neutral-400 mt-1">
+                Prove membership anonymously. {activeSite} learns only your ZKP claims, not your identity.
+              </p>
+            </div>
+            <ZkpLoginTab site={activeSite} />
+          </div>
+        ) : (
+          /* ── FULL_KYC sites: Register + KYC Login tabs ── */
+          <>
+            <div className="flex border border-neutral-200 rounded-lg overflow-hidden mb-6">
+              <button
+                onClick={() => setTab("register")}
+                className={`flex-1 py-2.5 text-sm font-medium transition-all ${
+                  tab === "register"
+                    ? `${theme.bg} ${theme.color} border-b-2 ${theme.border}`
+                    : "text-neutral-400 hover:text-neutral-700"
+                }`}
+              >
+                Create Account
+              </button>
+              <button
+                onClick={() => setTab("login")}
+                className={`flex-1 py-2.5 text-sm font-medium transition-all relative ${
+                  tab === "login"
+                    ? "bg-neutral-900 text-white"
+                    : "text-neutral-400 hover:text-neutral-700"
+                }`}
+              >
+                Login (KYC)
+                {wallet.tokensB.length === 0 && (
+                  <span className="absolute top-1.5 right-3 w-1.5 h-1.5 rounded-full bg-red-500" />
+                )}
+              </button>
+            </div>
 
-        <div className="border border-neutral-200 rounded-xl p-8">
-          {tab === "register" && (
-            <>
-              <div className="mb-6">
-                <h2 className="text-base font-semibold text-neutral-900">Open a {activeSite} Account</h2>
-                <p className="text-xs text-neutral-400 mt-1">Identity committed once to Sauron, anonymously, forever reusable.</p>
-              </div>
-              <RegisterTab site={activeSite} />
-            </>
-          )}
-          {tab === "login" && (
-            <>
-              <div className="mb-6">
-                <h2 className="text-base font-semibold text-neutral-900">Quick Login via Sauron</h2>
-                <p className="text-xs text-neutral-400 mt-1">{activeSite} retrieves your KYC anonymously, spending 1 Token B.</p>
-              </div>
-              <LoginTab site={activeSite} />
-            </>
-          )}
-        </div>
+            <div className="border border-neutral-200 rounded-xl p-8">
+              {tab === "register" && (
+                <>
+                  <div className="mb-6">
+                    <h2 className="text-base font-semibold text-neutral-900">Open a {activeSite} Account</h2>
+                    <p className="text-xs text-neutral-400 mt-1">Identity committed once to Sauron, anonymously, forever reusable.</p>
+                  </div>
+                  <RegisterTab site={activeSite} />
+                </>
+              )}
+              {tab === "login" && (
+                <>
+                  <div className="mb-6">
+                    <h2 className="text-base font-semibold text-neutral-900">Quick Login via Sauron</h2>
+                    <p className="text-xs text-neutral-400 mt-1">{activeSite} retrieves your KYC anonymously, spending 1 Token B.</p>
+                  </div>
+                  <LoginTab site={activeSite} />
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

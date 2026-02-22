@@ -1,12 +1,13 @@
-/// Client CLI pour Sauron — 3 flux asynchrones
+/// Client CLI pour Sauron — 3 flux + ZKP
 ///
 /// Commands:
-///   register <email> <password> <first_name> <last_name> <country>
+///   register <email> <password> <first_name> <last_name>
 ///   exchange <token_a1> [<token_a2> ...]
 ///   get_kyc <email> <password> <token_b>
+///   prove_zk <email> <password> <token_b> <site_name> [--min-age <age>] [--nationality <nat>]
 ///   add_tokens <site_name> <amount>
 ///   balance
-use sauron_core::{oprf, ring, sites, identity::Identity, identity::UserData};
+use sauron_core::{oprf, ring, identity::Identity, identity::UserData};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use serde::{Deserialize, Serialize};
 use rand::Rng;
@@ -36,8 +37,27 @@ async fn derive_identity(client: &reqwest::Client, email: &str, password: &str) 
     Identity::from_oprf(oprf_result)
 }
 
-fn random_issuer_idx() -> usize {
-    rand::thread_rng().gen_range(0..sites::hardcoded_issuers().len())
+fn random_idx(len: usize) -> usize {
+    rand::thread_rng().gen_range(0..len)
+}
+
+// ─── Dev clients ─────────────────────────────────────
+
+#[derive(Deserialize, Clone)]
+#[allow(dead_code)]
+struct DevClient {
+    name: String,
+    public_key_hex: String,
+    private_key_hex: String,
+    key_image_hex: String,
+    client_type: String,
+}
+
+async fn fetch_full_kyc_clients(client: &reqwest::Client) -> Vec<DevClient> {
+    let all: Vec<DevClient> = client
+        .get(format!("{}/dev/clients", SERVER))
+        .send().await.unwrap().json().await.unwrap();
+    all.into_iter().filter(|c| c.client_type == "FULL_KYC").collect()
 }
 
 // ─── Flux 1 : register ──────────────────────────────
@@ -55,28 +75,41 @@ struct RegisterRequest {
 struct RegisterResponse { signed_token_a: String }
 
 async fn cmd_register(args: &[String]) {
-    if args.len() < 5 {
-        eprintln!("Usage: register <email> <password> <first_name> <last_name> <country>");
+    if args.len() < 4 {
+        eprintln!("Usage: register <email> <password> <first_name> <last_name>");
         std::process::exit(1);
     }
     let (email, password) = (&args[0], &args[1]);
-    let (first_name, last_name, country) = (&args[2], &args[3], &args[4]);
+    let (first_name, last_name) = (&args[2], &args[3]);
 
     let client = reqwest::Client::new();
     let identity = derive_identity(&client, email, password).await;
     let pk_bytes = identity.public.compress().as_bytes().to_vec();
     let ki_bytes = identity.key_image().compress().as_bytes().to_vec();
-    let profile = UserData::new(first_name, last_name, email, country);
+    let profile = UserData::new(first_name, last_name, email);
 
     let random_bytes: [u8; 32] = rand::thread_rng().gen();
     let blinded_token_a = hex::encode(random_bytes);
     let hex_pk = hex::encode(&pk_bytes);
     let msg = format!("{}:{}", hex_pk, blinded_token_a);
 
-    let issuers = sites::hardcoded_issuers();
-    let idx = random_issuer_idx();
-    let ring_keys: Vec<_> = issuers.iter().map(|i| i.identity.public).collect();
-    let client_signature = ring::sign(msg.as_bytes(), &ring_keys, &issuers[idx].identity, idx);
+    // Récupérer les sites FULL_KYC dynamiques depuis le serveur.
+    let issuers = fetch_full_kyc_clients(&client).await;
+    if issuers.is_empty() {
+        eprintln!("FAIL No FULL_KYC clients registered on server. Run seed script first.");
+        std::process::exit(1);
+    }
+    let idx = random_idx(issuers.len());
+    let issuer_identity = sauron_core::identity::Identity::from_secret_hex(&issuers[idx].private_key_hex)
+        .expect("invalid issuer private key");
+    let ring_keys: Vec<_> = issuers.iter()
+        .filter_map(|i| {
+            let bytes = hex::decode(&i.public_key_hex).ok()?;
+            let arr: [u8; 32] = bytes.try_into().ok()?;
+            CompressedRistretto::from_slice(&arr).ok()?.decompress()
+        })
+        .collect();
+    let client_signature = ring::sign(msg.as_bytes(), &ring_keys, &issuer_identity, idx);
 
     let req = RegisterRequest { public_key: pk_bytes, key_image: ki_bytes, profile, client_signature, blinded_token_a };
 
@@ -168,7 +201,6 @@ struct ProfileDisplay {
     first_name: String,
     last_name: String,
     email: String,
-    country: String,
 }
 
 async fn cmd_get_kyc(args: &[String]) {
@@ -209,7 +241,6 @@ async fn cmd_get_kyc(args: &[String]) {
         println!("OK KYC retrieved anonymously!");
         println!("  Name:    {} {}", body.profile.first_name, body.profile.last_name);
         println!("  Email:   {}", body.profile.email);
-        println!("  Country: {}", body.profile.country);
     } else {
         let status = resp.status();
         if status.as_u16() == 409 {
@@ -276,19 +307,123 @@ async fn cmd_balance() {
     }
 }
 
+// ─── Flux ZKP : prove_zk ─────────────────────────────
+
+async fn cmd_prove_zk(args: &[String]) {
+    if args.len() < 4 {
+        eprintln!("Usage: prove_zk <email> <password> <token_b> <site_name> [--min-age <age>] [--nationality <nat>]");
+        eprintln!("  <site_name> must be a registered ZKP_ONLY client (e.g. Discord, Tinder, Airbnb, Uber, Twitch)");
+        std::process::exit(1);
+    }
+    let (email, password, token_b, site_name) = (&args[0], &args[1], &args[2], &args[3]);
+
+    let mut min_age: Option<u8> = None;
+    let mut required_nationality: Option<String> = None;
+
+    let mut i = 4usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--min-age" if i + 1 < args.len() => {
+                min_age = args[i + 1].parse().ok();
+                i += 2;
+            }
+            "--nationality" if i + 1 < args.len() => {
+                required_nationality = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => { i += 1; }
+        }
+    }
+
+    let client = reqwest::Client::new();
+
+    // 1. Show user ring size
+    println!("→ Fetching ZKP user ring (min_age={:?}, nationality={:?})...", min_age, required_nationality);
+    let ring_resp: serde_json::Value = client
+        .post(format!("{}/zkp/build_ring", SERVER))
+        .json(&serde_json::json!({ "min_age": min_age, "required_nationality": required_nationality }))
+        .send().await.unwrap()
+        .json().await.unwrap();
+
+    let user_ring_size = ring_resp["ring_size"].as_u64().unwrap_or(0);
+    println!("  User ring size: {} members", user_ring_size);
+
+    if user_ring_size == 0 {
+        eprintln!("FAIL No users match the given filters.");
+        std::process::exit(1);
+    }
+
+    // 2. Show client ring size
+    println!("→ Fetching ZKP client ring...");
+    let client_ring_resp: serde_json::Value = client
+        .get(format!("{}/zkp/client_ring", SERVER))
+        .send().await.unwrap()
+        .json().await.unwrap();
+
+    let client_ring_size = client_ring_resp["ring_size"].as_u64().unwrap_or(0);
+    println!("  Client ring size: {} ZKP_ONLY clients", client_ring_size);
+
+    if client_ring_size == 0 {
+        eprintln!("FAIL No ZKP_ONLY clients registered.");
+        std::process::exit(1);
+    }
+
+    // 3. Server-side dual ring sign + verify (user ring + client ring)
+    println!("→ Submitting dual ring proof to /dev/zkp_login (site: {})...", site_name);
+    let req_body = serde_json::json!({
+        "email": email,
+        "password": password,
+        "site_name": site_name,
+        "token_b": token_b,
+        "min_age": min_age,
+        "required_nationality": required_nationality,
+    });
+
+    let resp = client
+        .post(format!("{}/dev/zkp_login", SERVER))
+        .json(&req_body)
+        .send().await.unwrap();
+
+    if resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let verified = body["verified"].as_bool().unwrap_or(false);
+        let rs = body["ring_size"].as_u64().unwrap_or(0);
+        let crs = body["client_ring_size"].as_u64().unwrap_or(0);
+        let empty = vec![];
+        let claims: Vec<&str> = body["proved_claims"]
+            .as_array().unwrap_or(&empty)
+            .iter().map(|v| v.as_str().unwrap_or("?"))
+            .collect();
+        if verified {
+            println!("OK ZKP Dual Ring Proof verified!");
+            println!("  User ring size:   {} — k-anonymity over Sauron-registered users", rs);
+            println!("  Client ring size: {} — {} is a registered ZKP_ONLY client", crs, site_name);
+            println!("  Proved claims:    {}", claims.join(", "));
+            println!("  → No personal data was revealed to {}.", site_name);
+        } else {
+            eprintln!("FAIL Proof rejected by server.");
+            std::process::exit(1);
+        }
+    } else {
+        eprintln!("FAIL prove_zk failed: {} — {}", resp.status(), resp.text().await.unwrap_or_default());
+        std::process::exit(1);
+    }
+}
+
 // ─── Main ────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: client <command> [args]\nCommands: register | exchange | get_kyc | add_tokens | balance");
+        eprintln!("Usage: client <command> [args]\nCommands: register | exchange | get_kyc | prove_zk | add_tokens | balance");
         std::process::exit(1);
     }
     match args[1].as_str() {
         "register"   => cmd_register(&args[2..]).await,
         "exchange"   => cmd_exchange(&args[2..]).await,
         "get_kyc"    => cmd_get_kyc(&args[2..]).await,
+        "prove_zk"   => cmd_prove_zk(&args[2..]).await,
         "add_tokens" => cmd_add_tokens(&args[2..]).await,
         "balance"    => cmd_balance().await,
         other => { eprintln!("Unknown command: {}", other); std::process::exit(1); }

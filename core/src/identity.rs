@@ -1,13 +1,13 @@
 use curve25519_dalek::{RistrettoPoint, Scalar, constants::RISTRETTO_BASEPOINT_TABLE};
 use sha2::{Sha512, Digest};
 use serde::{Serialize, Deserialize};
+use rand::rngs::OsRng;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserData {
     pub first_name: String,
     pub last_name: String,
     pub email: String,
-    pub country: String,
     #[serde(default)]
     pub date_of_birth: String,
     #[serde(default)]
@@ -15,12 +15,11 @@ pub struct UserData {
 }
 
 impl UserData {
-    pub fn new(first_name: &str, last_name: &str, email: &str, country: &str) -> Self {
+    pub fn new(first_name: &str, last_name: &str, email: &str) -> Self {
         Self {
             first_name: first_name.to_string(),
             last_name: last_name.to_string(),
             email: email.to_string(),
-            country: country.to_string(),
             date_of_birth: String::new(),
             nationality: String::new(),
         }
@@ -49,6 +48,37 @@ impl Identity {
         let secret = Scalar::from_hash(hasher);
         let public = &secret * RISTRETTO_BASEPOINT_TABLE;
         Self { secret, public }
+    }
+
+    /// Génère une paire de clés aléatoire (pour les clients créés dynamiquement).
+    pub fn random() -> Self {
+        let secret = Scalar::random(&mut OsRng);
+        let public = &secret * RISTRETTO_BASEPOINT_TABLE;
+        Self { secret, public }
+    }
+
+    /// Reconstruit une identité depuis une clé privée (scalaire) encodée en hex (32 octets).
+    pub fn from_secret_hex(hex_str: &str) -> Option<Self> {
+        let bytes = hex::decode(hex_str).ok()?;
+        let arr: [u8; 32] = bytes.try_into().ok()?;
+        let secret = Scalar::from_canonical_bytes(arr).into_option()?;
+        let public = &secret * RISTRETTO_BASEPOINT_TABLE;
+        Some(Self { secret, public })
+    }
+
+    /// Retourne la clé privée (scalaire) encodée en hex.
+    pub fn secret_hex(&self) -> String {
+        hex::encode(self.secret.as_bytes())
+    }
+
+    /// Retourne la clé publique encodée en hex.
+    pub fn public_hex(&self) -> String {
+        hex::encode(self.public.compress().as_bytes())
+    }
+
+    /// Retourne le key_image encodé en hex.
+    pub fn key_image_hex(&self) -> String {
+        hex::encode(self.key_image().compress().as_bytes())
     }
 
     pub fn secret(&self) -> &Scalar {

@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use crate::state::{ServerState, sign_token};
 
 // ─────────────────────────────────────────────────────
-//  Route : POST /client/add_tokens
+//  POST /client/add_tokens
+//  Émet N Token B signés par le serveur.
+//  Le frontend (site partenaire) gère sa propre balance en local.
 // ─────────────────────────────────────────────────────
 
-/// Simule l'achat de Token B avec fiat par un site partenaire.
-/// Dans une production réelle, ce serait remplacé par un paiement Stripe/Solana.
 #[derive(Deserialize)]
 pub struct AddTokensRequest {
     pub site_name: String,
@@ -18,9 +18,8 @@ pub struct AddTokensRequest {
 #[derive(Serialize)]
 pub struct AddTokensResponse {
     pub site: String,
-    pub added: u32,
-    pub purchased_tokens: i64,
-    /// Signed Token B strings ready to use: "blind_value:sig"
+    pub issued: u32,
+    /// Tokens B signés prêts à l'emploi : "blind_value:sig"
     pub tokens: Vec<String>,
 }
 
@@ -32,13 +31,12 @@ pub async fn add_tokens(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let mut st = state.write().unwrap();
-    let account = st.client_accounts.entry(payload.site_name.clone()).or_default();
-    account.purchased_tokens += payload.amount as i64;
-    let balance = account.purchased_tokens;
+    let token_secret = {
+        let st = state.read().unwrap();
+        st.token_secret.clone()
+    };
 
-    // Issue real signed Token B strings so they pass verify_token in /dev/get_kyc
-    let token_secret = st.token_secret.clone();
+    // Génére des Token B signés sans stocker de balance en DB.
     let tokens: Vec<String> = (0..payload.amount)
         .map(|i| {
             use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,72 +54,18 @@ pub async fn add_tokens(
             format!("{blind_value}:{sig}")
         })
         .collect();
-    st.total_tokens_b_issued += payload.amount as usize;
 
-    println!(
-        "[BILLING] POST /client/add_tokens | '{}' +{} tokens | purchased_total={}",
-        payload.site_name, payload.amount, balance
-    );
+    {
+        let mut st = state.write().unwrap();
+        st.total_tokens_b_issued += payload.amount as usize;
+        st.log("ADD_TOKENS", "OK", &format!("site={} amount={}", payload.site_name, payload.amount));
+    }
+
+    println!("[BILLING] POST /client/add_tokens | '{}' +{} Token B", payload.site_name, payload.amount);
 
     Ok(Json(AddTokensResponse {
         site: payload.site_name,
-        added: payload.amount,
-        purchased_tokens: balance,
+        issued: payload.amount,
         tokens,
     }))
-}
-
-// ─────────────────────────────────────────────────────
-//  Tests unitaires
-// ─────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use crate::state::ClientAccount;
-
-    #[test]
-    fn test_purchased_balance() {
-        let mut acc = ClientAccount::default();
-        assert_eq!(acc.purchased_balance(), 0);
-
-        acc.purchased_tokens += 10;
-        assert_eq!(acc.purchased_balance(), 10);
-
-        acc.purchased_tokens += 5;
-        assert_eq!(acc.purchased_balance(), 15);
-    }
-
-    #[test]
-    fn test_kyc_provided_tracking() {
-        let mut acc = ClientAccount::default();
-        assert_eq!(acc.kyc_provided, 0);
-
-        acc.kyc_provided += 3;
-        assert_eq!(acc.kyc_provided, 3);
-    }
-
-    #[test]
-    fn test_default_values() {
-        let acc = ClientAccount::default();
-        assert_eq!(acc.purchased_tokens, 0);
-        assert_eq!(acc.kyc_provided, 0);
-        assert_eq!(acc.purchased_balance(), 0);
-    }
-
-    #[test]
-    fn test_full_lifecycle() {
-        let mut acc = ClientAccount::default();
-
-        // Site achète 10 tokens B directement
-        acc.purchased_tokens += 10;
-        assert_eq!(acc.purchased_balance(), 10);
-
-        // Site a injecté 7 KYC (Flux 1) — tracking côté admin
-        acc.kyc_provided += 7;
-        assert_eq!(acc.kyc_provided, 7);
-
-        // Les tokens B issus de l'échange sont gérés indépendamment (Flux 2)
-        // Le compte purchased_tokens reste à 10
-        assert_eq!(acc.purchased_balance(), 10);
-    }
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useWallet, SITES, getSiteTheme, EXCHANGE_RATE, API, type SiteName } from "../context/WalletContext";
+import { useWallet, SITES, getSiteTheme, EXCHANGE_RATE, API, SITE_TYPE, type SiteName } from "../context/WalletContext";
 import { showToast } from "../components/Toast";
 
 const ADMIN_HEADERS = { "x-admin-key": "super_secret_hackathon_key" };
@@ -274,6 +274,82 @@ function BuyPanel({ site }: { site: SiteName }) {
   );
 }
 
+// ─── Site ZKP proofs panel ───────────────────────────────────────────────────
+
+interface SiteZkpProofRecord {
+  id: number;
+  timestamp: number;
+  ring_size: number;
+  proved_claims: string[];
+}
+
+function SiteZkpPanel({ site }: { site: SiteName }) {
+  const [proofs, setProofs] = useState<SiteZkpProofRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const theme = getSiteTheme(site);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/admin/site/${site}/zkp_proofs`, { headers: ADMIN_HEADERS });
+      const data = await res.json();
+      setProofs(Array.isArray(data) ? data : []);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }, [site]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fmt = (ts: number) =>
+    new Date(ts * 1000).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-neutral-500">
+          {loading ? "Loading..." : `${proofs.length} ZKP proof${proofs.length !== 1 ? "s" : ""} verified by ${site}`}
+        </p>
+        <button onClick={load} className="text-xs text-neutral-400 hover:text-neutral-600 border border-neutral-200 px-2 py-1 rounded transition-colors">
+          Refresh
+        </button>
+      </div>
+
+      {proofs.length === 0 && !loading && (
+        <div className="border border-neutral-200 rounded-lg p-8 text-center text-sm text-neutral-400">
+          No ZKP proofs yet. Use the ZKP Login tab on the User Experience page.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {proofs.map((p) => (
+          <div key={p.id} className="bg-white border border-neutral-200 rounded-lg p-4 hover:border-neutral-300 transition-colors">
+            <div className="flex items-start justify-between mb-2">
+              <p className={`font-semibold text-sm ${theme.color}`}>Anonymous user #{p.id}</p>
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${theme.bg} ${theme.color} ${theme.border}`}>
+                ZKP
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {p.proved_claims.map((c) => (
+                <span key={c} className={`text-[10px] px-2 py-0.5 rounded-full border ${theme.bg} ${theme.color} ${theme.border}`}>
+                  {c}
+                </span>
+              ))}
+            </div>
+            <p className="text-xs text-neutral-400">Ring size: {p.ring_size} members</p>
+            <p className="text-[10px] text-neutral-300 mt-1 font-mono">{fmt(p.timestamp)}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className={`border ${theme.border} ${theme.bg} rounded-lg p-3 text-xs ${theme.color} opacity-70`}>
+        <strong>ZKP_ONLY</strong> — {site} receives zero-knowledge proofs. No personal data is ever transmitted.
+        Ring size = k-anonymity level. Claims are cryptographically verified by Sauron.
+      </div>
+    </div>
+  );
+}
+
 // ─── Site users panel ─────────────────────────────────────────────────────────
 
 interface SiteUserRecord {
@@ -357,6 +433,7 @@ export default function SiteTreasury() {
   const wallet = wallets[activeSite];
   const theme = getSiteTheme(activeSite);
   const [tab, setTab] = useState<"treasury" | "users">("treasury");
+  const isZkp = SITE_TYPE[activeSite] === "ZKP_ONLY";
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
@@ -395,7 +472,7 @@ export default function SiteTreasury() {
                   : "text-neutral-400 border-transparent hover:text-neutral-600"
               }`}
             >
-              {t === "treasury" ? "Treasury" : `Users${tab !== "users" ? "" : ""}`}
+              {t === "treasury" ? "Treasury" : isZkp ? "ZKP Proofs" : "Users"}
             </button>
           ))}
         </div>
@@ -444,6 +521,8 @@ export default function SiteTreasury() {
               <BuyPanel site={activeSite} />
             </div>
           </>
+        ) : isZkp ? (
+          <SiteZkpPanel site={activeSite} />
         ) : (
           <SiteUsersPanel site={activeSite} />
         )}

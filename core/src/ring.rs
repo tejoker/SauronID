@@ -91,7 +91,7 @@ mod tests {
     use crate::oprf;
 
     fn create_test_member(name: &str) -> AdultMember {
-        let data = UserData::new(name, "Test", "mail", "FR");
+        let data = UserData::new(name, "Test", "mail");
         let server_k = Scalar::from_bytes_mod_order([42u8; 32]);
         let (b, r) = oprf::client_blind("password", name);
         let e = oprf::server_evaluate(b, server_k);
