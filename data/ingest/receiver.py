@@ -33,6 +33,7 @@ needed as long as we stay on one FastAPI worker (single process).
 """
 
 import asyncio
+import collections
 import json
 import os
 import sys
@@ -65,8 +66,10 @@ _risk: RiskEngine | None = None
 _notify: NotificationRouter | None = None
 
 # Per-(company_id, user_id) last known state for delta decoding.
-# Key: (int, int)  Value: dict with amount_usd, credit_balance, timestamp_ms
-_state: dict[tuple[int, int], dict] = {}
+# Capped at 500k entries (10k personas × 50 companies) via OrderedDict LRU
+# to prevent unbounded memory growth under sustained load.
+_STATE_CAP = 500_000
+_state: collections.OrderedDict = collections.OrderedDict()
 
 # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -101,7 +104,11 @@ def _apply_delta(event: pb.Event) -> dict:
         "timestamp_ms":  ts_ms,
         "auth_failed":   auth_failed,
     }
+    # LRU update: move key to end (most-recently-used), evict oldest if over cap
     _state[key] = resolved
+    _state.move_to_end(key)
+    if len(_state) > _STATE_CAP:
+        _state.popitem(last=False)  # evict least-recently-used
     return resolved
 
 
@@ -110,10 +117,10 @@ def _apply_delta(event: pb.Event) -> dict:
 async def _process_event(raw: dict) -> dict:
     """
     Run risk checks and build a Decision dict.
-    All CPU work is offloaded to the thread pool to avoid blocking the loop.
+    score() is <1 ms once warmed up — calling it directly avoids thread-pool
+    overhead (queue, wake, marshal) which exceeds the compute time itself.
     """
-    loop = asyncio.get_event_loop()
-    decision = await loop.run_in_executor(None, _risk.score, raw)
+    decision = _risk.score(raw)
 
     # Push to SSE queue
     await _notify.broadcast(decision)

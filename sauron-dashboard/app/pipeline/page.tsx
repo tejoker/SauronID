@@ -8,10 +8,12 @@ import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtPct } from "../shared";
 const DASH_API = process.env.NEXT_PUBLIC_ANALYTICS_URL || "http://localhost:8002";
 
 interface PData {
+  live?: boolean;
   throughput: number;
   avg_latency_ms: number;
   uptime_pct: number;
   fraud_detected: number;
+  total_events?: number;
   latency: { service: string; ms: number }[];
   resources: { name: string; cpu_pct: number; mem_mb: number; status: string }[];
 }
@@ -26,11 +28,12 @@ interface FraudEvent {
 
 export default function PipelinePage() {
   const [data, setData] = useState<PData | null>(null);
+  const [error, setError] = useState(false);
   const [fraudEvents, setFraudEvents] = useState<FraudEvent[]>([]);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    sauronFetch<PData>("pipeline-stats").then(setData).catch(() => {});
+    sauronFetch<PData>("pipeline-stats").then(setData).catch(() => setError(true));
   }, []);
 
   useEffect(() => {
@@ -40,13 +43,25 @@ export default function PipelinePage() {
       es.onmessage = (e) => {
         try {
           const ev = JSON.parse(e.data) as FraudEvent;
+          if (ev.score == null || ev.type == null) return; // skip error/malformed events
           setFraudEvents((prev) => [ev, ...prev].slice(0, 50));
-        } catch {}
+        } catch { /* ignore */ }
       };
       es.onerror = () => {};
-    } catch {}
+    } catch { /* ignore */ }
     return () => esRef.current?.close();
   }, []);
+
+  if (error) return (
+    <div className="space-y-4 max-w-[1200px]">
+      <h1 className="text-lg font-bold text-neutral-900">Pipeline</h1>
+      <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
+        Failed to load pipeline data. The analytics API may be unavailable.
+        <button onClick={() => { setError(false); sauronFetch<PData>("pipeline-stats").then(setData).catch(() => setError(true)); }}
+          className="ml-3 text-xs px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700">Retry</button>
+      </div>
+    </div>
+  );
 
   if (!data) return <Spinner />;
 
@@ -58,13 +73,21 @@ export default function PipelinePage() {
 
   return (
     <div className="space-y-6 max-w-[1200px]">
-      <h1 className="text-lg font-bold text-neutral-900">Pipeline</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-neutral-900">Pipeline</h1>
+        {data.live === false && (
+          <span className="text-xs px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 font-medium">
+            Static snapshot (ingest offline)
+          </span>
+        )}
+      </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Kpi label="Throughput" value={`${fmtNum(data.throughput)}/s`} />
         <Kpi label="Avg Latency" value={`${data.avg_latency_ms}ms`} />
         <Kpi label="Uptime" value={fmtPct(data.uptime_pct)} accent="text-emerald-600" />
         <Kpi label="Fraud Detected" value={fmtNum(data.fraud_detected)} accent="text-red-600" />
+        {data.total_events != null && <Kpi label="Total Events" value={fmtNum(data.total_events)} />}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

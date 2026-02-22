@@ -91,7 +91,7 @@ export default function RingsPage() {
               <span className="text-xl font-bold tabular-nums text-neutral-900">{fmtNum(r.count)}</span>
               <span className={`text-xs font-medium ${r.growth_pct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                 {r.growth_pct >= 0 ? "+" : ""}
-                {r.growth_pct.toFixed(1)}%
+                {r.growth_pct != null ? `${r.growth_pct.toFixed(1)}%` : "—"}
               </span>
             </div>
             <p className="text-[11px] text-neutral-400">{r.ring_id}</p>

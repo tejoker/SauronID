@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import "../chartSetup";
 import { Bar } from "react-chartjs-2";
-import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtUsd } from "../shared";
+import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtUsd, fmtPct } from "../shared";
 
 interface TokenClient {
   client_id: number;
@@ -11,7 +11,8 @@ interface TokenClient {
   type: string;
   bal_a: number;
   bal_b: number;
-  flow_30d: number;
+  a_earned_30d: number;
+  b_spent_30d: number;
   runway_days: number;
 }
 
@@ -41,12 +42,14 @@ export default function TokensPage() {
     <div className="space-y-6 max-w-[1200px]">
       <h1 className="text-lg font-bold text-neutral-900">Token Ledger</h1>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
         <Kpi label="Credit A Minted" value={fmtNum(cs.credit_a_total_minted)} accent="text-blue-600" />
-        <Kpi label="Credit B Converted" value={fmtNum(cs.credit_b_converted)} accent="text-orange-500" />
-        <Kpi label="Exchange Rate" value={`1:${cs.exchange_rate}`} />
+        <Kpi label="A Converted" value={fmtNum(cs.credit_a_converted)} accent="text-purple-600" />
+        <Kpi label="Credit B Issued" value={fmtNum(cs.credit_b_issued)} accent="text-orange-500" />
+        <Kpi label="B Spent" value={fmtNum(cs.credit_b_spent)} accent="text-amber-600" />
+        <Kpi label="KYC Revenue" value={fmtUsd(cs.kyc_revenue_usd)} accent="text-green-600" />
         <Kpi
-          label="Low Balance Alerts"
+          label="Low Balance"
           value={data.low_balance_alerts.length}
           accent={data.low_balance_alerts.length > 0 ? "text-red-600" : "text-green-600"}
         />
@@ -99,7 +102,8 @@ export default function TokensPage() {
                 <th className="text-left py-2 font-medium">Type</th>
                 <th className="text-right py-2 font-medium">Balance A</th>
                 <th className="text-right py-2 font-medium">Balance B</th>
-                <th className="text-right py-2 font-medium">30d Flow</th>
+                <th className="text-right py-2 font-medium">A Earned</th>
+                <th className="text-right py-2 font-medium">B Spent 30d</th>
                 <th className="text-right py-2 font-medium">Runway</th>
               </tr>
             </thead>
@@ -120,7 +124,8 @@ export default function TokensPage() {
                   </td>
                   <td className="py-2 text-right tabular-nums text-blue-600">{fmtNum(c.bal_a)}</td>
                   <td className="py-2 text-right tabular-nums text-orange-500">{fmtNum(c.bal_b)}</td>
-                  <td className="py-2 text-right tabular-nums">{fmtNum(c.flow_30d)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmtNum(c.a_earned_30d)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmtNum(c.b_spent_30d)}</td>
                   <td className="py-2 text-right tabular-nums">
                     {c.runway_days > 0 ? `${fmtNum(c.runway_days)}d` : "---"}
                   </td>

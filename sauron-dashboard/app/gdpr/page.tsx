@@ -5,14 +5,28 @@ import "../chartSetup";
 import { Doughnut, Bar } from "react-chartjs-2";
 import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtPct } from "../shared";
 
+interface MonthlyHistory { month: string; purged: number }
+interface RunLogEntry {
+  run_date: string;
+  newly_purged: number;
+  total_anonymized: number;
+  eligible_remaining: number;
+  eu_eea_scope: number;
+}
+
 interface GData {
-  retention: Record<string, number>;
   total_users: number;
-  purged_users: number;
-  purge_rate: number;
-  monthly_purges: { months: string[]; counts: number[] };
-  policies: { name: string; retention_days: number; auto_purge: boolean }[];
-  recent_purges: { user_id: string; purged_at: string; data_types: string[] }[];
+  eu_eea_scope: number;
+  non_eu_total: number;
+  active_users: number;
+  anonymized_total: number;
+  pending_purge: number;
+  retention_days: number;
+  cutoff_date: string;
+  last_run_date: string | null;
+  last_run_purged: number;
+  monthly_history: MonthlyHistory[];
+  run_log: RunLogEntry[];
 }
 
 export default function GdprPage() {
@@ -40,9 +54,11 @@ export default function GdprPage() {
 
   if (!data) return <Spinner />;
 
-  const retentionLabels = Object.keys(data.retention);
-  const retentionValues = Object.values(data.retention);
-  const retentionColors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+  const purgeRate = data.total_users > 0 ? (data.anonymized_total / data.total_users) * 100 : 0;
+
+  const scopeLabels = ["EU/EEA Active", "Anonymized", "Non-EU/EEA"];
+  const scopeValues = [data.active_users, data.anonymized_total, data.non_eu_total];
+  const scopeColors = ["#3b82f6", "#ef4444", "#10b981"];
 
   return (
     <div className="space-y-6 max-w-[1200px]">
@@ -63,23 +79,25 @@ export default function GdprPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
         <Kpi label="Total Users" value={fmtNum(data.total_users)} />
-        <Kpi label="Purged Users" value={fmtNum(data.purged_users)} accent="text-red-600" />
-        <Kpi label="Purge Rate" value={fmtPct(data.purge_rate)} />
-        <Kpi label="Retention Cats" value={String(retentionLabels.length)} />
+        <Kpi label="EU/EEA Scope" value={fmtNum(data.eu_eea_scope)} accent="text-blue-600" />
+        <Kpi label="Anonymized" value={fmtNum(data.anonymized_total)} accent="text-red-600" />
+        <Kpi label="Pending Purge" value={fmtNum(data.pending_purge)} accent={data.pending_purge > 0 ? "text-amber-600" : "text-green-600"} />
+        <Kpi label="Purge Rate" value={fmtPct(purgeRate)} />
+        <Kpi label="Retention" value={`${data.retention_days}d`} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card title="Data Retention Breakdown">
+        <Card title="User Scope Breakdown">
           <div className="h-52 flex items-center justify-center">
             <Doughnut
               data={{
-                labels: retentionLabels,
+                labels: scopeLabels,
                 datasets: [
                   {
-                    data: retentionValues,
-                    backgroundColor: retentionColors.slice(0, retentionLabels.length),
+                    data: scopeValues,
+                    backgroundColor: scopeColors,
                     borderWidth: 0,
                   },
                 ],
@@ -97,9 +115,9 @@ export default function GdprPage() {
           <div className="h-52">
             <Bar
               data={{
-                labels: data.monthly_purges.months,
+                labels: data.monthly_history.map((h) => h.month),
                 datasets: [
-                  { label: "Purges", data: data.monthly_purges.counts, backgroundColor: "#ef4444", borderRadius: 3 },
+                  { label: "Purged", data: data.monthly_history.map((h) => h.purged), backgroundColor: "#ef4444", borderRadius: 3 },
                 ],
               }}
               options={{
@@ -113,49 +131,53 @@ export default function GdprPage() {
         </Card>
       </div>
 
-      <Card title="Retention Policies">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-neutral-200 text-neutral-400">
-                <th className="text-left py-2 font-medium">Policy Name</th>
-                <th className="text-right py-2 font-medium">Retention (days)</th>
-                <th className="text-right py-2 font-medium">Auto-Purge</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.policies.map((p, i) => (
-                <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
-                  <td className="py-2 font-medium text-neutral-700">{p.name}</td>
-                  <td className="py-2 text-right tabular-nums">{p.retention_days}</td>
-                  <td className="py-2 text-right">
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${p.auto_purge ? "bg-emerald-100 text-emerald-700" : "bg-neutral-100 text-neutral-500"}`}>
-                      {p.auto_purge ? "ON" : "OFF"}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Card title="Last Purge Run">
+          <div className="text-xs space-y-2">
+            <div className="flex justify-between"><span className="text-neutral-400">Date</span><span className="font-mono text-neutral-700">{data.last_run_date ?? "Never"}</span></div>
+            <div className="flex justify-between"><span className="text-neutral-400">Records Purged</span><span className="font-mono text-neutral-700">{fmtNum(data.last_run_purged)}</span></div>
+            <div className="flex justify-between"><span className="text-neutral-400">Cutoff Date</span><span className="font-mono text-neutral-700">{data.cutoff_date}</span></div>
+          </div>
+        </Card>
+        <Card title="Active vs Anonymized">
+          <div className="text-xs space-y-2">
+            <div className="flex justify-between"><span className="text-neutral-400">Active EU/EEA</span><span className="font-mono text-blue-600">{fmtNum(data.active_users)}</span></div>
+            <div className="flex justify-between"><span className="text-neutral-400">Anonymized</span><span className="font-mono text-red-600">{fmtNum(data.anonymized_total)}</span></div>
+            <div className="flex justify-between"><span className="text-neutral-400">Non-EU/EEA</span><span className="font-mono text-emerald-600">{fmtNum(data.non_eu_total)}</span></div>
+          </div>
+        </Card>
+        <Card title="Compliance Status">
+          <div className="text-xs space-y-2">
+            <div className="flex justify-between"><span className="text-neutral-400">Retention Policy</span><span className="font-medium text-neutral-700">{data.retention_days} days</span></div>
+            <div className="flex justify-between"><span className="text-neutral-400">Pending Purge</span>
+              <span className={`font-medium ${data.pending_purge === 0 ? "text-green-600" : "text-amber-600"}`}>
+                {data.pending_purge === 0 ? "Compliant" : `${fmtNum(data.pending_purge)} records`}
+              </span>
+            </div>
+          </div>
+        </Card>
+      </div>
 
-      <Card title="Recent Purge Audit Log">
+      <Card title="Purge Audit Log">
         <div className="overflow-x-auto max-h-56 overflow-y-auto">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-white">
               <tr className="border-b border-neutral-200 text-neutral-400">
-                <th className="text-left py-2 font-medium">User ID</th>
-                <th className="text-left py-2 font-medium">Purged At</th>
-                <th className="text-left py-2 font-medium">Data Types</th>
+                <th className="text-left py-2 font-medium">Run Date</th>
+                <th className="text-right py-2 font-medium">Newly Purged</th>
+                <th className="text-right py-2 font-medium">Total Anonymized</th>
+                <th className="text-right py-2 font-medium">Eligible Remaining</th>
+                <th className="text-right py-2 font-medium">EU/EEA Scope</th>
               </tr>
             </thead>
             <tbody>
-              {data.recent_purges.map((p, i) => (
+              {data.run_log.map((r, i) => (
                 <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
-                  <td className="py-2 text-neutral-700 font-mono">{p.user_id}</td>
-                  <td className="py-2 text-neutral-500 tabular-nums">{p.purged_at}</td>
-                  <td className="py-2 text-neutral-500">{p.data_types.join(", ")}</td>
+                  <td className="py-2 text-neutral-700 font-mono">{r.run_date}</td>
+                  <td className="py-2 text-right tabular-nums text-red-600">{fmtNum(r.newly_purged)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmtNum(r.total_anonymized)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmtNum(r.eligible_remaining)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmtNum(r.eu_eea_scope)}</td>
                 </tr>
               ))}
             </tbody>
