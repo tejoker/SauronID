@@ -80,7 +80,7 @@ _gdpr_log      : pl.DataFrame | None = None
 
 # Credit economy constants (must match build_data.py)
 CREDIT_A_PER_KYC = 1.0    # 1 Credit A per full KYC
-KYC_USD_PER_HEAD = 1.00   # $1/KYC break-even
+KYC_USD_PER_HEAD = 2.00   # $2/KYC (1A = 5B, B = $0.40 → 1A = $2.00)
 CREDIT_B_USD     = 0.40   # USD per Credit B
 EXCHANGE_A_TO_B  = 5.0    # 1 Credit A = 5 Credit B
 
