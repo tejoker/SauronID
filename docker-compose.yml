@@ -9,7 +9,7 @@ services:
     environment:
       - PORT=3001
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:3001/admin/stats", "-H", "x-admin-key: super_secret_hackathon_key"]
+      test: [ "CMD", "curl", "-sf", "http://localhost:3001/admin/stats", "-H", "x-admin-key: super_secret_hackathon_key" ]
       interval: 3s
       timeout: 5s
       retries: 15
@@ -27,7 +27,7 @@ services:
       - SEED_USERS=200
     volumes:
       - ./data:/app/data:ro
-    entrypoint: ["bash", "seed.sh"]
+    entrypoint: [ "bash", "seed.sh" ]
     restart: "no"
 
   # ── KYC Python service ─────────────────────────────────────────────────────
@@ -89,4 +89,49 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ── ZKP Issuer (OID4VCI — port 4000) ──────────────────────────────────
+  zkp-issuer:
+    build: ./zkp/issuer
+    container_name: sauron-zkp-issuer
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - ISSUER_DID=did:sauron:issuer:1
+      - ISSUER_SEED=sauronid-issuer-seed-hackathon
+      - KYC_SERVICE_URL=http://kyc:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── CAMARA Mock Operator (port 9000) ───────────────────────────────────
+  camara-mock:
+    build: ./zkp/camara
+    container_name: sauron-camara-mock
+    ports:
+      - "9000:9000"
+    environment:
+      - MOCK_OPERATOR_PORT=9000
+    restart: unless-stopped
+
+  # ── Anomaly Detection Engine (Python ML — port 8010) ─────────────────
+  anomaly-engine:
+    build: ./anomaly-engine
+    container_name: sauron-anomaly-engine
+    ports:
+      - "8010:8010"
+    environment:
+      - PORT=8010
+    restart: unless-stopped
+
+  # ── Hardhat Local EVM Node (port 8545) ───────────────────────────────
+  hardhat-node:
+    build: ./contracts/revocation
+    container_name: sauron-hardhat
+    ports:
+      - "8545:8545"
+    command: npx hardhat node --hostname 0.0.0.0
     restart: unless-stopped

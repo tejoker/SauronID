@@ -1,0 +1,20 @@
+{
+    "name": "@sauronid/acquirer-sdk",
+    "version": "1.0.0",
+    "description": "SauronID OID4VP Acquirer SDK — Verifier integration for platforms",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "test": "node dist/test.js"
+    },
+    "dependencies": {
+        "snarkjs": "^0.7.6",
+        "node-fetch": "^2.7.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.4.0",
+        "@types/node": "^20.0.0",
+        "@types/node-fetch": "^2.6.0"
+    }
+}

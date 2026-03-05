@@ -1,0 +1,72 @@
+"""
+SauronID Revocation & Delegation Subgraph Schema
+
+Indexed from on-chain events for millisecond-latency queries.
+Used by Acquirer SDKs via GraphQL to check revocation status.
+"""
+
+type Revocation @entity {
+  "keccak256 digest of the credential hash"
+  id: ID!
+  "The credential digest (bytes32)"
+  digest: Bytes!
+  "Address of the revoker (issuer)"
+  revoker: Bytes!
+  "Block timestamp of revocation"
+  timestamp: BigInt!
+  "Block number"
+  blockNumber: BigInt!
+  "Reason for revocation"
+  reason: String!
+  "Transaction hash"
+  txHash: Bytes!
+}
+
+type BatchRevocation @entity {
+  "Transaction hash of the batch"
+  id: ID!
+  "List of revoked digests"
+  digests: [Bytes!]!
+  "Address of the revoker"
+  revoker: Bytes!
+  "Block timestamp"
+  timestamp: BigInt!
+  "Number of credentials revoked"
+  count: Int!
+}
+
+type Delegation @entity {
+  "Agent checksum (bytes32)"
+  id: ID!
+  "Agent's behavioral checksum"
+  agentChecksum: Bytes!
+  "Parent agent/human checksum"
+  parentChecksum: Bytes!
+  "Address that registered the delegation"
+  registeredBy: Bytes!
+  "Expiration timestamp"
+  expiresAt: BigInt!
+  "JSON-encoded scope restrictions"
+  scope: String!
+  "Whether the delegation is currently active"
+  active: Boolean!
+  "Timestamp when revoked (null if still active)"
+  revokedAt: BigInt
+  "Reason for revocation"
+  revokeReason: String
+  "Block timestamp of registration"
+  createdAt: BigInt!
+}
+
+type RevocationStats @entity {
+  "Singleton entity with id 'stats'"
+  id: ID!
+  "Total credentials revoked"
+  totalRevocations: BigInt!
+  "Total delegations registered"
+  totalDelegations: BigInt!
+  "Active delegations"
+  activeDelegations: BigInt!
+  "Last updated block"
+  lastUpdatedBlock: BigInt!
+}

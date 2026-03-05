@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import "../chartSetup";
-import { Line } from "react-chartjs-2";
+import { Line, Bar } from "react-chartjs-2";
 import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtPct } from "../shared";
 
 /* ── Types matching actual API responses ──────────────────────────────── */
@@ -159,18 +159,25 @@ export default function InsightsPage() {
       </div>
 
       {/* Elasticity = correlation metrics from compute_analytics */}
-      <Card title="Statistical Metrics">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {data.elasticity.metrics.map((m) => (
-            <div key={m.metric} className="bg-neutral-50 border border-neutral-100 rounded-lg p-3">
-              <p className="text-[10px] text-neutral-400 uppercase tracking-wider mb-1">{m.metric.replace(/_/g, " ")}</p>
-              <p className="text-xl font-bold tabular-nums text-neutral-900">{m.value != null ? m.value.toFixed(4) : "—"}</p>
-              <p className="text-[10px] text-neutral-400 mt-1">p-value: {m.p_value != null ? m.p_value.toFixed(4) : "N/A"}</p>
-              <p className="text-xs text-neutral-500 mt-1">{m.description}</p>
-            </div>
-          ))}
-        </div>
-      </Card>
+      {data.elasticity.metrics.length > 0 && (
+        <Card title="Price Elasticity">
+          <div className="h-52">
+            <Bar
+              data={{
+                labels: data.elasticity.metrics.map((e) => e.metric.replace(/_/g, " ")),
+                datasets: [{ data: data.elasticity.metrics.map((e) => e.value), backgroundColor: "#10b981", borderRadius: 4 }],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: "y" as const,
+                plugins: { legend: { display: false } },
+                scales: { x: { grid: { color: "#f3f4f6" } }, y: { grid: { display: false } } },
+              }}
+            />
+          </div>
+        </Card>
+      )}
 
       <Card title="Client Health">
         <div className="overflow-x-auto max-h-72 overflow-y-auto">

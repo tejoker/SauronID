@@ -90,11 +90,12 @@ export default function OverviewPage() {
 
       {/* KPI grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <Kpi label="Registered Users" value={fmtNum(stats?.total_users ?? k.total_full_kyc)} />
-        <Kpi label="Partner Clients" value={fmtNum(stats?.total_clients ?? k.active_clients)} />
+        <Kpi label="KYC Completions" value={fmtNum(k.total_full_kyc ?? stats?.total_users)} />
+        <Kpi label="Attribute Queries" value={fmtNum(k.total_reduced)} />
+        <Kpi label="Active Clients" value={fmtNum(k.active_clients ?? stats?.total_clients)} />
         <Kpi label="KYC Revenue" value={fmtUsd(k.kyc_revenue_usd)} accent="text-green-600" />
-        <Kpi label="Credit A Minted" value={fmtNum(k.credit_a_total_minted ?? stats?.total_tokens_a_issued)} accent="text-blue-600" />
-        <Kpi label="Credit B Issued" value={fmtNum(k.credit_b_issued ?? stats?.total_tokens_b_issued)} accent="text-orange-500" />
+        <Kpi label="Credit A Earned" value={fmtNum(k.credit_a_earned)} accent="text-blue-600" />
+        <Kpi label="Credit B Purchased" value={fmtNum(k.credit_b_purchased)} accent="text-orange-500" />
         <Kpi label="Query Revenue" value={fmtUsd(k.query_revenue_usd)} accent="text-green-600" />
         <Kpi label="Failure Rate" value={fmtPct(k.failure_rate)} accent={(k.failure_rate ?? 0) > 5 ? "text-red-600" : "text-neutral-900"} />
         <Kpi label="Exchange Rate" value={stats ? `1:${stats.exchange_rate}` : "\u2014"} />

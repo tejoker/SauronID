@@ -1,0 +1,20 @@
+{
+    "name": "@sauronid/revocation-contracts",
+    "version": "1.0.0",
+    "description": "SauronID EVM Revocation Registry and Agent Delegation Smart Contracts",
+    "scripts": {
+        "compile": "npx hardhat compile",
+        "test": "npx hardhat test",
+        "node": "npx hardhat node",
+        "deploy": "npx hardhat run scripts/deploy.ts --network localhost",
+        "deploy:sepolia": "npx hardhat run scripts/deploy.ts --network sepolia"
+    },
+    "devDependencies": {
+        "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+        "@openzeppelin/contracts": "^5.0.0",
+        "hardhat": "^2.19.0",
+        "typescript": "^5.4.0",
+        "ts-node": "^10.9.0",
+        "@types/node": "^20.0.0"
+    }
+}

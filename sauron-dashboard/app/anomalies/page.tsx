@@ -31,8 +31,15 @@ const SEV_COLORS: Record<string, string> = {
   low: "bg-blue-100 text-blue-700",
 };
 
+interface MlAnomalies {
+  events: unknown[];
+  total: number;
+  precision_proxy: number | null;
+}
+
 export default function AnomaliesPage() {
   const [data, setData] = useState<AData | null>(null);
+  const [ml, setMl] = useState<MlAnomalies | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [resiliated, setResiiated] = useState<Set<number>>(new Set());
 
@@ -41,7 +48,10 @@ export default function AnomaliesPage() {
   }
 
   useEffect(() => {
-    sauronFetch<AData>("anomalies").then(setData).catch(() => {});
+    Promise.all([
+      sauronFetch<AData>("anomalies"),
+      sauronFetch<MlAnomalies>("insights/anomalies-ml").catch(() => null),
+    ]).then(([a, m]) => { setData(a); setMl(m); });
   }, []);
 
   if (!data) return <Spinner />;
@@ -58,12 +68,11 @@ export default function AnomaliesPage() {
     <div className="space-y-6 max-w-[1200px]">
       <h1 className="text-lg font-bold text-neutral-900">Anomalies</h1>
 
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <Kpi label="Total" value={fmtNum(data.events.length)} />
-        <Kpi label="Critical" value={fmtNum(sevMap["critical"] || 0)} accent="text-red-600" />
-        <Kpi label="High" value={fmtNum(sevMap["high"] || 0)} accent="text-orange-600" />
-        <Kpi label="Medium" value={fmtNum(sevMap["medium"] || 0)} accent="text-yellow-600" />
-        <Kpi label="Low" value={fmtNum(sevMap["low"] || 0)} accent="text-blue-600" />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Kpi label="Total Anomalies" value={fmtNum(data.events.length)} />
+        <Kpi label="High Severity" value={fmtNum(sevMap["high"] || 0)} accent="text-red-600" />
+        {ml && <Kpi label="ML Detected" value={fmtNum(ml.total)} accent="text-purple-600" />}
+        {ml?.precision_proxy != null && <Kpi label="ML Precision" value={`${(ml.precision_proxy * 100).toFixed(1)}%`} />}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

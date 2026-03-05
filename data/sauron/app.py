@@ -221,26 +221,29 @@ def _load_analytics():
 def api_overview():
     _load()
 
-    # ── Live KPIs from Rust (single source of truth) ───────────────────────
-    live  = _fetch_rust_state()
-    stats = live.get("stats", {})
+    # ── KPIs derived from parquet simulation data ────────────────────────
+    # The parquets contain the full 2-year simulation (10K users, 50 clients).
+    # Rust live state only has seed data (200 users) so we derive everything
+    # from the parquets to keep the dashboard internally consistent.
 
-    unique_users        = int(stats.get("total_users",           0))
-    total_clients_live  = int(stats.get("total_clients",         0))
-    credit_a_minted     = float(stats.get("total_tokens_a_issued", 0))
-    credit_a_burned     = float(stats.get("total_tokens_a_burned", 0))
-    credit_b_issued     = float(stats.get("total_tokens_b_issued", 0))
-    total_b_spent_live  = float(stats.get("total_tokens_b_spent",  0))
-    credit_a_retained   = round(credit_a_minted - credit_a_burned, 1)
-    credit_b_face_value = round(credit_b_issued * CREDIT_B_USD, 2)
-    kyc_revenue         = round(credit_a_minted * KYC_USD_PER_HEAD, 2)
-    # Query revenue: derive from parquet spending (Rust doesn't track spending yet)
-    parquet_b_spent     = float(_credit_ledger.filter(pl.col("event_type") == "verify_spent")["amount"].abs().sum()) if _credit_ledger.height > 0 else 0.0
-    query_revenue       = round(max(total_b_spent_live, parquet_b_spent) * CREDIT_B_USD, 2)
+    unique_users        = int(_sauron_users.height) if _sauron_users is not None and _sauron_users.height > 0 else 0
+    total_clients_live  = int(_clients.height) if _clients is not None else 0
 
-    # Credit A earned from parquets (historical / 2-year simulation)
+    # Credit A: total earned from parquet KYC events
     parquet_a_earned    = float(_credit_ledger.filter((pl.col("credit_type") == "A") & (pl.col("amount") > 0))["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    # Credit A burned (converted to B)
+    parquet_a_burned    = float(_credit_ledger.filter(pl.col("event_type") == "convert_to_B")["amount"].abs().sum()) if _credit_ledger.height > 0 else 0.0
+    credit_a_retained   = round(parquet_a_earned - parquet_a_burned, 1)
+
+    # Credit B
     parquet_b_purchased = float(_credit_ledger.filter((pl.col("credit_type") == "B") & (pl.col("event_type") == "purchase"))["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_b_converted = float(_credit_ledger.filter(pl.col("event_type") == "convert_from_A")["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_b_issued    = parquet_b_purchased + parquet_b_converted
+    parquet_b_spent     = float(_credit_ledger.filter(pl.col("event_type") == "verify_spent")["amount"].abs().sum()) if _credit_ledger.height > 0 else 0.0
+
+    credit_b_face_value = round(parquet_b_issued * CREDIT_B_USD, 2)
+    kyc_revenue         = round(parquet_a_earned * KYC_USD_PER_HEAD, 2)
+    query_revenue       = round(parquet_b_spent * CREDIT_B_USD, 2)
 
     # ── Historical chart data from parquets (decorative) ──────────────────
     total_verif = int(_verifications["total"].sum())   if _verifications.height > 0 else 0
@@ -328,15 +331,15 @@ def api_overview():
             "total_failed":           total_fail,
             "failure_rate":           round(total_fail / max(total_verif, 1) * 100, 2),
             "active_clients":         active_clients,
-            # ── LIVE from Rust ────────────────────────────────────────
+            # ── All from parquet simulation data ──────────────────────
             "unique_registered_users": unique_users,
             "total_clients":          total_clients_live,
             "kyc_revenue_usd":        kyc_revenue,
             "query_revenue_usd":      query_revenue,
-            "credit_a_total_minted":  round(credit_a_minted, 0),
+            "credit_a_total_minted":  round(parquet_a_earned, 0),
             "credit_a_retained":      credit_a_retained,
             "credit_a_earned":        round(parquet_a_earned, 0),
-            "credit_b_issued":        round(credit_b_issued, 0),
+            "credit_b_issued":        round(parquet_b_issued, 0),
             "credit_b_purchased":     round(parquet_b_purchased, 0),
             "credit_b_face_value":    credit_b_face_value,
             "exchange_rate":          EXCHANGE_A_TO_B,
@@ -360,50 +363,103 @@ def api_overview():
 def api_tokens():
     _load()
 
-    # ── Live credit summary from Rust (single source of truth) ────────────
+    # ── Credit data from parquets (consistent with overview) ─────────────
     live  = _fetch_rust_state()
     stats = live.get("stats", {})
     # Index live clients by name for balance lookups
     live_by_name: dict[str, dict] = {c["name"]: c for c in live.get("clients", [])}
 
-    credit_a_minted    = float(stats.get("total_tokens_a_issued", 0))
-    credit_a_burned    = float(stats.get("total_tokens_a_burned", 0))
-    credit_b_issued    = float(stats.get("total_tokens_b_issued", 0))
-    credit_b_spent     = float(stats.get("total_tokens_b_spent",  0))
-    credit_a_retained  = round(credit_a_minted - credit_a_burned, 1)
-    credit_b_face_value= round(credit_b_issued * CREDIT_B_USD, 2)
-    kyc_revenue        = round(credit_a_minted * KYC_USD_PER_HEAD, 2)
+    # All credit aggregates from parquet (not Rust seed data)
+    parquet_a_earned   = float(_credit_ledger.filter((pl.col("credit_type") == "A") & (pl.col("amount") > 0))["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_a_burned   = float(_credit_ledger.filter(pl.col("event_type") == "convert_to_B")["amount"].abs().sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_b_purchased= float(_credit_ledger.filter((pl.col("credit_type") == "B") & (pl.col("event_type") == "purchase"))["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_b_converted= float(_credit_ledger.filter(pl.col("event_type") == "convert_from_A")["amount"].sum()) if _credit_ledger.height > 0 else 0.0
+    parquet_b_issued   = parquet_b_purchased + parquet_b_converted
+    parquet_b_spent    = float(_credit_ledger.filter(pl.col("event_type") == "verify_spent")["amount"].abs().sum()) if _credit_ledger.height > 0 else 0.0
+    credit_a_retained  = round(parquet_a_earned - parquet_a_burned, 1)
+    credit_b_face_value= round(parquet_b_issued * CREDIT_B_USD, 2)
+    kyc_revenue        = round(parquet_a_earned * KYC_USD_PER_HEAD, 2)
+    query_revenue      = round(parquet_b_spent * CREDIT_B_USD, 2)
 
-    # ── Per-client token balances from Rust (live) ─────────────────────────
-    clients_out = []
-    for row in _clients.iter_rows(named=True):
-        name  = row["name"]
-        ctype = row["type"]
-        lc    = live_by_name.get(name, {})
-        ba    = float(lc.get("tokens_a", 0))
-        bb    = float(lc.get("tokens_b", 0))
-        is_issuer = (ctype == "FULL_KYC")
-        runway = round(bb / (credit_b_spent / max(len(clients_out) + 1, 1) / 30 + 0.001), 1) \
-                 if not is_issuer else 9999
-        clients_out.append({
-            "client_id":    row["client_id"],
-            "name":         name,
-            "type":         ctype,
-            "bal_a":        ba,
-            "bal_b":        bb,
-            "a_earned_30d": ba,    # all tokens earned since startup (session)
-            "b_spent_30d":  0.0,   # no historical window available live
-            "runway_days":  runway,
-        })
-
-    low_b = [c for c in clients_out if c["bal_b"] < 20 and c["type"] == "ZKP_ONLY"]
-
-    # ── Historical chart data from parquets (decorative trend charts) ──────
+    # ── Per-client B spent (30d window and all-time) from parquet ──────
     max_date_str = _credit_ledger["date"].max() if _credit_ledger.height > 0 else "2025-12-31"
     from datetime import date as _date
     _max_d      = _date.fromisoformat(max_date_str)
     _cutoff_30d = (_max_d - timedelta(days=30)).isoformat()
 
+    per_client_b_30d = (
+        _credit_ledger.filter(
+            (pl.col("event_type") == "verify_spent") &
+            (pl.col("date") >= _cutoff_30d)
+        )
+        .group_by("client_id")
+        .agg(pl.sum("amount").abs().alias("b_spent_30d"))
+    ) if _credit_ledger.height > 0 else pl.DataFrame(schema={"client_id": pl.Int64, "b_spent_30d": pl.Float64})
+
+    per_client_a_30d = (
+        _credit_ledger.filter(
+            (pl.col("event_type") == "kyc_earned") &
+            (pl.col("date") >= _cutoff_30d)
+        )
+        .group_by("client_id")
+        .agg(pl.sum("amount").alias("a_earned_30d"))
+    ) if _credit_ledger.height > 0 else pl.DataFrame(schema={"client_id": pl.Int64, "a_earned_30d": pl.Float64})
+
+    # Per-client all-time B spent for burn rate
+    per_client_b_all = (
+        _credit_ledger.filter(pl.col("event_type") == "verify_spent")
+        .group_by("client_id")
+        .agg(pl.sum("amount").abs().alias("b_spent_total"))
+    ) if _credit_ledger.height > 0 else pl.DataFrame(schema={"client_id": pl.Int64, "b_spent_total": pl.Float64})
+
+    # Build lookup dicts
+    b30d_map  = {r["client_id"]: r["b_spent_30d"]  for r in per_client_b_30d.iter_rows(named=True)}
+    a30d_map  = {r["client_id"]: r["a_earned_30d"] for r in per_client_a_30d.iter_rows(named=True)}
+    btot_map  = {r["client_id"]: r["b_spent_total"] for r in per_client_b_all.iter_rows(named=True)}
+
+    # Data spans ~24 months
+    total_months = max(1, len(set(
+        _credit_ledger["date"].str.slice(0, 7).to_list()
+    ))) if _credit_ledger.height > 0 else 1
+
+    # ── Per-client token balances ──────────────────────────────────────────
+    clients_out = []
+    for row in _clients.iter_rows(named=True):
+        name  = row["name"]
+        ctype = row["type"]
+        cid   = row["client_id"]
+        lc    = live_by_name.get(name, {})
+        ba    = float(lc.get("tokens_a", 0))
+        bb    = float(lc.get("tokens_b", 0))
+        is_issuer = (ctype == "FULL_KYC")
+        client_b_30d = b30d_map.get(cid, 0.0)
+        client_a_30d = a30d_map.get(cid, 0.0)
+
+        # Runway: use all-time average monthly burn rate (most representative
+        # of the 2-year simulation).  30-day rate used only if higher (shorter runway).
+        client_b_total = btot_map.get(cid, 0.0)
+        avg_daily_burn = client_b_total / total_months / 30.0 if client_b_total > 0 else 0
+        recent_daily   = client_b_30d / 30.0
+        daily_burn     = max(avg_daily_burn, recent_daily)  # conservative: pick higher burn
+        runway = round(bb / daily_burn, 1) if daily_burn > 0 else 9999
+
+        if is_issuer:
+            runway = 9999  # issuers don't consume B
+
+        clients_out.append({
+            "client_id":    cid,
+            "name":         name,
+            "type":         ctype,
+            "bal_a":        ba,
+            "bal_b":        bb,
+            "a_earned_30d": round(client_a_30d, 1),
+            "b_spent_30d":  round(client_b_30d, 1),
+            "runway_days":  runway,
+        })
+
+    low_b = [c for c in clients_out if c["bal_b"] < 20 and c["type"] == "ZKP_ONLY"]
+
+    # ── Historical chart data from parquets ──────────────────────────────
     if _credit_ledger.height > 0:
         monthly_conv = (
             _credit_ledger.filter(pl.col("event_type") == "convert_from_A")
@@ -425,19 +481,19 @@ def api_tokens():
 
     return {
         "credit_summary": {
-            # ─ LIVE from Rust ─
-            "credit_a_total_minted":  round(credit_a_minted, 0),
-            "credit_a_converted":     round(credit_a_burned,  0),
+            # ─ All from parquet simulation data ─
+            "credit_a_total_minted":  round(parquet_a_earned, 0),
+            "credit_a_converted":     round(parquet_a_burned, 0),
             "credit_a_retained":      credit_a_retained,
-            "credit_b_issued":        round(credit_b_issued,  0),
-            "credit_b_spent":         round(credit_b_spent,   0),
-            "credit_b_converted":     round(float(_credit_ledger.filter(pl.col("event_type") == "convert_from_A")["amount"].sum()) if _credit_ledger.height > 0 else 0, 0),
+            "credit_b_issued":        round(parquet_b_issued, 0),
+            "credit_b_spent":         round(parquet_b_spent, 0),
+            "credit_b_converted":     round(parquet_b_converted, 0),
             "credit_b_face_value":    credit_b_face_value,
             "exchange_rate":          EXCHANGE_A_TO_B,
             "credit_b_usd":           CREDIT_B_USD,
             "kyc_revenue_usd":        kyc_revenue,
             "kyc_revenue_gross":       kyc_revenue,
-            "query_revenue_usd":       round(float(_credit_ledger.filter(pl.col("event_type") == "verify_spent")["amount"].abs().sum()) * CREDIT_B_USD if _credit_ledger.height > 0 else 0, 2),
+            "query_revenue_usd":       query_revenue,
         },
         "clients":            clients_out,
         "low_balance_alerts": low_b,
@@ -997,29 +1053,16 @@ async def pipeline_stats():
             resp = await client.get(f"{INGEST_URL}/ingest/stats")
             return resp.json()
     except Exception:
-        # Static fallback when ingest server is not running
+        # Ingest server is not running — return honest empty state
         return {
             "live": False,
-            "throughput": 142.5,
-            "avg_latency_ms": 34,
-            "uptime_pct": 99.92,
-            "fraud_detected": 17,
-            "total_events": 482_310,
-            "latency": [
-                {"service": "OPRF Blind",     "ms": 12},
-                {"service": "Ring Lookup",     "ms": 28},
-                {"service": "KYC Verify",      "ms": 45},
-                {"service": "Solana Anchor",   "ms": 310},
-                {"service": "GDPR Filter",     "ms": 8},
-                {"service": "Anomaly Scorer",  "ms": 67},
-            ],
-            "resources": [
-                {"name": "sauron-core",       "cpu_pct": 18, "mem_mb": 142, "status": "healthy"},
-                {"name": "analytics-api",     "cpu_pct": 12, "mem_mb": 320, "status": "healthy"},
-                {"name": "postgres-db",       "cpu_pct": 7,  "mem_mb": 256, "status": "healthy"},
-                {"name": "redis-cache",       "cpu_pct": 3,  "mem_mb": 64,  "status": "healthy"},
-                {"name": "ingest-worker",     "cpu_pct": 0,  "mem_mb": 0,   "status": "down"},
-            ],
+            "throughput": 0,
+            "avg_latency_ms": 0,
+            "uptime_pct": 0,
+            "fraud_detected": 0,
+            "total_events": 0,
+            "latency": [],
+            "resources": [],
         }
 
 

@@ -1,0 +1,49 @@
+specVersion: 0.0.5
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum
+    name: RevocationRegistry
+    network: sepolia
+    source:
+      address: "0x0000000000000000000000000000000000000000"  # Update after deployment
+      abi: RevocationRegistry
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Revocation
+      abis:
+        - name: RevocationRegistry
+          file: ../contracts/revocation/artifacts/contracts/RevocationRegistry.sol/RevocationRegistry.json
+      eventHandlers:
+        - event: CredentialRevoked(indexed bytes32,indexed address,uint256,string)
+          handler: handleCredentialRevoked
+        - event: CredentialBatchRevoked(bytes32[],indexed address,uint256)
+          handler: handleCredentialBatchRevoked
+      file: ./src/revocation.ts
+
+  - kind: ethereum
+    name: AgentDelegationRegistry
+    network: sepolia
+    source:
+      address: "0x0000000000000000000000000000000000000000"  # Update after deployment
+      abi: AgentDelegationRegistry
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Delegation
+      abis:
+        - name: AgentDelegationRegistry
+          file: ../contracts/revocation/artifacts/contracts/AgentDelegationRegistry.sol/AgentDelegationRegistry.json
+      eventHandlers:
+        - event: DelegationRegistered(indexed bytes32,indexed bytes32,indexed address,uint256,string)
+          handler: handleDelegationRegistered
+        - event: DelegationRevoked(indexed bytes32,indexed address,uint256,string)
+          handler: handleDelegationRevoked
+      file: ./src/revocation.ts

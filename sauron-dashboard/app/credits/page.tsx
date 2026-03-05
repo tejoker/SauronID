@@ -7,7 +7,7 @@ import { sauronFetch, Kpi, Card, Spinner, fmtNum, fmtUsd } from "../shared";
 
 interface TokensData {
   clients: { client_id: number; name: string; type: string; bal_a: number; bal_b: number }[];
-  monthly_conversions: { months: string[]; b_converted: number[] };
+  monthly_conversions: { months: string[]; credit_b_converted: number[] };
   monthly_credit_a: { months: string[]; credit_a: number[] };
   monthly_credit_b: { months: string[]; credit_b: number[]; revenue: number[] };
   credit_summary: Record<string, number>;
@@ -29,8 +29,8 @@ export default function CreditsPage() {
       <h1 className="text-lg font-bold text-neutral-900">Credit Economy</h1>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-        <Kpi label="KYC Revenue" value={fmtUsd(cs.kyc_revenue_gross ?? cs.kyc_revenue_usd)} accent="text-green-600" />
-        <Kpi label="Query Revenue" value={fmtUsd(cs.query_revenue_usd)} accent="text-green-600" />
+        <Kpi label="KYC Revenue" value={`$${fmtNum(Math.round(cs.kyc_revenue_gross ?? cs.kyc_revenue_usd))}`} accent="text-green-600" />
+        <Kpi label="Query Revenue" value={`$${fmtNum(Math.round(cs.query_revenue_usd))}`} accent="text-green-600" />
         <Kpi label="Credit A Minted" value={fmtNum(cs.credit_a_total_minted)} accent="text-blue-600" />
         <Kpi label="A Converted" value={fmtNum(cs.credit_a_converted)} />
         <Kpi label="B Converted" value={fmtNum(cs.credit_b_converted)} accent="text-orange-500" />
@@ -58,9 +58,12 @@ export default function CreditsPage() {
         <Card title="Monthly B Conversions">
           <div className="h-52">
             {(() => {
-              const pairs = data.monthly_conversions.months
-                .map((m, i) => ({ m, v: data.monthly_conversions.b_converted[i] }))
+              const months = data.monthly_conversions?.months ?? [];
+              const converted = data.monthly_conversions?.credit_b_converted ?? [];
+              const pairs = months
+                .map((m, i) => ({ m, v: Math.round(converted[i] ?? 0) }))
                 .filter((p) => p.v > 0);
+              if (pairs.length === 0) return <p className="text-xs text-[#8e8e93] pt-2">No conversion data</p>;
               return (
                 <Bar
                   data={{
