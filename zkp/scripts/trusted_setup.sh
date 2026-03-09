@@ -22,8 +22,8 @@ echo "════════════════════════�
 mkdir -p "$KEYS_DIR"
 
 # ─── Phase 1: Powers of Tau (Universal — BN128) ──────────
-# Power 16 supports circuits up to 2^16 = 65536 constraints
-PTAU_POWER=16
+# Power 18 supports circuits up to 2^18 = 262144 constraints
+PTAU_POWER=18
 PTAU_FILE="$KEYS_DIR/pot${PTAU_POWER}_final.ptau"
 
 if [ -f "$PTAU_FILE" ]; then

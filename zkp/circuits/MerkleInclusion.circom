@@ -4,6 +4,7 @@ include "../node_modules/circomlib/circuits/poseidon.circom";
 include "../node_modules/circomlib/circuits/comparators.circom";
 include "../node_modules/circomlib/circuits/mux1.circom";
 include "../node_modules/circomlib/circuits/eddsaposeidon.circom";
+include "../node_modules/circomlib/circuits/bitify.circom";
 
 /**
  * PoseidonHasher — Hashes two children to produce the parent in a Merkle tree.
@@ -112,10 +113,17 @@ template MerkleInclusion(inclusionLevels, revocationLevels) {
     // the leaf value is 0 (empty slot = not revoked)
     revocationLeafValue === 0;
 
+    // The position in the revocation tree MUST match the bits of the credentialHash
+    component hashBits = Num2Bits(revocationLevels);
+    hashBits.in <== credentialHash;
+
     component revocationVerifier = MerklePathVerifier(revocationLevels);
     revocationVerifier.leaf <== revocationLeafValue;
     for (var i = 0; i < revocationLevels; i++) {
         revocationVerifier.pathElements[i] <== revocationPathElements[i];
+        
+        // CONSTRAIN path indices to the actual credentialHash bits
+        revocationPathIndices[i] === hashBits.out[i];
         revocationVerifier.pathIndices[i] <== revocationPathIndices[i];
     }
 

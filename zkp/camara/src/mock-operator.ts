@@ -36,10 +36,33 @@ const accessTokenMap = new Map<
     { phoneNumber: string; expiresAt: number }
 >();
 
-// Mock operator secret for signing JWTs
-const OPERATOR_SECRET = new TextEncoder().encode(
-    "mock-operator-secret-key-for-dev-only-32b"
-);
+// Mock network database mapping IP addresses to Phone Numbers
+const SIM_IP_MAP: Record<string, string> = {
+    // Map localhost IPs to the standard test phone number
+    "127.0.0.1": "33612345678",
+    "::1": "33612345678",
+    "::ffff:127.0.0.1": "33612345678",
+};
+
+// EdDSA asymmetric operator keys
+let operatorPrivateKey: crypto.KeyObject;
+let operatorPublicKey: crypto.KeyObject;
+let jwks: any;
+
+function initKeys() {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+    operatorPrivateKey = privateKey;
+    operatorPublicKey = publicKey;
+
+    const jwk = publicKey.export({ format: "jwk" }) as any;
+    jwk.kid = "operator-key-1";
+    jwk.use = "sig";
+    jwk.alg = "EdDSA";
+
+    jwks = { keys: [jwk] };
+    console.log("[MOCK OPERATOR] Ed25519 keys generated for assertion signing");
+}
+initKeys();
 
 // ─── OIDC Discovery ─────────────────────────────────────────────────
 
@@ -57,9 +80,18 @@ app.get("/.well-known/openid-configuration", (req, res) => {
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code"],
         subject_types_supported: ["public"],
-        id_token_signing_alg_values_supported: ["HS256"],
+        id_token_signing_alg_values_supported: ["EdDSA"],
     });
 });
+
+/**
+ * GET /.well-known/jwks.json
+ * Implements JWKS endpoint for exposing the public key.
+ */
+app.get("/.well-known/jwks.json", (req, res) => {
+    res.json(jwks);
+});
+
 
 // ─── Authorization Endpoint ─────────────────────────────────────────
 
@@ -99,10 +131,24 @@ app.get("/authorize", (req, res) => {
         return res.status(400).json({ error: "invalid_request", description: "login_hint required" });
     }
 
-    // Simulate network-level silent authentication (prompt=none)
-    // In production, the operator checks IP ↔ SIM correlation here
+    const clientIp = (req.headers["x-simulated-ip"] as string) || req.ip || "";
+    const networkPhone = SIM_IP_MAP[clientIp];
+
+    if (networkPhone !== phoneNumber) {
+        console.log(
+            `[MOCK OPERATOR] Silent auth FAILED: IP=${clientIp} has phone=${networkPhone || "NONE"}, requested=${phoneNumber}`
+        );
+        if (redirect_uri) {
+            const redirectUrl = new URL(redirect_uri);
+            redirectUrl.searchParams.set("error", "login_required");
+            if (state) redirectUrl.searchParams.set("state", state);
+            return res.redirect(302, redirectUrl.toString());
+        }
+        return res.status(400).json({ error: "login_required", description: "Network correlation failed. IP does not match SIM." });
+    }
+
     console.log(
-        `[MOCK OPERATOR] Silent auth: IP=${req.ip} → phone=${phoneNumber} (simulated match)`
+        `[MOCK OPERATOR] Silent auth OK: IP=${clientIp} → phone=${phoneNumber}`
     );
 
     // Generate authorization code
@@ -199,25 +245,27 @@ app.post("/number-verification/v0/verify", async (req, res) => {
     const cleanPhone = (phoneNumber || "").replace("+", "");
     const tokenPhone = tokenRecord.phoneNumber;
 
-    // In the mock, we always verify successfully
-    // In production, the operator checks at the network level
-    const verified = cleanPhone === tokenPhone || true; // Mock always succeeds
+    const clientIp = (req.headers["x-simulated-ip"] as string) || req.ip || "";
+    const networkPhone = SIM_IP_MAP[clientIp];
+
+    // Verify token phone matches requested phone, AND network IP matches phone
+    const verified = cleanPhone === tokenPhone && cleanPhone === networkPhone;
 
     console.log(
-        `[MOCK OPERATOR] Number verification: ${phoneNumber} → ${verified ? "MATCH ✓" : "NO MATCH ✗"}`
+        `[MOCK OPERATOR] Number verification: IP=${clientIp} target=${cleanPhone} → ${verified ? "MATCH ✓" : "NO MATCH ✗"}`
     );
 
-    // Create assertion JWT
+    // Create assertion JWT using EdDSA
     const assertionJwt = await new jose.SignJWT({
         sub: cleanPhone,
         phone_number_verified: verified,
         iss: `http://localhost:${PORT}`,
         aud: "sauronid-app",
     })
-        .setProtectedHeader({ alg: "HS256" })
+        .setProtectedHeader({ alg: "EdDSA", kid: "operator-key-1" })
         .setIssuedAt()
         .setExpirationTime("1h")
-        .sign(OPERATOR_SECRET);
+        .sign(operatorPrivateKey);
 
     res.json({
         devicePhoneNumberVerified: verified,

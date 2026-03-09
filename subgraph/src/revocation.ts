@@ -70,25 +70,31 @@ export function handleCredentialBatchRevoked(event: CredentialBatchRevoked): voi
 
     // Convert digests array
     let digestBytes: Bytes[] = [];
+    let newlyRevokedCount = 0;
+
     for (let i = 0; i < digests.length; i++) {
         digestBytes.push(digests[i]);
 
-        // Also create individual Revocation entities
-        let revocation = new Revocation(digests[i].toHexString());
-        revocation.digest = digests[i];
-        revocation.revoker = event.params.revoker;
-        revocation.timestamp = event.params.timestamp;
-        revocation.blockNumber = event.block.number;
-        revocation.reason = "batch";
-        revocation.txHash = event.transaction.hash;
-        revocation.save();
+        // Only create independent entity if it doesn't already exist
+        let existingRevocation = Revocation.load(digests[i].toHexString());
+        if (!existingRevocation) {
+            let revocation = new Revocation(digests[i].toHexString());
+            revocation.digest = digests[i];
+            revocation.revoker = event.params.revoker;
+            revocation.timestamp = event.params.timestamp;
+            revocation.blockNumber = event.block.number;
+            revocation.reason = "batch";
+            revocation.txHash = event.transaction.hash;
+            revocation.save();
+            newlyRevokedCount++;
+        }
     }
     batch.digests = digestBytes;
     batch.save();
 
-    // Update stats
+    // Update stats only with new revocations
     let stats = getStats();
-    stats.totalRevocations = stats.totalRevocations.plus(BigInt.fromI32(digests.length));
+    stats.totalRevocations = stats.totalRevocations.plus(BigInt.fromI32(newlyRevokedCount));
     stats.lastUpdatedBlock = event.block.number;
     stats.save();
 }

@@ -20,7 +20,7 @@
 import * as crypto from "crypto";
 import * as jose from "jose";
 import { v4 as uuidv4 } from "uuid";
-import { PopKeyPair } from "./pop-keys";
+import { PopKeyPair, verifyPopChallenge } from "./pop-keys";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -240,6 +240,53 @@ export async function verifyAgentToken(
     }
     if (!ajwtPayload.cnf?.jkt) {
         throw new Error("Missing required A-JWT claim: cnf.jkt (PoP binding)");
+    }
+
+    return ajwtPayload;
+}
+
+/**
+ * Verify an entire agent session, binding the A-JWT to a Proof-of-Possession challenge.
+ * This guarantees the agent presenting the token actually holds the private key
+ * corresponding to the thumbnail bound in the token's `cnf` claim.
+ *
+ * @param token           The A-JWT string
+ * @param challenge       The plaintext challenge that was expected to be signed
+ * @param popSignature    The JWS signature over the challenge
+ * @param agentPublicKey  The agent's public Ed25519 key (to verify PoP)
+ * @param idpPublicKey    Optional IdP key to verify the A-JWT
+ * @returns               The decoded A-JWT payload if the session validates
+ */
+export async function verifyAgentSession(
+    token: string,
+    challenge: string,
+    popSignature: string,
+    agentPublicKey: crypto.KeyObject,
+    idpPublicKey?: crypto.KeyObject
+): Promise<AJWTPayload> {
+    // 1. Verify the A-JWT integrity and expiry
+    const ajwtPayload = await verifyAgentToken(token, idpPublicKey);
+
+    // 2. Verify the PoP Signature
+    const popResult = await verifyPopChallenge(popSignature, agentPublicKey);
+    if (!popResult.valid || popResult.payload !== challenge) {
+        throw new Error("Proof-of-Possession challenge verification failed or challenge mismatch.");
+    }
+
+    // 3. Verify the key thumbprint matches the token's `cnf.jkt` claim
+    const publicJwk = agentPublicKey.export({ format: "jwk" }) as jose.JWK;
+    const thumbprintInput = JSON.stringify({
+        crv: publicJwk.crv,
+        kty: publicJwk.kty,
+        x: publicJwk.x,
+    });
+    const thumbprint = crypto
+        .createHash("sha256")
+        .update(thumbprintInput)
+        .digest("base64url");
+
+    if (thumbprint !== ajwtPayload.cnf.jkt) {
+        throw new Error(`PoP Key binding mismatch: expected ${ajwtPayload.cnf.jkt}, got ${thumbprint}`);
     }
 
     return ajwtPayload;

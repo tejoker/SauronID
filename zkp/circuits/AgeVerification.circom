@@ -61,7 +61,8 @@ template AgeVerification() {
     ageThresholdScaled <== ageThreshold * 10000;
 
     // ─── Step 4: Check ageDiff >= ageThresholdScaled ─────────
-    // Using 32-bit comparator (sufficient for YYYYMMDD range)
+    // Using 32-bit comparator GreaterEqualThan (sufficient for YYYYMMDD range)
+    // Note: The template is actually GreaterEqThan in circomlib.
     component geq = GreaterEqThan(32);
     geq.in[0] <== ageDiff;
     geq.in[1] <== ageThresholdScaled;

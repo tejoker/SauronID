@@ -31,7 +31,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
 const ISSUER_DID = process.env.ISSUER_DID || "did:sauron:issuer:1";
-const ISSUER_SEED = process.env.ISSUER_SEED || "sauronid-issuer-seed-hackathon";
+if (!process.env.ISSUER_SEED) {
+    console.error("FATAL ERROR: ISSUER_SEED environment variable is utterly required.");
+    console.error("Deploying without a master secret will expose the entire root of trust.");
+    process.exit(1);
+}
+const ISSUER_SEED = process.env.ISSUER_SEED;
 const KYC_SERVICE_URL = process.env.KYC_SERVICE_URL || "http://localhost:8000";
 
 // ─── In-memory state ────────────────────────────────────────────────

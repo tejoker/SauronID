@@ -112,18 +112,27 @@ export function computeComponentChecksums(config: AgentConfig): {
 
 /**
  * Canonical JSON serialization: deterministic string representation.
- * Keys are sorted alphabetically at all levels.
+ * Keys are sorted alphabetically at all levels, and arrays are also
+ * sorted by their deterministic stringified values.
  */
 function canonicalize(obj: unknown): string {
-    return JSON.stringify(obj, (_, value) => {
-        if (value && typeof value === "object" && !Array.isArray(value)) {
-            return Object.keys(value)
-                .sort()
-                .reduce((sorted: Record<string, unknown>, key) => {
-                    sorted[key] = value[key];
-                    return sorted;
-                }, {});
+    function deepSort(val: unknown): unknown {
+        if (Array.isArray(val)) {
+            const items = val.map(item => deepSort(item));
+            items.sort((a, b) => {
+                const strA = JSON.stringify(a);
+                const strB = JSON.stringify(b);
+                return strA > strB ? 1 : (strA < strB ? -1 : 0);
+            });
+            return items;
+        } else if (val && typeof val === "object") {
+            const sortedObj: Record<string, unknown> = {};
+            Object.keys(val).sort().forEach(key => {
+                sortedObj[key] = deepSort((val as Record<string, unknown>)[key]);
+            });
+            return sortedObj;
         }
-        return value;
-    });
+        return val;
+    }
+    return JSON.stringify(deepSort(obj));
 }
