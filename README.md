@@ -142,6 +142,58 @@ npm run test:card-login
 
 The card-login test spins realistic external stubs for resolver and relay and validates strict failure on IP/SIM mismatch.
 
+## Production Env Template
+
+Use this template file as your starting point:
+
+- zkp/camara/env.production.example
+
+Recommended process:
+
+1. Copy values into your deployment secret manager, not into git-tracked files
+2. Inject them at runtime (Kubernetes Secret, ECS task secret, systemd env file, etc)
+3. Keep API keys rotated and scoped per environment
+
+## Production Deployment Checklist (Card-First Login)
+
+Before go-live, validate all items below.
+
+### Integrations
+
+1. CARD_IDENTITY_RESOLVER_URL is reachable from CAMARA API runtime
+2. KYC_RELAY_URL is reachable from CAMARA API runtime
+3. Resolver and relay authentication is configured (if required)
+4. CAMARA_OPERATOR_BASE_URL points to your real operator/aggregator endpoint
+
+### Security
+
+1. No raw PAN is logged or persisted in app services
+2. Card tokens are one-way hashed in logs and relay payloads
+3. All integration calls use TLS
+4. Secrets are loaded from a secret manager, not repository files
+5. API key scopes are least-privilege and environment-specific
+
+### Functional Tests
+
+1. Happy path: valid card token + valid Mobile Connect signal returns selective claims
+2. Failure path: strict IP-to-SIM mismatch returns verification failure
+3. Unknown card token returns not-found behavior
+4. KYC relay acceptance and request tracking are visible in logs/metrics
+
+### Observability
+
+1. Health endpoint is monitored
+2. Integration error rates are alerted
+3. End-to-end latency (card resolve + Mobile Connect + relay) is tracked
+4. Request IDs are propagated across CAMARA API, resolver, and relay
+
+### Compliance and Privacy
+
+1. Relying website receives only requested claims
+2. ZKP presentation definition is generated for each login context
+3. Data retention and deletion policy is enforced for relay payload metadata
+4. Access to identity and relay logs is restricted and auditable
+
 ## Compliance Runner
 
 A one-command compliance runner exists at:
