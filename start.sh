@@ -106,7 +106,7 @@ PORTAL_PID=$!
 PIDS+=("$PORTAL_PID")
 
 # ── 6. Sauron Dashboard UI (Next.js) ─────────────────────────────────────────
-log "[6/6] Sauron Dashboard → :8003"
+log "[6/7] Sauron Dashboard → :8003"
 cd "$ROOT/sauron-dashboard"
 if [ ! -d "node_modules" ]; then
   warn "Installation des dépendances npm (sauron-dashboard)..."
@@ -117,6 +117,24 @@ NEXT_PUBLIC_DASH_API_URL=http://localhost:8002 \
   npm run dev -- -p 8003 &
 DASH_PID=$!
 PIDS+=("$DASH_PID")
+
+# ── 7. CAMARA Mobile Connect API & Mock ──────────────────────────────────────
+log "[7/7] CAMARA API → :8004 / CAMARA Mock → :9000"
+cd "$ROOT/zkp/camara"
+if [ ! -d "node_modules" ]; then
+  warn "Installation des dépendances npm (camara)..."
+  npm install --silent
+fi
+if [ ! -d "dist" ]; then
+  warn "Build du wrapper CAMARA..."
+  npm run build
+fi
+npm run mock &
+MOCK_PID=$!
+PIDS+=("$MOCK_PID")
+npm run start &
+CAMARA_PID=$!
+PIDS+=("$CAMARA_PID")
 
 # ── Résumé ───────────────────────────────────────────────────────────────────
 echo ""

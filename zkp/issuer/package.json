@@ -6,7 +6,8 @@
     "scripts": {
         "build": "tsc",
         "start": "node dist/server.js",
-        "dev": "ts-node src/server.ts"
+        "dev": "ts-node src/server.ts",
+        "test": "npm run build && node test/oid4vci_replay.test.mjs"
     },
     "dependencies": {
         "express": "^4.18.0",

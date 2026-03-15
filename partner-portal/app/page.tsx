@@ -89,7 +89,7 @@ function KYCCameraFlow({ onDone, onClose }: { onDone: (result: KYCAPIResult) => 
     if (step === "id_cam") startCamera("environment");
     else if (step === "selfie_cam") startCamera("user");
     return stopStream;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
   const captureId = () => { const img = captureFrame(); setIdImage(img); stopStream(); setStep("selfie_cam"); };
@@ -307,11 +307,10 @@ function DashboardTab({ client }: { client: Client }) {
             </div>
           </div>
           <button onClick={doExchange} disabled={busy !== null || client.tokens_a < exchangeCount}
-            className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${
-              client.tokens_a < exchangeCount || busy !== null
+            className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${client.tokens_a < exchangeCount || busy !== null
                 ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
                 : "border-green-600 bg-green-600 text-white hover:bg-green-700"
-            }`}>
+              }`}>
             {busy === "exchange" ? "Exchanging..." : client.tokens_a < exchangeCount ? "Not enough Token A" : `Exchange ${exchangeCount} Token A`}
           </button>
         </div>
@@ -332,11 +331,10 @@ function DashboardTab({ client }: { client: Client }) {
             <span className="text-neutral-400"> (0.10 € / Token B)</span>
           </div>
           <button onClick={doBuy} disabled={busy !== null}
-            className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${
-              busy !== null
+            className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${busy !== null
                 ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
                 : "border-orange-500 bg-orange-500 text-white hover:bg-orange-600"
-            }`}>
+              }`}>
             {busy === "buy" ? "Processing..." : `Buy ${buyAmount} Token B`}
           </button>
         </div>
@@ -369,7 +367,7 @@ function UsersTab({ client }: { client: Client }) {
   if (loading) return <div className="text-center py-12 text-neutral-400 animate-pulse text-sm">Loading users…</div>;
 
   const registered = users.filter((u) => u.source === "register");
-  const retrieved  = users.filter((u) => u.source === "kyc_retrieval");
+  const retrieved = users.filter((u) => u.source === "kyc_retrieval");
 
   return (
     <div className="space-y-6">
@@ -397,11 +395,10 @@ function UsersTab({ client }: { client: Client }) {
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-[10px] text-neutral-400 font-mono">{fmt(u.timestamp)}</span>
-                <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-                  u.source === "register"
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${u.source === "register"
                     ? "bg-green-50 text-green-700 border-green-200"
                     : "bg-blue-50 text-blue-700 border-blue-200"
-                }`}>{u.source === "register" ? "REGISTERED" : "KYC LOOKUP"}</span>
+                  }`}>{u.source === "register" ? "REGISTERED" : "KYC LOOKUP"}</span>
               </div>
             </div>
           ))}
@@ -448,6 +445,50 @@ function RegisterJourney({ client }: { client: Client }) {
     } finally { setBusy(false); }
   };
 
+  const handleMobileConnect = async () => {
+    const phoneNumber = window.prompt("Enter your phone number for CAMARA Mobile Connect verification (e.g. +33612345678):");
+    if (!phoneNumber) return;
+
+    setBusy(true);
+    try {
+      const res = await fetch("http://localhost:8004/issue-tier2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phoneNumber })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Mobile Connect failed");
+
+      // Map Tier 2 Verifiable Credential to the existing expected KYC format
+      const mappedResult: KYCAPIResult = {
+        decision: "pass",
+        decision_reason: "Verified via CAMARA Network Auth",
+        face_match_score: 1.0,
+        face_match_label: "high",
+        face_match_reasoning: "Not applicable (Tier 2 Telecom Auth)",
+        extracted_fields: {
+          document_type: "tier_2_telecom",
+          full_name: "Mobile Verified User",
+          first_name: "Mobile",
+          last_name: "Verified",
+          date_of_birth: "01/01/2000",
+          nationality: "FRA", // Defaulting to France for Demo
+          document_number: data.credentialSubject.phoneNumberHash.substring(0, 10),
+          expiry_date: "31/12/2099",
+          gender: "U"
+        }
+      };
+
+      handleKYCDone(mappedResult);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Mobile Connect Error";
+      setError(msg);
+      showToast("error", "Mobile Connect failed", msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
       {showKYC && <KYCCameraFlow onDone={handleKYCDone} onClose={() => setShowKYC(false)} />}
@@ -476,18 +517,29 @@ function RegisterJourney({ client }: { client: Client }) {
                 <button type="button" onClick={() => setKyc(null)} className="text-[10px] text-neutral-400 hover:text-red-500 border border-neutral-200 px-2 py-0.5 rounded">Reset</button>
               </div>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                {([["Name", kyc.extracted_fields.full_name], ["DOB", kyc.extracted_fields.date_of_birth], ["Nationality", kyc.extracted_fields.nationality], ["Face match", `${Math.round(kyc.face_match_score * 100)}%`]] as [string, string][]).filter(([, v]) => v).map(([k, v]) => (
+                {([["Name", kyc.extracted_fields.full_name], ["DOB", kyc.extracted_fields.date_of_birth], ["Nationality", kyc.extracted_fields.nationality], ["Method", kyc.extracted_fields.document_type === "tier_2_telecom" ? "Mobile Connect" : `Face Match: ${Math.round(kyc.face_match_score * 100)}%`]] as [string, string][]).filter(([, v]) => v).map(([k, v]) => (
                   <div key={k}><span className="text-neutral-400">{k}: </span><span className="font-mono text-neutral-700">{v}</span></div>
                 ))}
               </div>
             </div>
           ) : (
-            <div className="text-center">
-              <p className="text-sm text-neutral-500 mb-3">Step 1 — verify identity with ID document + selfie</p>
-              <button type="button" onClick={() => setShowKYC(true)} className="px-5 py-2.5 rounded-lg text-sm font-semibold border transition-all bg-blue-50 text-blue-700 border-blue-200 hover:opacity-80">
-                Start Identity Verification
-              </button>
-              <p className="text-[10px] text-neutral-300 mt-2">Camera · ID scan + selfie · face match · Powered by Gemini Vision</p>
+            <div className="text-center space-y-3">
+              <p className="text-sm text-neutral-500">Step 1 — Verify your identity</p>
+              <div className="flex flex-col gap-2 relative">
+                <button type="button" onClick={() => setShowKYC(true)} className="w-full px-5 py-2.5 rounded-lg text-sm font-semibold border transition-all bg-blue-50 text-blue-700 border-blue-200 hover:opacity-80">
+                  Full KYC (Camera + ID)
+                </button>
+                <div className="flex items-center gap-2">
+                  <div className="h-px bg-neutral-200 flex-1"></div>
+                  <span className="text-[10px] text-neutral-400 uppercase font-bold tracking-widest">OR</span>
+                  <div className="h-px bg-neutral-200 flex-1"></div>
+                </div>
+                <button type="button" onClick={handleMobileConnect} className="w-full px-5 py-2.5 rounded-lg text-sm font-semibold border transition-all bg-purple-50 text-purple-700 border-purple-200 hover:opacity-80 flex items-center justify-center gap-2">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                  Mobile Connect (Tier 2 / Fast)
+                </button>
+              </div>
+              <p className="text-[10px] text-neutral-300 mt-2">Powered by GSMA Open Gateway Network Auth & Gemini Vision</p>
             </div>
           )}
         </div>
@@ -511,11 +563,10 @@ function RegisterJourney({ client }: { client: Client }) {
         {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
 
         <button type="submit" disabled={busy || !kyc || !form.email || !form.password}
-          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${
-            busy || !kyc || !form.email || !form.password
+          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${busy || !kyc || !form.email || !form.password
               ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
               : "bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
-          }`}>
+            }`}>
           {busy ? "Enrolling..." : kyc ? `Create ${client.name} Account` : "Complete KYC first"}
         </button>
       </form>
@@ -599,13 +650,12 @@ function LoginJourney({ client }: { client: Client }) {
         </div>
 
         <button type="submit" disabled={busy || client.tokens_b === 0}
-          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${
-            client.tokens_b === 0
+          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${client.tokens_b === 0
               ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
               : busy
-              ? "border-neutral-200 text-neutral-400"
-              : "border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-700"
-          }`}>
+                ? "border-neutral-200 text-neutral-400"
+                : "border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-700"
+            }`}>
           {busy ? "Fetching KYC..." : client.tokens_b === 0 ? "No Token B" : "Login with Sauron KYC (1 Token B)"}
         </button>
       </form>
@@ -715,13 +765,12 @@ function ZkpJourney({ client }: { client: Client }) {
         {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
 
         <button type="submit" disabled={busy || !email || !password || client.tokens_b === 0}
-          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${
-            client.tokens_b === 0
+          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${client.tokens_b === 0
               ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
               : busy || !email || !password
-              ? "border-neutral-200 text-neutral-400"
-              : "bg-purple-600 text-white border-purple-600 hover:bg-purple-700"
-          }`}>
+                ? "border-neutral-200 text-neutral-400"
+                : "bg-purple-600 text-white border-purple-600 hover:bg-purple-700"
+            }`}>
           {busy ? "Proving..." : client.tokens_b === 0 ? "No Token B" : `Prove Identity to ${client.name} (1 Token B)`}
         </button>
       </form>
@@ -804,22 +853,20 @@ export default function ClientPortal() {
         <div className="max-w-[1200px] mx-auto px-6 flex items-center gap-1">
           {tabs.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-all ${
-                tab === t.key
+              className={`px-4 py-3 text-sm font-medium border-b-2 transition-all ${tab === t.key
                   ? "border-neutral-900 text-neutral-900"
                   : "border-transparent text-neutral-400 hover:text-neutral-700"
-              }`}>
+                }`}>
               {t.label}
               {t.badge && <span className="ml-1.5 text-[10px] bg-neutral-100 text-neutral-500 px-1.5 py-0.5 rounded">{t.badge}</span>}
             </button>
           ))}
           <div className="flex-1" />
           <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-              activeClient.client_type === "FULL_KYC"
+            <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${activeClient.client_type === "FULL_KYC"
                 ? "bg-blue-50 text-blue-700 border-blue-200"
                 : "bg-purple-50 text-purple-700 border-purple-200"
-            }`}>{activeClient.client_type}</span>
+              }`}>{activeClient.client_type}</span>
             <span className="text-xs text-neutral-400">
               <span className="text-green-600 font-bold">{activeClient.tokens_a}</span>
               <span className="text-neutral-300 mx-1">A</span>

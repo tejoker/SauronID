@@ -40,6 +40,11 @@ export interface NumberVerificationResult {
     method: "network_auth" | "mock";
 }
 
+export interface VerificationContext {
+    /** Optional simulated IP used by the local mock operator for strict IP-to-SIM checks. */
+    simulatedIp?: string;
+}
+
 const DEFAULT_CAMARA_CONFIG: CAMARAConfig = {
     authorizationEndpoint: "http://localhost:9000/authorize",
     tokenEndpoint: "http://localhost:9000/token",
@@ -126,13 +131,17 @@ export class NumberVerificationClient {
      */
     async verifyNumber(
         accessToken: string,
-        phoneNumber: string
+        phoneNumber: string,
+        context: VerificationContext = {}
     ): Promise<NumberVerificationResult> {
         const response = await fetch(this.config.numberVerificationEndpoint, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${accessToken}`,
+                ...(context.simulatedIp
+                    ? { "x-simulated-ip": context.simulatedIp }
+                    : {}),
             },
             body: JSON.stringify({
                 phoneNumber: phoneNumber.startsWith("+")
@@ -162,24 +171,50 @@ export class NumberVerificationClient {
      * In production, steps 1-2 happen on the user's device via the mobile network.
      * This method simulates the full flow for testing with the mock operator.
      */
-    async verifyNumberFull(phoneNumber: string): Promise<NumberVerificationResult> {
+    async verifyNumberFull(
+        phoneNumber: string,
+        context: VerificationContext = {}
+    ): Promise<NumberVerificationResult> {
         console.log(`[CAMARA] Initiating number verification for ${phoneNumber}`);
 
         // Step 1: Get auth URL (in production, user's device navigates here)
         const authUrl = this.getAuthorizationUrl(phoneNumber);
 
         // Step 2: Simulate the authorization (mock only)
-        const authResponse = await fetch(authUrl, { redirect: "manual" });
+        const authResponse = await fetch(authUrl, {
+            redirect: "manual",
+            headers: {
+                ...(context.simulatedIp
+                    ? { "x-simulated-ip": context.simulatedIp }
+                    : {}),
+            },
+        });
         const location = authResponse.headers.get("location") || "";
+
+        if (location.includes("error=login_required")) {
+            return {
+                verified: false,
+                phoneNumber,
+                timestamp: new Date().toISOString(),
+                method: "network_auth",
+            };
+        }
+
         const codeMatch = location.match(/code=([^&]+)/);
 
         if (!codeMatch) {
             // Try direct API for mock
-            const directResponse = await fetch(authUrl);
+            const directResponse = await fetch(authUrl, {
+                headers: {
+                    ...(context.simulatedIp
+                        ? { "x-simulated-ip": context.simulatedIp }
+                        : {}),
+                },
+            });
             const directData = await directResponse.json();
             if (directData.code) {
                 const token = await this.exchangeCode(directData.code);
-                return this.verifyNumber(token.accessToken, phoneNumber);
+                return this.verifyNumber(token.accessToken, phoneNumber, context);
             }
             throw new Error("Failed to get authorization code");
         }
@@ -190,6 +225,6 @@ export class NumberVerificationClient {
         const token = await this.exchangeCode(code);
 
         // Step 4: Verify the number
-        return this.verifyNumber(token.accessToken, phoneNumber);
+        return this.verifyNumber(token.accessToken, phoneNumber, context);
     }
 }

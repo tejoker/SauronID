@@ -15,6 +15,15 @@ import * as crypto from "crypto";
 // @ts-ignore
 const snarkjs = require("snarkjs");
 
+function encodeNationalityToField(nationality: string): string {
+    const nat = nationality.toUpperCase().slice(0, 3);
+    let packed = 0n;
+    for (let i = 0; i < nat.length; i++) {
+        packed = packed * 256n + BigInt(nat.charCodeAt(i));
+    }
+    return packed.toString();
+}
+
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface PresentationRequirement {
@@ -105,6 +114,7 @@ export function createPresentationRequest(
             path: ["$.credentialSubject.nationality"],
             filter: { type: "string", const: requirements.nationality },
         });
+        params.requiredNationality = encodeNationalityToField(requirements.nationality);
         // We'd hash the nationality to a field element for the circuit
         circuit = "CredentialVerification";
     }

@@ -5,7 +5,7 @@
  * Implements the OIDC Authorization Code Flow with prompt=none.
  *
  * This mock:
- *   - Accepts any phone number and "verifies" it
+ *   - Enforces strict IP-to-SIM correlation checks
  *   - Returns properly formatted OIDC responses
  *   - Issues JWTs with the verification assertion
  *
@@ -104,7 +104,7 @@ app.get("/.well-known/jwks.json", (req, res) => {
  *   2. Verify the phone number silently at the network level
  *   3. Redirect with an authorization code
  *
- * The mock simply accepts any phone number.
+ * The mock enforces a static IP-to-phone mapping via SIM_IP_MAP.
  */
 app.get("/authorize", (req, res) => {
     const {
@@ -148,7 +148,7 @@ app.get("/authorize", (req, res) => {
     }
 
     console.log(
-        `[MOCK OPERATOR] Silent auth OK: IP=${clientIp} → phone=${phoneNumber}`
+        `[MOCK OPERATOR] Silent auth OK: IP=${clientIp} -> phone=${phoneNumber}`
     );
 
     // Generate authorization code
@@ -248,11 +248,11 @@ app.post("/number-verification/v0/verify", async (req, res) => {
     const clientIp = (req.headers["x-simulated-ip"] as string) || req.ip || "";
     const networkPhone = SIM_IP_MAP[clientIp];
 
-    // Verify token phone matches requested phone, AND network IP matches phone
+    // Verify token phone matches requested phone, AND network IP matches phone.
     const verified = cleanPhone === tokenPhone && cleanPhone === networkPhone;
 
     console.log(
-        `[MOCK OPERATOR] Number verification: IP=${clientIp} target=${cleanPhone} → ${verified ? "MATCH ✓" : "NO MATCH ✗"}`
+        `[MOCK OPERATOR] Number verification: IP=${clientIp} target=${cleanPhone} -> ${verified ? "MATCH" : "NO MATCH"}`
     );
 
     // Create assertion JWT using EdDSA
@@ -266,6 +266,10 @@ app.post("/number-verification/v0/verify", async (req, res) => {
         .setIssuedAt()
         .setExpirationTime("1h")
         .sign(operatorPrivateKey);
+
+    if (verified) {
+        console.log(`[MOCK OPERATOR] Verification success for +${cleanPhone}`);
+    }
 
     res.json({
         devicePhoneNumberVerified: verified,

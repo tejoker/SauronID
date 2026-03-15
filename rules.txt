@@ -1,0 +1,239 @@
+Rapport d'Ingénierie et d'Architecture Système : Implémentation du Protocole d'Identité Déléguée SauronID
+L'infrastructure numérique mondiale fait face à une crise de confiance et de scalabilité. L'identité numérique est actuellement vérifiée de manière redondante par des acteurs isolés, générant des coûts d'acquisition client exorbitants (1 à 2 euros par vérification) et des taux d'abandon massifs atteignant 20 % lors des processus d'intégration. La duplication des données personnelles sur des serveurs vulnérables exacerbe les risques de violations de données, tandis que la pression réglementaire s'intensifie. Le règlement européen eIDAS 2.0 impose l'adoption de portefeuilles d'identité numérique d'ici 2026, la directive AMLR de 2027 standardise les processus de connaissance client (KYC), et le Digital Services Act (DSA) exige des vérifications d'âge strictes pour des millions de plateformes non équipées pour y répondre.
+Parallèlement, l'émergence de l'économie agentique (Agentic Commerce) révèle une lacune fondamentale dans les architectures d'authentification actuelles. Les agents d'intelligence artificielle, conçus pour agir au nom des humains, sont structurellement bloqués car aucun protocole standardisé ne permet à un agent de prouver cryptographiquement sa légitimité et la portée de sa délégation sans exposer les données privées du mandant.1 SauronID propose de combler cette lacune en appliquant le modèle de routage du 3D Secure à l'identité, combiné à la cryptographie à divulgation nulle de connaissance (Zero-Knowledge Proofs - ZKP) et à un protocole natif de délégation agentique.
+Ce rapport détaille exhaustivement l'architecture technique, les spécifications d'implémentation et la feuille de route de développement pour les deux ingénieurs fondateurs. L'analyse segmente les responsabilités entre l'infrastructure cryptographique et d'émission, sous la responsabilité de Killian, et l'ingénierie de la sécurité comportementale, de la délégation agentique et de la supervision sur-chaîne, sous la responsabilité de Nicolas.
+1. Ingénierie Cryptographique et Infrastructure d'Émission (Domaine de Killian)
+Le socle de confiance du protocole SauronID repose sur l'impossibilité mathématique de forger une preuve d'identité et sur la capacité à minimiser la divulgation des données. Le rôle de Killian est de concevoir les circuits cryptographiques, d'orchestrer l'émission des attestations vérifiables (Verifiable Credentials) et de résoudre le problème d'amorçage du réseau via l'intégration des opérateurs de télécommunications.
+1.1. Conception et Implémentation des Circuits Zero-Knowledge
+La cryptographie Zero-Knowledge (ZK) permet à un prouveur de démontrer à un vérificateur la véracité d'une affirmation sans révéler aucune information sous-jacente.2 Pour SauronID, cette technologie garantit qu'un utilisateur ou un agent peut prouver sa majorité, sa citoyenneté ou la validité de son KYC sans transmettre de documents d'identité bruts.
+La pile technologique sélectionnée repose sur Circom, un langage de description de circuits arithmétiques compilé en Rust, et snarkjs, une bibliothèque JavaScript/WebAssembly permettant la génération et la vérification de preuves zk-SNARKs (Zero-Knowledge Succinct Non-Interactive Argument of Knowledge).3 L'utilisation de zk-SNARKs, et spécifiquement du protocole Groth16, est privilégiée pour sa taille de preuve constante et sa vérification extrêmement rapide et peu coûteuse en gaz sur les machines virtuelles Ethereum (EVM).4
+Killian doit coder plusieurs circuits critiques. Le premier est le circuit de vérification d'âge ou de seuil (Age Verification). Ce circuit prend en entrée privée la date de naissance de l'utilisateur, hachée et signée par l'émetteur (Issuer), et en entrée publique le seuil requis (par exemple, 18 ans) ainsi que la date actuelle. Le circuit utilise le composant GreaterEqualThan de la bibliothèque circomlib pour évaluer mathématiquement la condition.2 Les contraintes du circuit Circom garantissent que toute altération des signaux invalidera la preuve.2
+Le second circuit critique concerne la preuve d'inclusion et de non-révocation. Pour qu'un vérificateur (Acquirer) s'assure qu'un credential est toujours valide, le circuit doit prouver que la racine cryptographique du credential est incluse dans l'arbre d'état de l'Issuer et n'apparaît pas dans l'arbre de révocation.6 Killian implémentera une structure de type Sparse Merkle Tree (SMT).7 Pour optimiser le nombre de contraintes au sein du circuit, l'utilisation de fonctions de hachage traditionnelles comme SHA-256 est proscrite au profit de fonctions adaptées aux ZKP, telles que Poseidon ou MiMC.7 Le circuit intègrera un composant EdDSAPoseidonVerifier pour valider la signature de l'émetteur sur la racine du SMT.7
+Le déploiement de ces circuits Groth16 nécessite une cérémonie de configuration de confiance (Trusted Setup). Killian devra orchestrer cette cérémonie via snarkjs, impliquant une première phase universelle (Powers of Tau) et une seconde phase spécifique à la topologie de chaque circuit compilé en R1CS (Rank-1 Constraint System).5 Le produit final compilé (fichiers .wasm et .zkey) sera encapsulé dans le SDK client, permettant à la preuve d'être générée localement sur l'appareil de l'utilisateur, garantissant ainsi que le secret ne transite jamais sur le réseau.2
+1.2. Protocoles d'Émission et de Présentation (OID4VCI et OID4VP)
+Pour garantir l'interopérabilité avec les futurs portefeuilles étatiques eIDAS 2.0, l'architecture de SauronID doit adhérer strictement aux standards du World Wide Web Consortium (W3C) concernant le modèle de données des Verifiable Credentials (VC) 9 et aux spécifications de l'OpenID Foundation pour l'émission et la présentation.10
+L'implémentation de l'infrastructure d'émission (Issuer) requiert le développement d'un serveur compatible avec la spécification OpenID for Verifiable Credential Issuance (OID4VCI).11 Le flux recommandé est le Pre-Authorized Code Flow. Dans ce paradigme, l'utilisateur s'authentifie via un mécanisme hors bande (par exemple, la validation biométrique de son identité au sein de son application bancaire). L'Authorization Server de l'Issuer génère un code pré-autorisé que le portefeuille mobile (Wallet) utilise pour télécharger le Verifiable Credential.12
+Pour faciliter la divulgation sélective, Killian a le choix entre deux architectures de credentials. La première repose sur les SD-JWT (Selective Disclosure JSON Web Tokens), où l'émetteur hache individuellement chaque attribut (claims) avec un sel cryptographique. L'utilisateur peut ensuite révéler uniquement les sels des attributs nécessaires, le vérificateur recalculant les hachages pour s'assurer de l'intégrité du document.13 Bien que performante, cette méthode limite la flexibilité : l'utilisateur ne peut révéler que ce que l'émetteur a explicitement rendu séparable.15 La seconde méthode, privilégiée pour SauronID, utilise des preuves ZKP dérivées (ZKP-SD-VC). L'émetteur signe un document monolithique, mais le portefeuille de l'utilisateur utilise les circuits Circom développés par Killian pour générer une preuve mathématique de la signature de l'émetteur tout en ne révélant publiquement que certains attributs.15
+Côté acquisition, Killian développera le SDK Acquirer implémentant la spécification OpenID for Verifiable Presentations (OID4VP).17 Ce SDK permettra aux plateformes (exchanges, réseaux sociaux) de formuler une demande de présentation structurée (Presentation Definition), à laquelle le portefeuille ou l'agent répondra en fournissant la preuve ZKP correspondante. L'utilisation de bibliothèques open source telles que waltid-ssikit ou les implémentations TypeScript de Sphereon est fortement recommandée pour accélérer le développement et assurer la conformité aux profils de test EBSI (European Blockchain Services Infrastructure).17
+1.3. Résolution du Cold Start : Intégration Tier 2 via Mobile Connect
+Le défi inhérent à toute architecture en réseau est le problème de l'amorçage à froid (Cold Start) : les vérificateurs n'adoptent pas un protocole sans utilisateurs, et les émetteurs régulés (banques) n'investissent pas dans une infrastructure sans vérificateurs actifs. La stratégie de SauronID consiste à court-circuiter ce problème durant les six premiers mois (M0-M6) en agissant en tant que son propre Issuer pour des identités allégées (Tier 2), en s'appuyant sur l'infrastructure des opérateurs de télécommunications.20
+Killian doit intégrer l'API Number Verification standardisée par le projet CAMARA au sein de la GSMA Open Gateway.20 Ce protocole permet de vérifier la possession d'un numéro de téléphone de manière transparente, sans nécessiter la saisie d'un mot de passe à usage unique (OTP) par SMS, ce qui élimine les frictions et protège contre les attaques de type SIM swapping.20
+L'implémentation technique requiert l'utilisation du flux OpenID Connect Authorization Code Flow. Le backend de SauronID, agissant en tant que client de l'API (API Consumer), initie une requête d'authentification vers l'opérateur mobile avec le paramètre prompt=none.21 L'authentification est réalisée de manière silencieuse au niveau du réseau de l'opérateur, qui corrèle l'adresse IP de la requête avec la carte SIM associée au numéro de téléphone fourni.22 L'opérateur retourne un jeton (JWT) contenant l'assurance de la vérification.23 Le backend de Killian agit alors comme un Issuer OID4VCI, transformant cette assurance télécom en un Verifiable Credential Tier 2, chiffré et formaté pour le réseau SauronID. Ce flux fournit un produit fonctionnel immédiatement vendable aux plateformes soumises au DSA (Discord, plateformes adultes) sans nécessiter de licence bancaire.
+1.4. Exigences Cognitives et Échéancier pour Killian
+La réalisation de cette infrastructure nécessite une expertise interdisciplinaire pointue.
+Domaine d'Expertise
+Compétences Spécifiques Requises
+Cryptographie Algébrique
+Arithmétique des champs finis, courbes elliptiques (BN254), théorie des preuves zk-SNARK (Groth16, PLONK), fonctions de hachage ZK-friendly (Poseidon).
+Langages et Tooling
+Rust (compilateur Circom), TypeScript/Node.js (serveur d'émission), WebAssembly (génération de preuve client-side via snarkjs).
+Standards SSI et Identité
+Spécifications W3C Verifiable Credentials 2.0, Decentralized Identifiers (DIDs), OID4VCI, OID4VP, JSON Web Signatures (JWS), SD-JWT.
+Réseaux et Télécommunications
+Flux OAuth 2.0 et OIDC, spécifications des API CAMARA Network (GSMA Open Gateway), authentification silencieuse basée sur l'IP.
+
+L'échéancier de développement de Killian s'articule autour de jalons précis visant à accumuler la demande avant de recruter l'offre :
+Phase
+Période
+Livrables Architecturaux de Killian
+Core Protocol
+M0 - M2
+1. Écriture, compilation et test des circuits Circom (AgeVerification et MerkleTreeInclusion).
+
+2. Configuration du serveur d'émission OID4VCI (Pre-Authorized Code Flow).
+
+3. Intégration de l'API CAMARA pour le routage de l'identité Tier 2.
+
+4. Exécution locale de la génération de preuve via snarkjs dans un environnement de test.
+Pilotes Pre-Seed
+M2 - M6
+1. Packaging du SDK Acquirer v1 (Node.js/Python) pour l'intégration des premiers clients (exchanges, plateformes DSA).
+
+2. Finalisation de la cérémonie de Trusted Setup (Powers of Tau).
+
+3. Optimisation des contraintes arithmétiques des circuits R1CS pour minimiser le temps de génération des preuves client-side.
+Cold Start Réseau
+M6 - M12
+1. Développement du SDK Issuer v1 destiné aux institutions financières régulées. Ce SDK encapsulera la gestion des clés et le mapping des bases de données internes vers le format ZKP de SauronID.
+
+2. Support technique à l'intégration pour atteindre le jalon des 50 000 vérifications par mois.
+
+2. Identité Agentique, Sécurité Comportementale et Registre Temps Réel (Domaine de Nicolas)
+Si la cryptographie de Killian garantit l'intégrité mathématique de l'identité, l'architecture conçue par Nicolas assure la sécurité dynamique, la gestion des acteurs non-humains (agents IA) et la synchronisation en temps réel de l'état du réseau. Son mandat est de résoudre le chaînon manquant de l'Agentic Commerce et de protéger l'infrastructure contre les vecteurs d'attaque émergents.
+2.1. Le Protocole d'Identité Agentique (A-JWT)
+Le principal défi de l'économie agentique réside dans le fait que les protocoles d'autorisation traditionnels, tels qu'OAuth 2.0, ont été conçus pour des clients logiciels déterministes.1 Les agents basés sur de grands modèles de langage (LLMs) sont par nature stochastiques : leur comportement évolue en fonction des instructions (prompts) et des interactions avec l'environnement.24 Un agent malveillant ou victime d'une injection de prompt (Prompt Injection) pourrait utiliser les accès de son propriétaire humain pour exécuter des actions destructrices.1 Nicolas doit concevoir un protocole permettant à un agent de prouver qu'il agit légitimement au nom d'un humain vérifié, avec une portée (scope) strictement délimitée.
+L'implémentation reposera sur le standard émergent Agentic JWT (A-JWT).1 Ce standard introduit un jeton d'intention (Intent Token) qui lie cryptographiquement l'action de l'agent à l'autorisation explicite de l'utilisateur.1
+La première tâche de Nicolas consiste à définir l'identité cryptographique de l'agent, appelée agent_checksum. Contrairement à un simple client_id, ce checksum est un hachage unidirectionnel (SHA-256) dérivé de la configuration comportementale de l'agent, incluant son system prompt, les outils (tools) auxquels il a accès, et les paramètres du modèle (LLM configuration).25 Si la nature de l'agent est altérée, le checksum change, invalidant immédiatement ses autorisations.
+Nicolas devra développer une bibliothèque logicielle client (Client-Side Shim Library) qui s'intègrera directement dans le processus d'exécution de l'agent.24 Cette bibliothèque, protégée contre les altérations, est responsable de plusieurs fonctions critiques :
+Le calcul continu de l'agent_checksum à l'exécution.24
+Le suivi de l'état du flux de travail (workflow tracking) pour s'assurer que l'agent respecte la séquence d'actions prévue.24
+La génération de clés asymétriques éphémères (ex: Ed25519) de preuve de possession (Proof-of-Possession - PoP).1 Ces clés lient le jeton à la session spécifique de l'agent, rendant impossible le vol ou le rejeu (replay attack) du jeton par un autre processus malveillant.1
+L'interaction avec l'Identity Provider (IdP) du réseau Sauron pour forger les jetons A-JWT via un nouveau type de concession d'autorisation (Authorization Grant) nommé agent_checksum.26
+La structure du jeton A-JWT étendra la spécification JWT standard en intégrant de nouveaux attributs (claims).27 Nicolas implémentera le claim intent, contenant un objet JSON détaillant l'autorisation spécifique accordée par l'humain (ex: "achat de billet d'avion < 500€"), le claim workflow_id, et le claim delegation_chain.27 Ce dernier, s'appuyant sur l'attribut act (actor) défini par la RFC 8693 (OAuth 2.0 Token Exchange), permet la traçabilité des délégations en cascade, essentielle lorsqu'un agent principal délègue une sous-tâche à un agent spécialisé.24
+2.2. Analyse Comportementale et Détection d'Anomalies par Machine Learning
+Dans un écosystème décentralisé où l'authentification repose sur des preuves cryptographiques (qui peuvent potentiellement être volées si l'appareil de l'utilisateur est compromis), la vérification statique est insuffisante. Nicolas doit développer un moteur de détection d'anomalies basé sur l'intelligence artificielle pour assurer une authentification continue et une évaluation des risques en temps réel.29
+L'architecture du moteur de détection reposera sur des algorithmes d'apprentissage automatique (Machine Learning) non supervisés et semi-supervisés, capables de traiter de grands volumes de métadonnées sans accéder aux informations personnelles protégées par le ZKP.31 Les modèles utiliseront les données de télémétrie de présentation des credentials : adresses IP (pour détecter l'impossible travel), empreintes matérielles (device fingerprinting), vélocité des transactions, et typologie des requêtes d'Acquirers.30
+Nicolas implémentera des algorithmes spécifiques selon la nature des données :
+Isolation Forests : Algorithme particulièrement efficace pour les données de haute dimensionnalité, qui isole les observations aberrantes en partitionnant aléatoirement les données. Une transaction effectuée à 3h du matin depuis une IP étrangère sur un nouvel appareil sera rapidement isolée et qualifiée d'anomalie.32
+Autoencodeurs (Réseaux de Neurones) : Ces modèles seront entraînés à compresser puis reconstruire les séquences de comportement "normal" des utilisateurs et des agents.32 Lors de l'évaluation d'une nouvelle transaction, une erreur de reconstruction élevée indiquera une déviation comportementale significative, signalant potentiellement une usurpation de compte ou une prise de contrôle d'agent.33
+Le système de détection attribuera un score de risque dynamique à chaque tentative de présentation d'un credential.30 Si ce score dépasse un seuil paramétrable par l'Acquirer, l'API de SauronID déclenchera une réponse automatisée aux menaces (Automated Threat Response), telle que le blocage de la transaction ou l'exigence d'une ré-authentification forte (step-up authentication).30
+2.3. Ancrage Biométrique : Détection de Vivacité (Liveness Detection)
+L'intégrité de toute chaîne d'identité, même cryptographiquement parfaite, dépend de son ancrage initial dans le monde physique. Avant qu'un credential Tier 1 ne soit émis, il est impératif de s'assurer que le sujet est un humain vivant et non une attaque par présentation (Presentation Attack).
+Nicolas devra intégrer un SDK de détection de vivacité (Liveness Detection) dans le flux d'enrôlement et de ré-authentification.34 L'intégration d'outils certifiés iBeta Level 2 (tels que KYCAID ou Face++) permettra de combiner une vivacité passive (analyse de la texture de la peau, de la profondeur de champ via la caméra du smartphone) et active (demande de mouvements subtils).35 Cette étape est cruciale pour bloquer les tentatives de fraude automatisées à l'échelle via des masques 3D, des deepfakes générés par l'IA, ou des injections de flux vidéo.34
+2.4. Architecture du Registre de Révocation Temps Réel sur Blockchain
+Dans le modèle de distribution d'identité SSI (Self-Sovereign Identity), les vérificateurs n'interrogent pas directement les émetteurs. Par conséquent, il est indispensable de disposer d'un mécanisme asynchrone permettant à un Acquirer de savoir si un credential, ou une délégation d'agent, a été révoqué par l'Issuer ou le propriétaire humain.37 Nicolas concevra cette infrastructure critique en utilisant la technologie blockchain pour son immuabilité, couplée à une couche d'indexation off-chain pour garantir des performances de niveau entreprise.38
+Smart Contracts de Révocation (Solidity) : Nicolas développera un ensemble de contrats intelligents (Smart Contracts) déployés sur une machine virtuelle Ethereum (EVM). Inspiré des standards EIP-712 et des implémentations de CredentialRegistry, le contrat principal gérera une liste de révocation (Revocation Registry).40 Pour préserver la confidentialité et la conformité au RGPD, aucune donnée personnelle ne sera stockée sur la chaîne.41 Lors d'une révocation, seul le hachage cryptographique (keccak256) du Verifiable Credential sera transmis au contrat via une méthode telle que revoke(bytes32 digest).42 Le contrat vérifiera cryptographiquement, via un contrôle d'accès (AccessControl d'OpenZeppelin), que l'entité appelant la fonction (l'Issuer ou le propriétaire du DID) possède bien l'autorité pour révoquer cet identifiant.40
+Indexation Haute Performance (The Graph) : Interroger directement un nœud blockchain pour chaque vérification de transaction d'un Acquirer introduirait une latence inacceptable (plusieurs secondes) et bloquerait la scalabilité du système.39 Pour résoudre ce goulot d'étranglement, Nicolas implémentera un sous-graphe (Subgraph) en utilisant le protocole The Graph.44
+Ce sous-graphe agira comme un indexeur décentralisé : il écoutera en temps réel les événements émis par le Smart Contract (par exemple, un événement CredentialRevoked(bytes32 indexed digest)) et transformera ces données brutes de la blockchain en une base de données structurée.39 Les SDKs Acquirer développés par Killian interrogeront ensuite ce sous-graphe via une API GraphQL, obtenant une réponse sur le statut de révocation en quelques millisecondes, garantissant ainsi l'exigence de fluidité du routage de type "3D Secure".42
+Le croisement des données issues du sous-graphe de révocation et des métadonnées d'utilisation alimentera un tableau de bord (Dashboard) développé par Nicolas. Ce tableau de bord, à destination des plateformes Acquirers, fournira une visibilité en temps réel sur les tentatives de présentation d'identifiants, les blocages liés à la détection d'anomalies et les alertes de fraude comportementale.47
+2.5. Exigences Cognitives et Échéancier pour Nicolas
+La mission de Nicolas requiert une maîtrise des environnements d'apprentissage automatique, de la sécurité des agents IA et de l'ingénierie des données blockchain.
+Domaine d'Expertise
+Compétences Spécifiques Requises
+Intelligence Artificielle et Agents
+Architecture des LLMs, vulnérabilités (Prompt Injection), protocoles de communication agentique (MCP, A2A), implémentation de l'Agentic JWT (A-JWT).
+Machine Learning et Data Science
+Modélisation comportementale non supervisée (Python, Scikit-Learn, PyTorch), algorithmes de détection d'anomalies (Isolation Forests, Autoencodeurs, SeqSAC).
+Ingénierie Blockchain
+Programmation Solidity, environnement EVM (Hardhat/Foundry), optimisation des coûts de gaz, architecture de contrats (EIP-712, OpenZeppelin Access Control).
+Développement Backend et Data
+Indexation de données blockchain (The Graph), requêtes GraphQL, intégration de SDKs biométriques (Liveness Detection), développement de dashboards (React/Next.js).
+
+L'échéancier de développement de Nicolas assure la mise en place progressive des remparts de sécurité et de l'infrastructure agentique :
+Phase
+Période
+Livrables Architecturaux de Nicolas
+Core Protocol
+M0 - M2
+1. Développement et déploiement du Smart Contract de révocation sur un testnet EVM (ex: Sepolia).
+
+2. Implémentation du Client-Side Shim Library (Python/Node.js) pour la génération de l'agent_checksum et le suivi des workflows agentiques.
+
+3. Script d'orchestration simulant le parcours complet de l'agent : délégation, émission de l'A-JWT, et présentation.
+Pilotes Pre-Seed
+M2 - M6
+1. Intégration du SDK de Face ID Liveness dans les flux applicatifs clients.
+
+2. Développement et déploiement du sous-graphe (The Graph) pour l'indexation de la révocation on-chain et l'exposition d'une API GraphQL.
+
+3. Déploiement de la première itération du moteur de détection d'anomalies comportementales, établissement des baselines sur les données des pilotes.
+Cold Start Réseau
+M6 - M12
+1. Déploiement du tableau de bord (Dashboard) Acquirer fournissant des analyses en temps réel sur la fraude et la révocation.
+
+2. Mise en production du protocole de délégation agentique v1, supportant les chaînes de délégation multi-agents.
+
+3. Affinage des modèles de Machine Learning pour la réponse automatisée aux menaces (Automated Threat Response).
+
+3. Synthèse Architecturale et Paradigme de Standardisation
+L'architecture de SauronID, conçue conjointement par Killian et Nicolas, représente un changement de paradigme fondamental. En reconstruisant la logique de routage du 3D Secure (Initiateur → Réseau → Émetteur → Vérification → Réseau → Acquéreur) mais en l'appliquant à l'identité, le système résout le problème de la responsabilité et de l'interopérabilité sans dépendre d'acteurs propriétaires fermés.48
+La véritable puissance de cette implémentation réside dans la convergence des flux. Qu'une action soit initiée par un humain utilisant un portefeuille mobile ou par un agent IA autonome exécutant un script Python, la charge utile (payload) cryptographique présentée à l'Acquirer passe par les mêmes réseaux de vérification, interroge les mêmes sous-graphes de révocation et est analysée par le même moteur de détection d'anomalies. La seule variation se situe lors de la phase de vérification de l'Issuer : l'humain valide son intention par une vérification biométrique (Liveness Face ID), tandis que l'agent valide son intention par la présentation de son agent_checksum et du jeton de délégation A-JWT.
+Le positionnement concurrentiel de SauronID est unique. Les prestataires KYC traditionnels (Onfido, Jumio) résolvent la vérification unitaire mais ne créent aucun effet de réseau et n'offrent aucune portabilité. Les projets d'identité crypto (Worldcoin, Polygon ID) se concentrent sur la preuve de personnalité (Proof of Personhood) ou la couche technologique, mais manquent d'une infrastructure de routage économique structurant les relations entre émetteurs et acquéreurs. Enfin, les futurs portefeuilles étatiques eIDAS 2.0 ne sont pas des concurrents, mais de futurs Issuers de premier plan qui s'intégreront naturellement dans la couche d'interopérabilité bâtie par SauronID.
+Le succès de l'entreprise ne dépendra pas uniquement de l'élégance de ses circuits mathématiques ou de la précision de ses modèles d'intelligence artificielle, mais de l'exécution disciplinée de la stratégie de Cold Start. En agissant d'abord comme son propre émetteur Tier 2 grâce à l'authentification réseau des opérateurs de télécommunications (Mobile Connect), SauronID démontrera la valeur de son infrastructure de routage et de délégation agentique aux plateformes d'acquisition, créant ainsi la force gravitationnelle nécessaire pour attirer les émetteurs régulés et établir le nouveau standard ouvert de l'identité numérique.
+Sources des citations
+Agentic JWT: A Secure Delegation Protocol for Autonomous AI Agents - arXiv.org, consulté le mars 3, 2026, https://arxiv.org/abs/2509.13597
+Zero-Knowledge Proofs Demystified: A Practical Code Guide for Developers | by Ancilar | Blockchain Services | Medium, consulté le mars 3, 2026, https://medium.com/@ancilartech/zero-knowledge-proofs-demystified-a-practical-code-guide-for-developers-3f94682a852b
+Zero-Knowledge Proofs Using SnarkJS and Circom - DEV Community, consulté le mars 3, 2026, https://dev.to/thebojda/zero-knowledge-proofs-using-snarkjs-and-circom-536n
+A gentle introduction to ZKPs and Circom | Smart contract audits from Veridise, consulté le mars 3, 2026, https://veridise.com/blog/learn-blockchain/a-gentle-introduction-to-zkps-and-circom/
+Proving circuits with ZK - Circom 2 Documentation, consulté le mars 3, 2026, https://docs.circom.io/getting-started/proving-circuits/
+Main Circuits - Iden3 Documentation, consulté le mars 3, 2026, https://docs.iden3.io/protocol/main-circuits/
+How to Implement a Minimalist NFT zkRollup With Circom and SnarkJS | HackerNoon, consulté le mars 3, 2026, https://hackernoon.com/how-to-implement-a-minimalist-nft-zkrollup-with-circom-and-snarkjs
+Our architecture for generating and verifying ZK-SNARK proofs using CIRCOM and SNARKJS software tools. - ResearchGate, consulté le mars 3, 2026, https://www.researchgate.net/figure/Our-architecture-for-generating-and-verifying-ZK-SNARK-proofs-using-CIRCOM-and-SNARKJS_fig1_366676429
+Verifiable Credentials Data Model v2.0 - W3C, consulté le mars 3, 2026, https://www.w3.org/TR/vc-data-model-2.0/
+OpenID for Verifiable Credentials - OpenID Foundation, consulté le mars 3, 2026, https://openid.net/sg/openid4vc/
+OpenID4VCI: A Developer's Guide to Verifiable Credential Issuance - walt.id Documentation, consulté le mars 3, 2026, https://docs.walt.id/concepts/data-exchange-protocols/openid4vci
+OpenID for Verifiable Credential Issuance 1.0, consulté le mars 3, 2026, https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html
+Issue Verifiable Credentials using OpenID4VC | Curity Identity Server, consulté le mars 3, 2026, https://curity.io/resources/learn/verifiable-credentials-issuance/
+Selective Disclosure with SD-JWT - EBSI hub, consulté le mars 3, 2026, https://hub.ebsi.eu/vc-framework/did/selective-disclosure-sd-jwt
+Zero Knowledge Selective Disclosure (ZK-SD-VCs) - IOTA Documentation, consulté le mars 3, 2026, https://docs.iota.org/developer/iota-identity/how-tos/verifiable-credentials/zero-knowledge-selective-disclosure
+BLS-MT-ZKP: A novel approach to selective disclosure of claims from digital credentials, consulté le mars 3, 2026, https://arxiv.org/html/2402.15447v3
+OpenID for Verifiable Credentials – Libraries, consulté le mars 3, 2026, https://openid.net/sg/openid4vc/libraries/
+What is OpenID4VP? The Developer's Guide (2026) - walt.id Documentation, consulté le mars 3, 2026, https://docs.walt.id/concepts/data-exchange-protocols/openid4vp
+walt-id/waltid-openid4vc: Kotlin multiplatform library implementing the data models and protocols of the OID4VC specifications, including OID4VCI, OID4VP and SIOPv2. - GitHub, consulté le mars 3, 2026, https://github.com/walt-id/waltid-openid4vc
+Number Verification - Camara Project, consulté le mars 3, 2026, https://camaraproject.org/number-verification/
+Number Verification - Open Gateway - GSMA, consulté le mars 3, 2026, https://open-gateway.gsma.com/docs/number-verification/api-reference
+Number Verification API - The Open Gateway Initiative, consulté le mars 3, 2026, https://developers.opengateway.telefonica.com/docs/numberverification
+Number Verification 2.0 (CAMARA) - Vodafone Developer Marketplace, consulté le mars 3, 2026, https://developer.vodafone.com/api-catalogue/number-verification-20-camara/additional-information
+Agentic JWT: A Secure Delegation Protocol for Autonomous AI Agents - arXiv, consulté le mars 3, 2026, https://arxiv.org/html/2509.13597v1
+draft-goswami-agentic-jwt-00 - Secure Intent Protocol: JWT Compatible Agentic Identity and Workflow Management - IETF Datatracker, consulté le mars 3, 2026, https://datatracker.ietf.org/doc/draft-goswami-agentic-jwt/00/
+Secure Intent Protocol: JWT Compatible Agentic Identity and Workflow Management - IETF, consulté le mars 3, 2026, https://www.ietf.org/archive/id/draft-goswami-agentic-jwt-00.html
+[Literature Review] Agentic JWT: A Secure Delegation Protocol for Autonomous AI Agents, consulté le mars 3, 2026, https://www.themoonlight.io/en/review/agentic-jwt-a-secure-delegation-protocol-for-autonomous-ai-agents
+Identity Management for Agentic AI | OpenID Foundation, consulté le mars 3, 2026, https://openid.net/wp-content/uploads/2025/10/Identity-Management-for-Agentic-AI.pdf
+AI-based Identity Fraud Detection: A Systematic Review - arXiv, consulté le mars 3, 2026, https://arxiv.org/html/2501.09239v1
+How does digital identity authentication detect abnormal identity behavior through continuous monitoring? - Tencent Cloud, consulté le mars 3, 2026, https://www.tencentcloud.com/techpedia/127191
+Anomaly Detection in Identity Verification: The Key to Fraud Prevention - GetID 2026, consulté le mars 3, 2026, https://getid.com/anomaly-detection-in-identity-verification-the-key-to-fraud-prevention/
+How Anomaly Detection Algorithms Detect Unusual Patterns?| Fidelis Security, consulté le mars 3, 2026, https://fidelissecurity.com/threatgeek/network-security/anomaly-detection-algorithms/
+Using Behavioral Analytics to Identify Anomalous User Activity | by RocketMe Up Cybersecurity | Medium, consulté le mars 3, 2026, https://medium.com/@RocketMeUpCybersecurity/using-behavioral-analytics-to-identify-anomalous-user-activity-6788db431f71
+Face Liveness Detection SDK - KBY-AI, consulté le mars 3, 2026, https://kby-ai.com/face-liveness-detection-sdk/
+Face SDK Web API | KYCAID Facial Recognition & Liveness Detection, consulté le mars 3, 2026, https://kycaid.com/face-sdk/
+6 Best Liveness Detection APIs for Developers (2025) - Vouched, consulté le mars 3, 2026, https://www.vouched.id/learn/blog/best-liveness-detection-api
+Designing a Decentralized Identity Verification Platform - NTNU, consulté le mars 3, 2026, https://www.ntnu.no/ojs/index.php/nikt/article/download/6249/5618
+A Zero-Knowledge Proof-Enabled Blockchain-Based Academic Record Verification System, consulté le mars 3, 2026, https://www.mdpi.com/1424-8220/25/11/3450
+A Bidirectional Bridge for Cross-Chain Revocation of Verifiable Credentials in Segregated Blockchains - MDPI, consulté le mars 3, 2026, https://www.mdpi.com/1999-4893/18/12/734
+lacchain/vc-contracts: Verifiable Credentials On-chain Registration and Verification - GitHub, consulté le mars 3, 2026, https://github.com/lacchain/vc-contracts
+A Zero-Knowledge Proof-Enabled Blockchain-Based Academic Record Verification System, consulté le mars 3, 2026, https://pmc.ncbi.nlm.nih.gov/articles/PMC12158337/
+Indexing and Querying Revoked Verifiable Credentials | by Majd | 51nodes - Medium, consulté le mars 3, 2026, https://medium.com/51nodes/indexing-and-querying-revoked-verifiable-credentials-e229dc2781d4
+Performance Analysis of Verifiable Data Registry Solutions for Decentralized Identifiers - Diva-Portal.org, consulté le mars 3, 2026, https://www.diva-portal.org/smash/get/diva2:1721096/FULLTEXT01.pdf
+The Graph, consulté le mars 3, 2026, https://thegraph.com/
+Empowering Subgraphs with Verifiable Confirmations - Community & Grants - The Graph, consulté le mars 3, 2026, https://forum.thegraph.com/t/empowering-subgraphs-with-verifiable-confirmations/4738
+Easily Access Blockchain Data with Subgraphs - Kevin Jones, The Graph - GraphQL, consulté le mars 3, 2026, https://graphql.org/conf/2023/sessions/ebee6213b39b87437eb7cc9c41ea972b/
+How Digital Identity Powers Integrated Fraud Detection - Wavetec, consulté le mars 3, 2026, https://www.wavetec.com/blog/how-digital-identity-powers-integrated-fraud-detection/
+Decentralized Identifiers (DIDs) v1.0 - W3C, consulté le mars 3, 2026, https://www.w3.org/TR/did-1.0/
+
+
+
+
+Pour valider rigoureusement l'implémentation du protocole SauronID détaillée dans ce rapport, il est impératif d'adopter une approche d'audit "Zero Trust". Étant donné que la moindre vulnérabilité dans les circuits cryptographiques ou la logique de révocation pourrait compromettre l'identité numérique de millions d'utilisateurs et d'agents, la batterie de tests doit être exhaustive.
+Voici un plan de vérification détaillé et structuré, divisé selon les domaines de responsabilité des deux ingénieurs, avec les protocoles précis pour chaque test.
+
+1. Tests de l'Infrastructure Cryptographique et d'Émission (Repo de Killian)
+L'enjeu ici est de s'assurer que les preuves mathématiques ne peuvent générer aucun faux positif et qu'aucune donnée privée ne fuit lors de l'émission ou de la présentation.
+A. Audit des Circuits ZK (Circom & Snarkjs)
+Test 1 : Intégrité du circuit AgeVerification (Soundness & Completeness)
+Protocole : Générez des preuves avec des données valides (ex. : âge de 19 ans pour un seuil de 18 ans). La vérification via snarkjs doit retourner True. Ensuite, tentez d'injecter des données invalides (âge de 17 ans) ou des cas limites (exactement 18 ans, 18 ans moins une seconde, date future). Enfin, tentez de modifier le hachage de la date de naissance après la signature de l'Issuer.
+Attente : Le circuit GreaterEqualThan doit rejeter de manière déterministe toute preuve invalide ou altérée.
+Test 2 : Audit de Sous-Contrainte (Under-constrained Circuits)
+Protocole : Utilisez des analyseurs statiques (comme circomspect ou ecne) sur les fichiers .circom.
+Attente : Vérifiez qu'aucune variable d'entrée privée n'est "libre" (non liée par une contrainte mathématique $R1CS$). Une sous-contrainte permettrait à un attaquant de forger une preuve valide sans posséder le secret.
+Test 3 : Validation de l'Arbre de Merkle (SMT) et Hachage
+Protocole : Inspectez l'implémentation du circuit d'inclusion. Assurez-vous que les fonctions de hachage ZK-friendly (Poseidon ou MiMC) sont correctement implémentées via EdDSAPoseidonVerifier.
+Attente : Le circuit doit échouer si l'on tente de prouver l'inclusion d'une racine cryptographique qui n'est pas dans l'arbre d'état de l'Issuer.
+B. Protocoles d'Émission (OID4VCI) et Présentation (OID4VP)
+Test 4 : Divulgation Sélective (ZKP-SD-VC)
+Protocole : Formulez une demande de présentation structurée (Presentation Definition) exigeant uniquement la preuve de majorité, sans la nationalité. Interceptez la charge utile (payload) réseau générée par le SDK client.
+Attente : Le vérificateur doit pouvoir recalculer et vérifier l'intégrité du document monolithique signé par l'émetteur sans pouvoir extraire ou déduire les attributs non demandés.
+Test 5 : Sécurité du "Pre-Authorized Code Flow"
+Protocole : Tentez une attaque par rejeu (Replay Attack) en interceptant le code pré-autorisé généré par l'Authorization Server de l'Issuer et en l'utilisant une seconde fois pour télécharger le Verifiable Credential (VC).
+Attente : Le serveur doit invalider la session dès la première utilisation.
+C. Intégration Telecom (API CAMARA - Cold Start)
+Test 6 : Contournement de l'Authentification Silencieuse
+Protocole : Simulez une requête de flux OpenID Connect avec le paramètre prompt=none derrière un VPN, un proxy, ou avec une adresse IP ne correspondant pas à la carte SIM ciblée.
+Attente : Le backend de SauronID doit rejeter la création du VC Tier 2, validant que l'opérateur a bien corrélé l'adresse IP physique avec le MSISDN.
+
+2. Tests de Sécurité Agentique et Registre (Repo de Nicolas)
+L'enjeu est de garantir qu'une intelligence artificielle ne puisse pas outrepasser ses droits et que le système réseau réagisse en temps réel aux révocations et aux fraudes.
+A. Protocole d'Identité Agentique (A-JWT)
+Test 7 : Sensibilité et Intégrité de l'agent_checksum
+Protocole : Initiez un agent IA avec un System Prompt spécifique et générez son A-JWT. Modifiez ensuite un seul caractère dans son prompt (ex. : modifier un plafond de dépense) ou ajoutez-lui un nouvel "outil" (tool) à l'exécution.
+Attente : La bibliothèque client (Client-Side Shim) doit recalculer un checksum SHA-256 radicalement différent. L'Identity Provider (IdP) de SauronID doit immédiatement rejeter le jeton A-JWT car le hash ne correspond plus à la nature initiale de l'agent.
+Test 8 : Traçabilité des Délégations (RFC 8693)
+Protocole : Simulez une chaîne de délégation complexe : Humain $\rightarrow$ Agent Principal $\rightarrow$ Sous-Agent Spécialisé.
+Attente : Analysez la structure JSON du claim act (actor) dans le JWT final. La chaîne complète (delegation_chain) doit être parfaitement traçable jusqu'au mandant initial.
+Test 9 : Épreuve de Possession (Proof-of-Possession - PoP)
+Protocole : Volez un jeton A-JWT valide et tentez de l'envoyer depuis une machine tierce sans la clé asymétrique éphémère (ex. : Ed25519) générée pour cette session spécifique.
+Attente : La transaction doit être rejetée, prouvant l'impossibilité du vol de session agentique.
+B. Moteur de Détection d'Anomalies (Machine Learning)
+Test 10 : Évaluation des Modèles (Isolation Forests & Autoencodeurs)
+Protocole : Injectez des jeux de données de télémétrie normaux (baselines) pour entraîner les modèles. Soumettez ensuite des anomalies synthétiques : une requête depuis une IP avec un "impossible travel", ou une vélocité de transaction anormalement élevée par un agent.
+Attente : L'algorithme d'Isolation Forest doit attribuer un score de risque dépassant le seuil critique. Le système doit déclencher l'Automated Threat Response (ex. : blocage API ou exigence de Liveness).
+C. Smart Contracts et Indexation (Blockchain & The Graph)
+Test 11 : Contrôle d'Accès et Privacy du Registre de Révocation
+Protocole : Déployez le Smart Contract sur un testnet local (Hardhat/Foundry). Tentez d'appeler la méthode revoke(bytes32 digest) avec une adresse de portefeuille (wallet) non autorisée (ni l'Issuer, ni le propriétaire du DID).
+Attente : L'EVM doit faire un revert de la transaction (AccessControl). De plus, inspectez l'état de la blockchain pour certifier qu'absolument aucune donnée personnelle en clair n'est stockée, uniquement des empreintes keccak256.
+Test 12 : Latence de Synchronisation Acquirer (Subgraph)
+Protocole : Soumettez une transaction de révocation valide sur la blockchain. Chronométrez le temps exact entre l'inclusion du bloc et le moment où la requête à l'API GraphQL du Sous-graphe retourne le statut "révoqué".
+Attente : Pour respecter les standards du routage 3D Secure, cette latence d'indexation doit être extrêmement faible (de l'ordre de la milliseconde/seconde une fois le bloc validé).
+
+Prochaine étape : Par quel dépôt souhaitez-vous commencer vos audits ? Je peux vous aider à rédiger les scripts de tests automatisés (en Rust pour les circuits de Killian, ou en Solidity/Python pour les contrats et agents de Nicolas).
+
+
