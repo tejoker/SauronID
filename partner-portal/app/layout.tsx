@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sauron — Client Simulator",
-  description: "B2B Client Portal — Zero-Knowledge KYC Infrastructure",
+  title: "Sauron — Partner Portal",
+  description: "Partner Portal — Zero-Knowledge KYC Infrastructure",
 };
 
 export default function RootLayout({

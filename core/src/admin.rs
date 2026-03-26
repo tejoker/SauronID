@@ -258,11 +258,8 @@ pub async fn get_requests(
 pub struct StatsResponse {
     pub total_users: i64,
     pub total_clients: i64,
-    pub total_tokens_a_issued: usize,
-    pub total_tokens_a_burned: i64,
     pub total_tokens_b_issued: usize,
     pub total_tokens_b_spent: i64,
-    pub exchange_rate: u32,
 }
 
 pub async fn get_stats(
@@ -273,16 +270,12 @@ pub async fn get_stats(
 
     let total_users: i64 = db.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
     let total_clients: i64 = db.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
-    let total_tokens_a_burned: i64 = db.query_row("SELECT COUNT(*) FROM tokens_a_burned", [], |r| r.get(0)).unwrap_or(0);
     let total_tokens_b_spent: i64 = db.query_row("SELECT COUNT(*) FROM tokens_b_spent", [], |r| r.get(0)).unwrap_or(0);
 
     Json(StatsResponse {
         total_users,
         total_clients,
-        total_tokens_a_issued:  st.total_tokens_a_issued,
-        total_tokens_a_burned,
         total_tokens_b_issued:  st.total_tokens_b_issued,
         total_tokens_b_spent,
-        exchange_rate: st.token_a_to_b_rate,
     })
 }

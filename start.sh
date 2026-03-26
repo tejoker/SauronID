@@ -100,7 +100,10 @@ if [ ! -d "node_modules" ]; then
   npm install --silent
 fi
 NEXT_PUBLIC_API_URL=http://localhost:3001 \
-NEXT_PUBLIC_KYC_URL=http://localhost:8000 \
+NEXT_PUBLIC_KYC_URL=/api/kyc/api \
+KYC_INTERNAL_URL=http://localhost:8000 \
+CAMARA_INTERNAL_URL=http://localhost:8004 \
+DASHBOARD_INTERNAL_URL=http://localhost:8003 \
   npm run dev -- -p 3000 &
 PORTAL_PID=$!
 PIDS+=("$PORTAL_PID")
@@ -138,11 +141,9 @@ PIDS+=("$CAMARA_PID")
 
 # ── Résumé ───────────────────────────────────────────────────────────────────
 echo ""
-echo -e "  ${GRN}Partner Portal   →${RST} http://localhost:3000"
-echo -e "  ${GRN}Backend Rust     →${RST} http://localhost:3001"
-echo -e "  ${GRN}KYC              →${RST} http://localhost:8000"
-echo -e "  ${GRN}Analytics API    →${RST} http://localhost:8002"
-echo -e "  ${GRN}Sauron Dashboard →${RST} http://localhost:8003"
+echo -e "  ${GRN}Partner + Bank + Dashboard (proxy) →${RST} http://localhost:3000"
+echo -e "  ${GRN}Rust Backend API                    →${RST} http://localhost:3001"
+echo -e "  ${YLW}Internal services (proxied)         →${RST} 8000 / 8002 / 8003 / 8004"
 echo ""
 echo -e "  ${YLW}Ctrl+C pour tout arrêter${RST}"
 echo ""

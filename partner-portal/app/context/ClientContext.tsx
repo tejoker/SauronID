@@ -4,17 +4,14 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 export const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-export const KYC_API = process.env.NEXT_PUBLIC_KYC_URL || "http://localhost:8000";
-export const EXCHANGE_RATE = 3;
-
+export const KYC_API = process.env.NEXT_PUBLIC_KYC_URL || "/api/kyc/api";
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface Client {
   name: string;
   public_key_hex: string;
   private_key_hex: string;
   key_image_hex: string;
-  client_type: "FULL_KYC" | "ZKP_ONLY";
-  tokens_a: number;
+  client_type: "FULL_KYC" | "ZKP_ONLY" | "BANK";
   tokens_b: number;
 }
 
@@ -30,11 +27,8 @@ export interface ClientUser {
 export interface Stats {
   total_users: number;
   total_clients: number;
-  total_tokens_a_issued: number;
-  total_tokens_a_burned: number;
   total_tokens_b_issued: number;
   total_tokens_b_spent: number;
-  exchange_rate: number;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ use axum::{
 };
 use std::sync::{Arc, Mutex, RwLock};
 use rusqlite::params;
-use sauron_core::{oprf, ring, state::{ServerState, sign_token, verify_token, token_value}, admin, billing};
+use sauron_core::{oprf, ring, state::{ServerState, verify_token, token_value}, admin, billing};
 use sauron_core::{identity::{Identity, UserData}, db};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::RistrettoPoint;
@@ -34,10 +34,8 @@ async fn main() {
     let app = Router::new()
         // OPRF
         .route("/oprf",              post(handle_oprf))
-        // Flux 1: dépôt KYC → Token A
+        // Flux 1: dépôt KYC
         .route("/register",          post(handle_register))
-        // Flux 2: N Token A → N*rate Token B
-        .route("/exchange_tokens",   post(handle_exchange_tokens))
         // Flux 3: Token B + ring sig → profil KYC
         .route("/get_kyc",           post(handle_get_kyc))
         // Utilitaire: clés publiques du groupe utilisateurs
@@ -52,7 +50,6 @@ async fn main() {
         .route("/dev/clients",       get(dev_get_clients))
         .route("/dev/client/{name}",       get(dev_get_client_detail))
         .route("/dev/client/{name}/users", get(dev_get_client_users))
-        .route("/dev/exchange",      post(dev_exchange))
         .route("/dev/buy_tokens",    post(dev_buy_tokens))
         // ZKP
         .route("/zkp/build_ring",    post(handle_build_ring))
@@ -111,11 +108,9 @@ struct RegisterRequest {
     key_image: Vec<u8>,
     /// Données KYC de l'utilisateur.
     profile: UserData,
-    /// Ring Signature du site partenaire sur le message = hex(public_key)||":"||(blinded_token_a).
+    /// Ring Signature du site partenaire sur le message = hex(public_key).
     /// Prouve qu'un client légitime soumet ce KYC — mais lequel reste anonyme.
     client_signature: ring::RingSignature,
-    /// Valeur aveugle choisie aléatoirement par le site (simulation blind token).
-    blinded_token_a: String,
     /// [MERKLE] Commitment cryptographique du client : SHA256(secret_client) encodé en hex.
     /// Le client conserve son secret ; Sauron s'engage sur le commitment dans l'arbre de Merkle.
     /// Champ optionnel — si absent, la réponse n'inclut pas de preuve Merkle.
@@ -127,9 +122,6 @@ struct RegisterRequest {
 struct RegisterResponse {
     /// Statut de l'opération.
     status: String,
-    /// Token A signé par le serveur : "blind_value:signature"
-    /// Le site le stocke et l'utilisera lors de l'échange (Flux 2).
-    signed_token_a: String,
     /// [MERKLE] Nouvelle racine de l'arbre de Merkle après insertion du commitment.
     /// Présent uniquement si un `commitment` a été envoyé dans la requête.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -154,7 +146,7 @@ async fn handle_register(
     let ki_bytes: [u8; 32] = payload.key_image.try_into().map_err(|_| StatusCode::BAD_REQUEST)?;
     let hex_pk = hex::encode(&pk_bytes);
     let hex_ki = hex::encode(&ki_bytes);
-    let msg = format!("{}:{}", hex_pk, payload.blinded_token_a);
+    let msg = hex_pk.clone();
 
     // Vérifier que la ring sig provient d'un site partenaire légitime.
     {
@@ -178,17 +170,13 @@ async fn handle_register(
         ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
 
-    // Mettre à jour le groupe en mémoire + signer Token A + insérer le commitment Merkle.
-    let signed_token_a;
+    // Mettre à jour le groupe en mémoire + insérer le commitment Merkle.
     let mut merkle_root_out: Option<String> = None;
     let mut merkle_proof_out: Option<Vec<String>> = None;
     let mut leaf_index_out: Option<usize> = None;
     {
         let mut st = state.write().unwrap();
         st.user_group.add_member(pk_point);
-        let sig = sign_token(&st.token_secret.clone(), "TOKEN_A", &payload.blinded_token_a);
-        signed_token_a = format!("{}:{}", payload.blinded_token_a, sig);
-        st.total_tokens_a_issued += 1;
 
         // ── Merkle Commitment Ledger ─────────────────────────────
         if let Some(ref commitment_hex) = payload.commitment {
@@ -225,8 +213,8 @@ async fn handle_register(
         // ────────────────────────────────────────────────────────
 
         st.log("REGISTER", "OK", &hex_ki[..16]);
-        println!("[FLUX 1] POST /register | group_size={} token_a_issued={} merkle_leaves={}",
-            st.user_group.members.len(), st.total_tokens_a_issued, st.merkle_ledger.len());
+        println!("[FLUX 1] POST /register | group_size={} merkle_leaves={}",
+            st.user_group.members.len(), st.merkle_ledger.len());
     }
 
     // ── Ancrage Solana (non-bloquant) ─────────────────────────────────────
@@ -259,107 +247,9 @@ async fn handle_register(
 
     Ok(Json(RegisterResponse {
         status: "success".to_string(),
-        signed_token_a,
         merkle_root: merkle_root_out,
         merkle_proof: merkle_proof_out,
         leaf_index: leaf_index_out,
-    }))
-}
-
-// ─────────────────────────────────────────────────────
-//  Flux 2 : /exchange_tokens — N Token A → N*rate Token B
-// ─────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct ExchangeRequest {
-    /// Le site partenaire qui s'identifie pour l'échange (seul moment où Sauron connaît son identité).
-    site_name: String,
-    /// Liste des Tokens A en clair : ["blind_a:sig_a", ...].
-    tokens_a: Vec<String>,
-    /// Valeurs aveugles pour les Tokens B : autant que tokens_a * rate.
-    blinded_tokens_b: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct ExchangeResponse {
-    signed_tokens_b: Vec<String>,
-    rate: u32,
-    tokens_a_burned: usize,
-    tokens_b_issued: usize,
-}
-
-async fn handle_exchange_tokens(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    Json(payload): Json<ExchangeRequest>,
-) -> Result<Json<ExchangeResponse>, StatusCode> {
-    if payload.tokens_a.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let rate;
-    let token_secret;
-    {
-        let st = state.read().unwrap();
-        rate = st.token_a_to_b_rate;
-        token_secret = st.token_secret.clone();
-
-        // Vérifier tous les Tokens A avant d'en brûler un seul.
-        let db = st.db.lock().unwrap();
-        for token_a in &payload.tokens_a {
-            if !verify_token(&token_secret, "TOKEN_A", token_a) {
-                println!("[SECURITY] POST /exchange_tokens | Invalid Token A: {}", token_a);
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-            let tv = token_value(token_a);
-            let exists: bool = db.query_row(
-                "SELECT COUNT(*) FROM tokens_a_burned WHERE hash = ?1",
-                params![tv], |r| r.get::<_, i64>(0),
-            ).unwrap_or(0) > 0;
-            if exists {
-                println!("[SECURITY] POST /exchange_tokens | Double-spend Token A.");
-                return Err(StatusCode::CONFLICT);
-            }
-        }
-    }
-
-    let expected_b_count = payload.tokens_a.len() * rate as usize;
-    if payload.blinded_tokens_b.len() != expected_b_count {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    // Brûler les Tokens A en DB.
-    {
-        let st = state.read().unwrap();
-        let db = st.db.lock().unwrap();
-        for token_a in &payload.tokens_a {
-            let tv = token_value(token_a);
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_a_burned (hash) VALUES (?1)", params![tv]);
-        }
-    }
-
-    // Signer les Tokens B.
-    let signed_tokens_b: Vec<String> = payload.blinded_tokens_b
-        .iter()
-        .map(|blind_b| {
-            let sig = sign_token(&token_secret, "TOKEN_B", blind_b);
-            format!("{}:{}", blind_b, sig)
-        })
-        .collect();
-
-    {
-        let mut st = state.write().unwrap();
-        st.total_tokens_a_burned += payload.tokens_a.len();
-        st.total_tokens_b_issued += signed_tokens_b.len();
-        st.log("EXCHANGE", "OK", &format!("site={} burned_a={}", payload.site_name, payload.tokens_a.len()));
-        println!("[FLUX 2] POST /exchange_tokens | {} burned {} Token A → {} Token B (rate={})",
-            payload.site_name, payload.tokens_a.len(), signed_tokens_b.len(), rate);
-    }
-
-    Ok(Json(ExchangeResponse {
-        tokens_b_issued: signed_tokens_b.len(),
-        signed_tokens_b,
-        rate,
-        tokens_a_burned: payload.tokens_a.len(),
     }))
 }
 
@@ -506,7 +396,6 @@ struct DevRegisterRequest {
 
 #[derive(Serialize)]
 struct DevRegisterResponse {
-    signed_token_a: String,
     public_key_hex: String,
     message: String,
     /// [MERKLE] Nouvelle racine Merkle après insertion du KYC (préparation Solana).
@@ -537,11 +426,7 @@ async fn dev_register_user(
     let hex_pk  = hex::encode(&pk_bytes);
     let hex_ki  = hex::encode(&ki_bytes);
 
-    // 2. Simuler ring sig du site partenaire.
-    let random_bytes: [u8; 16] = rand::random();
-    let blinded_token_a = hex::encode(random_bytes);
-
-    // 3. Persister dans la DB.
+    // 2. Persister dans la DB.
     {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
@@ -555,17 +440,15 @@ async fn dev_register_user(
         ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
-    // 4. Mettre à jour le groupe en mémoire + Merkle.
+    // 3. Mettre à jour le groupe en mémoire + Merkle.
     let pk_point = user_identity.public;
     let mut merkle_root_out: Option<String> = None;
     let mut merkle_proof_out: Option<Vec<String>> = None;
     let mut leaf_index_out: Option<usize> = None;
     let commitment_used: String;
-    let signed_token_a = {
+    {
         let mut st = state.write().unwrap();
         st.user_group.add_member(pk_point);
-        let sig = sign_token(&st.token_secret.clone(), "TOKEN_A", &blinded_token_a);
-        let token_a = format!("{}:{}", blinded_token_a, sig);
 
         // ── Commitment Merkle (client-side simulation) ─────────────────
         // Si le client n'a pas fourni de commitment, on en génère un déterministe
@@ -602,14 +485,10 @@ async fn dev_register_user(
         }
         // ──────────────────────────────────────────────────
 
-        // 5. Incrémenter le solde Token A du client + enregistrer la relation.
+        // 4. Enregistrer la relation client→utilisateur.
         if !payload.site_name.is_empty() {
             {
                 let db = st.db.lock().unwrap();
-                let _ = db.execute(
-                    "UPDATE clients SET tokens_a = tokens_a + 1 WHERE name = ?1",
-                    params![payload.site_name],
-                );
                 let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
                 let _ = db.execute(
                     "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
@@ -617,14 +496,12 @@ async fn dev_register_user(
                     params![payload.site_name, hex_ki, ts],
                 );
             }
-            st.total_tokens_a_issued += 1;
         }
 
         st.log("DEV_REGISTER", "OK", &hex_ki[..16]);
         println!("[FLUX 1][DEV] register_user | email={} | site={} | group_size={} | merkle_leaves={}",
             payload.email, payload.site_name, st.user_group.members.len(), st.merkle_ledger.len());
-        token_a
-    };
+    }
 
     // ── Ancrage Solana (non-bloquant) ─────────────────────────────────────
     if let Some(ref root_hex) = merkle_root_out {
@@ -651,9 +528,8 @@ async fn dev_register_user(
     }
 
     Ok(Json(DevRegisterResponse {
-        signed_token_a,
         public_key_hex: hex_pk,
-        message: format!("{} registered (dev)", payload.email),
+        message: format!("{} registered", payload.email),
         merkle_root: merkle_root_out,
         merkle_proof: merkle_proof_out,
         leaf_index: leaf_index_out,
@@ -793,7 +669,6 @@ struct DevClientRecord {
     private_key_hex: String,
     key_image_hex:   String,
     client_type:     String,
-    tokens_a:        i64,
     tokens_b:        i64,
 }
 
@@ -803,7 +678,7 @@ async fn dev_get_clients(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_a, tokens_b FROM clients ORDER BY id"
+        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_b FROM clients ORDER BY id"
     ).unwrap();
     let records: Vec<DevClientRecord> = stmt.query_map([], |row| {
         Ok(DevClientRecord {
@@ -812,8 +687,7 @@ async fn dev_get_clients(
             private_key_hex: row.get(2)?,
             key_image_hex:   row.get(3)?,
             client_type:     row.get(4)?,
-            tokens_a:        row.get(5)?,
-            tokens_b:        row.get(6)?,
+            tokens_b:        row.get(5)?,
         })
     }).unwrap().flatten().collect();
     Json(records)
@@ -830,7 +704,7 @@ async fn dev_get_client_detail(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     db.query_row(
-        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_a, tokens_b
+        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_b
          FROM clients WHERE name = ?1",
         params![name],
         |row| Ok(DevClientRecord {
@@ -839,8 +713,7 @@ async fn dev_get_client_detail(
             private_key_hex: row.get(2)?,
             key_image_hex:   row.get(3)?,
             client_type:     row.get(4)?,
-            tokens_a:        row.get(5)?,
-            tokens_b:        row.get(6)?,
+            tokens_b:        row.get(5)?,
         }),
     ).map(Json).map_err(|_| StatusCode::NOT_FOUND)
 }
@@ -883,81 +756,6 @@ async fn dev_get_client_users(
         })
     }).unwrap().flatten().collect();
     Json(records)
-}
-
-// ─────────────────────────────────────────────────────
-//  POST /dev/exchange — échange simplifié Token A → Token B (soldes DB)
-// ─────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct DevExchangeRequest {
-    site_name: String,
-    count: i64,
-}
-
-#[derive(Serialize)]
-struct DevExchangeResponse {
-    tokens_a_burned: i64,
-    tokens_b_received: i64,
-    new_tokens_a: i64,
-    new_tokens_b: i64,
-}
-
-async fn dev_exchange(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    Json(payload): Json<DevExchangeRequest>,
-) -> Result<Json<DevExchangeResponse>, (StatusCode, String)> {
-    if payload.count < 1 {
-        return Err((StatusCode::BAD_REQUEST, "count must be >= 1".into()));
-    }
-
-    let rate;
-    {
-        let st = state.read().unwrap();
-        rate = st.token_a_to_b_rate as i64;
-    }
-    let tokens_b_to_add = payload.count * rate;
-
-    let mut st = state.write().unwrap();
-    let db = st.db.lock().unwrap();
-
-    // Vérifier le solde Token A du client
-    let current_a: i64 = db.query_row(
-        "SELECT tokens_a FROM clients WHERE name = ?1",
-        params![payload.site_name],
-        |row| row.get(0),
-    ).map_err(|_| (StatusCode::NOT_FOUND, format!("Client '{}' not found", payload.site_name)))?;
-
-    if current_a < payload.count {
-        return Err((StatusCode::BAD_REQUEST,
-            format!("Not enough Token A: have {}, need {}", current_a, payload.count)));
-    }
-
-    // Effectuer l'échange
-    let _ = db.execute(
-        "UPDATE clients SET tokens_a = tokens_a - ?1, tokens_b = tokens_b + ?2 WHERE name = ?3",
-        params![payload.count, tokens_b_to_add, payload.site_name],
-    );
-
-    let (new_a, new_b): (i64, i64) = db.query_row(
-        "SELECT tokens_a, tokens_b FROM clients WHERE name = ?1",
-        params![payload.site_name],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).unwrap();
-
-    drop(db);
-    st.total_tokens_a_burned += payload.count as usize;
-    st.total_tokens_b_issued += tokens_b_to_add as usize;
-    st.log("EXCHANGE", "OK", &format!("site={} burned={} received={}", payload.site_name, payload.count, tokens_b_to_add));
-    println!("[FLUX 2][DEV] exchange | site={} | burned={}A → received={}B",
-        payload.site_name, payload.count, tokens_b_to_add);
-
-    Ok(Json(DevExchangeResponse {
-        tokens_a_burned: payload.count,
-        tokens_b_received: tokens_b_to_add,
-        new_tokens_a: new_a,
-        new_tokens_b: new_b,
-    }))
 }
 
 // ─────────────────────────────────────────────────────

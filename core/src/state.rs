@@ -49,11 +49,7 @@ pub struct ServerState {
     pub user_group: ring::RingGroup,
     /// Secret pour signer les tokens (simulation blind signature).
     pub token_secret: Vec<u8>,
-    /// Taux d'échange : 1 Token A → N Token B (1A → 5B).
-    pub token_a_to_b_rate: u32,
     /// Compteurs en mémoire (pour les stats rapides, non persistés).
-    pub total_tokens_a_issued: usize,
-    pub total_tokens_a_burned: usize,
     pub total_tokens_b_issued: usize,
     pub total_tokens_b_burned: usize,
     /// Arbre de Merkle des commitments KYC.
@@ -72,9 +68,6 @@ impl ServerState {
             client_group: ring::RingGroup::new(),
             user_group: ring::RingGroup::new(),
             token_secret: b"SAURON_TOKEN_SECRET_HACKATHON_2024".to_vec(),
-            token_a_to_b_rate: 5,
-            total_tokens_a_issued: 0,
-            total_tokens_a_burned: 0,
             total_tokens_b_issued: 0,
             total_tokens_b_burned: 0,
             merkle_ledger: MerkleCommitmentLedger::new(),

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useClient } from "../context/ClientContext";
 import { useState, useRef, useEffect } from "react";
 
@@ -8,6 +10,7 @@ export default function NavBar() {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const pathname = usePathname();
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -25,6 +28,9 @@ export default function NavBar() {
   );
   const fullKyc = filtered.filter((c) => c.client_type === "FULL_KYC");
   const zkpOnly = filtered.filter((c) => c.client_type === "ZKP_ONLY");
+  const banks = filtered.filter((c) => c.client_type === "BANK");
+
+  const isBank = activeClient?.client_type === "BANK";
 
   return (
     <header className="border-b border-neutral-200 bg-white sticky top-0 z-50">
@@ -35,7 +41,26 @@ export default function NavBar() {
             <span className="text-white text-xs font-bold">S</span>
           </div>
           <span className="text-sm font-bold tracking-tight text-neutral-900">Sauron</span>
-          <span className="text-[10px] bg-neutral-100 text-neutral-500 px-1.5 py-0.5 rounded">B2B Simulator</span>
+        </div>
+
+        {/* Portal Navigation */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <Link
+            href="/"
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              pathname === "/" ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100"
+            }`}
+          >
+            Site Portal
+          </Link>
+          <Link
+            href="/bank"
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              pathname === "/bank" ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100"
+            }`}
+          >
+            Bank Portal
+          </Link>
         </div>
 
         {/* Separator */}
@@ -49,12 +74,17 @@ export default function NavBar() {
           >
             {activeClient ? (
               <>
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${activeClient.client_type === "FULL_KYC" ? "bg-blue-500" : "bg-purple-500"}`} />
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                  activeClient.client_type === "FULL_KYC" ? "bg-blue-500" :
+                  activeClient.client_type === "ZKP_ONLY" ? "bg-purple-500" : "bg-amber-500"
+                }`} />
                 <span className="text-sm font-medium text-neutral-900 truncate">{activeClient.name}</span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0 ${
                   activeClient.client_type === "FULL_KYC"
                     ? "bg-blue-50 text-blue-700 border-blue-200"
-                    : "bg-purple-50 text-purple-700 border-purple-200"
+                    : activeClient.client_type === "ZKP_ONLY"
+                    ? "bg-purple-50 text-purple-700 border-purple-200"
+                    : "bg-amber-50 text-amber-700 border-amber-200"
                 }`}>
                   {activeClient.client_type}
                 </span>
@@ -83,6 +113,25 @@ export default function NavBar() {
 
               {/* Grouped results */}
               <div className="overflow-y-auto flex-1">
+                {banks.length > 0 && (
+                  <div>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-600 uppercase tracking-widest bg-amber-50/50">
+                      Banks ({banks.length})
+                    </div>
+                    {banks.map((c) => (
+                      <button
+                        key={c.name}
+                        onClick={() => { setActiveClientName(c.name); setOpen(false); }}
+                        className={`w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-neutral-50 transition-colors ${
+                          c.name === activeClient?.name ? "bg-amber-50" : ""
+                        }`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                        <span className="text-sm text-neutral-800">{c.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {fullKyc.length > 0 && (
                   <div>
                     <div className="px-3 py-1.5 text-[10px] font-semibold text-blue-600 uppercase tracking-widest bg-blue-50/50">
@@ -98,7 +147,7 @@ export default function NavBar() {
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" />
                         <span className="text-sm text-neutral-800">{c.name}</span>
-                        <span className="text-[10px] text-neutral-400 ml-auto tabular-nums">{c.tokens_a}A · {c.tokens_b}B</span>
+                        <span className="text-[10px] text-neutral-400 ml-auto tabular-nums">{c.tokens_b}B</span>
                       </button>
                     ))}
                   </div>
@@ -118,7 +167,7 @@ export default function NavBar() {
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-purple-500 flex-shrink-0" />
                         <span className="text-sm text-neutral-800">{c.name}</span>
-                        <span className="text-[10px] text-neutral-400 ml-auto tabular-nums">{c.tokens_a}A · {c.tokens_b}B</span>
+                        <span className="text-[10px] text-neutral-400 ml-auto tabular-nums">{c.tokens_b}B</span>
                       </button>
                     ))}
                   </div>
@@ -133,10 +182,9 @@ export default function NavBar() {
 
         {/* Status */}
         <div className="flex items-center gap-3 flex-shrink-0">
-          {activeClient && (
+          {activeClient && !isBank && (
             <div className="hidden md:flex items-center gap-3 text-[11px] text-neutral-400">
-              <span className="tabular-nums"><strong className="text-green-600">{activeClient.tokens_a}</strong> Token A</span>
-              <span className="tabular-nums"><strong className="text-orange-500">{activeClient.tokens_b}</strong> Token B</span>
+              <span className="tabular-nums"><strong className={activeClient.tokens_b === 0 ? "text-red-500" : "text-orange-500"}>{activeClient.tokens_b}</strong> credits</span>
             </div>
           )}
           {offline ? (
