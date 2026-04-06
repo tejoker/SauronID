@@ -5,7 +5,6 @@ pub mod ring;
 pub mod state;
 pub mod admin;
 pub mod sites;
-pub mod billing;
 pub mod merkle;
 pub mod solana_service;
 pub mod agent;

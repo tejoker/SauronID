@@ -260,8 +260,9 @@ pub async fn get_requests(
 pub struct StatsResponse {
     pub total_users: i64,
     pub total_clients: i64,
-    pub total_tokens_b_issued: usize,
-    pub total_tokens_b_spent: i64,
+    pub total_api_calls: i64,
+    pub total_kyc_retrievals: i64,
+    pub total_agent_calls: i64,
 }
 
 pub async fn get_stats(
@@ -272,12 +273,19 @@ pub async fn get_stats(
 
     let total_users: i64 = db.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
     let total_clients: i64 = db.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
-    let total_tokens_b_spent: i64 = db.query_row("SELECT COUNT(*) FROM tokens_b_spent", [], |r| r.get(0)).unwrap_or(0);
+    let total_api_calls: i64 = db.query_row("SELECT COUNT(*) FROM api_usage", [], |r| r.get(0)).unwrap_or(0);
+    let total_kyc_retrievals: i64 = db.query_row(
+        "SELECT COUNT(*) FROM api_usage WHERE action = 'kyc_human'", [], |r| r.get(0)
+    ).unwrap_or(0);
+    let total_agent_calls: i64 = db.query_row(
+        "SELECT COUNT(*) FROM api_usage WHERE is_agent = 1", [], |r| r.get(0)
+    ).unwrap_or(0);
 
     Json(StatsResponse {
         total_users,
         total_clients,
-        total_tokens_b_issued:  st.total_tokens_b_issued,
-        total_tokens_b_spent,
+        total_api_calls,
+        total_kyc_retrievals,
+        total_agent_calls,
     })
 }

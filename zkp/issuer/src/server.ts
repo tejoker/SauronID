@@ -41,7 +41,7 @@ if (!process.env.ISSUER_SEED) {
 const ISSUER_SEED = process.env.ISSUER_SEED;
 const KYC_SERVICE_URL = process.env.KYC_SERVICE_URL || "http://localhost:8000";
 
-// ─── In-memory state ────────────────────────────────────────────────
+// ─── Persistent state (file-backed Maps) ────────────────────────────
 
 interface IssuedCredential {
     id: string;
@@ -68,7 +68,42 @@ interface AccessToken {
     used: boolean;
 }
 
-const preAuthCodes = new Map<string, PreAuthCode>();
+const DATA_DIR = process.env.ISSUER_DATA_DIR || path.join(__dirname, "..", "data");
+const PRE_AUTH_FILE = path.join(DATA_DIR, "pre_auth_codes.json");
+
+function ensureDataDir() {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+}
+
+function loadPreAuthCodes(): Map<string, PreAuthCode> {
+    ensureDataDir();
+    try {
+        if (fs.existsSync(PRE_AUTH_FILE)) {
+            const raw = JSON.parse(fs.readFileSync(PRE_AUTH_FILE, "utf-8")) as [string, PreAuthCode][];
+            const now = Date.now();
+            // Discard expired + used codes on load
+            const active = raw.filter(([, v]) => !v.used && v.expiresAt > now);
+            console.log(`[ISSUER] Restored ${active.length} pre-auth codes from disk (${raw.length - active.length} expired/used pruned)`);
+            return new Map(active);
+        }
+    } catch (e) {
+        console.warn("[ISSUER] Failed to load pre-auth codes from disk:", e);
+    }
+    return new Map();
+}
+
+function savePreAuthCodes(map: Map<string, PreAuthCode>) {
+    ensureDataDir();
+    try {
+        fs.writeFileSync(PRE_AUTH_FILE, JSON.stringify(Array.from(map.entries())));
+    } catch (e) {
+        console.warn("[ISSUER] Failed to persist pre-auth codes:", e);
+    }
+}
+
+const preAuthCodes: Map<string, PreAuthCode> = loadPreAuthCodes();
 const accessTokens = new Map<string, AccessToken>();
 const issuedCredentials = new Map<string, IssuedCredential>();
 
@@ -170,6 +205,7 @@ app.post("/pre-authorize", (req, res) => {
     };
 
     preAuthCodes.set(code.code, code);
+    savePreAuthCodes(preAuthCodes);
 
     console.log(`[ISSUER] Pre-authorized code created for ${subjectDid}: ${code.code}`);
 
@@ -211,6 +247,7 @@ app.post("/token", (req, res) => {
     }
 
     codeRecord.used = true;
+    savePreAuthCodes(preAuthCodes);
 
     const token: AccessToken = {
         token: uuidv4(),
@@ -236,27 +273,53 @@ app.post("/token", (req, res) => {
 /**
  * POST /credential
  * Issue a Verifiable Credential (OID4VCI Credential Endpoint).
+ *
+ * Accepts either:
+ *   - Standard OID4VCI: Authorization: Bearer <access_token>
+ *   - Pre-auth shortcut (used by Rust backend): body { grant_type, pre-authorized_code, subject_did }
  */
 app.post("/credential", async (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "invalid_token" });
-    }
+    let claims: Record<string, any>;
+    let subjectDid: string;
 
-    const tokenStr = authHeader.substring(7);
-    const tokenRecord = accessTokens.get(tokenStr);
-    if (!tokenRecord) {
-        return res.status(401).json({ error: "invalid_token" });
+    // Check for pre-auth code shortcut (Rust backend flow)
+    if (req.body?.grant_type === "urn:ietf:params:oauth:grant-type:pre-authorized_code") {
+        const preAuthCode = req.body["pre-authorized_code"];
+        const codeRecord = preAuthCodes.get(preAuthCode);
+        if (!codeRecord) {
+            return res.status(400).json({ error: "invalid_grant", description: "Unknown pre-authorized code" });
+        }
+        if (codeRecord.used) {
+            return res.status(400).json({ error: "invalid_grant", description: "Code already used" });
+        }
+        if (Date.now() > codeRecord.expiresAt) {
+            return res.status(400).json({ error: "invalid_grant", description: "Code expired" });
+        }
+        codeRecord.used = true;
+        savePreAuthCodes(preAuthCodes);
+        claims = codeRecord.claims;
+        subjectDid = req.body.subject_did || codeRecord.subjectDid;
+    } else {
+        // Standard Bearer token flow
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+            return res.status(401).json({ error: "invalid_token" });
+        }
+        const tokenStr = authHeader.substring(7);
+        const tokenRecord = accessTokens.get(tokenStr);
+        if (!tokenRecord) {
+            return res.status(401).json({ error: "invalid_token" });
+        }
+        if (tokenRecord.used) {
+            return res.status(400).json({ error: "invalid_token", description: "Token already used" });
+        }
+        if (Date.now() > tokenRecord.expiresAt) {
+            return res.status(401).json({ error: "invalid_token", description: "Token expired" });
+        }
+        tokenRecord.used = true;
+        claims = tokenRecord.claims;
+        subjectDid = subjectDid;
     }
-    if (tokenRecord.used) {
-        return res.status(400).json({ error: "invalid_token", description: "Token already used" });
-    }
-    if (Date.now() > tokenRecord.expiresAt) {
-        return res.status(401).json({ error: "invalid_token", description: "Token expired" });
-    }
-
-    tokenRecord.used = true;
-    const claims = tokenRecord.claims;
 
     try {
         // Hash claims for ZKP compatibility
@@ -311,7 +374,7 @@ app.post("/credential", async (req, res) => {
             issuer: ISSUER_DID,
             issuanceDate: now,
             credentialSubject: {
-                id: tokenRecord.subjectDid,
+                id: subjectDid,
                 dateOfBirth: dobInt,
                 nationality: natHash.toString(),
                 documentNumber: docHash.toString(),
@@ -337,7 +400,7 @@ app.post("/credential", async (req, res) => {
         issuedCredentials.set(credentialId, {
             id: credentialId,
             credentialHash: credentialHash.toString(),
-            subjectDid: tokenRecord.subjectDid,
+            subjectDid: subjectDid,
             claims,
             issuedAt: now,
             revoked: false,
@@ -434,6 +497,7 @@ app.post("/register-credential", (req, res) => {
     };
 
     preAuthCodes.set(code.code, code);
+    savePreAuthCodes(preAuthCodes);
 
     console.log(`[ISSUER] /register-credential | subjectDid=${subjectDid} code=${code.code}`);
 

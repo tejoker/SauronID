@@ -8,7 +8,7 @@ use axum::{
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::params;
-use sauron_core::{oprf, ring, state::{ServerState, verify_token, token_value, sign_token}, admin, billing};
+use sauron_core::{oprf, ring, state::{ServerState, verify_token, token_value, sign_token}, admin};
 use sauron_core::{identity::{Identity, UserData}, db, agent};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::RistrettoPoint;
@@ -37,12 +37,10 @@ async fn main() {
         .route("/oprf",              post(handle_oprf))
         // Flux 1: dépôt KYC
         .route("/register",          post(handle_register))
-        // Flux 3: Token B + ring sig → profil KYC
+        // Flux 3: ring sig → profil KYC
         .route("/get_kyc",           post(handle_get_kyc))
         // Utilitaire: clés publiques du groupe utilisateurs
         .route("/group",             get(handle_get_group))
-        // Billing: émission de Token B
-        .route("/client/add_tokens", post(billing::add_tokens))
         .nest("/admin", admin_routes)
         // DEV: endpoints sans crypto côté frontend
         .route("/dev/register_user", post(dev_register_user))
@@ -51,7 +49,6 @@ async fn main() {
         .route("/dev/clients",       get(dev_get_clients))
         .route("/dev/client/{name}",       get(dev_get_client_detail))
         .route("/dev/client/{name}/users", get(dev_get_client_users))
-        .route("/dev/buy_tokens",    post(dev_buy_tokens))
         // ZKP
         .route("/zkp/build_ring",    post(handle_build_ring))
         .route("/zkp/verify_proof",  post(handle_verify_proof))
@@ -84,7 +81,21 @@ async fn main() {
         // DATA: analytics pré-calculées (stats, forecast, fraud)
         .route("/data/{data_type}/{company_id}", get(data_get).post(data_put))
         .route("/data/companies",    get(data_companies))
-        .layer(CorsLayer::permissive())
+        .layer({
+            let allowed_origins: Vec<axum::http::HeaderValue> = std::env::var("SAURON_ALLOWED_ORIGINS")
+                .unwrap_or_else(|_| "http://localhost:3000,http://localhost:3001".to_string())
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if allowed_origins.is_empty() {
+                CorsLayer::permissive()
+            } else {
+                CorsLayer::new()
+                    .allow_origin(allowed_origins)
+                    .allow_methods(tower_http::cors::Any)
+                    .allow_headers(tower_http::cors::Any)
+            }
+        })
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());
@@ -299,29 +310,6 @@ async fn handle_get_kyc(
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(payload): Json<GetKycRequest>,
 ) -> Result<Json<GetKycResponse>, StatusCode> {
-    let token_secret = state.read().unwrap().token_secret.clone();
-
-    // Vérifier le Token B (HMAC).
-    if !verify_token(&token_secret, "TOKEN_B", &payload.token_b) {
-        println!("[SECURITY] POST /get_kyc | Invalid Token B.");
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    // Anti-double-dépense via DB.
-    let tv = token_value(&payload.token_b).to_string();
-    {
-        let st = state.read().unwrap();
-        let db = st.db.lock().unwrap();
-        let exists: bool = db.query_row(
-            "SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
-            params![tv], |r| r.get::<_, i64>(0),
-        ).unwrap_or(0) > 0;
-        if exists {
-            println!("[SECURITY] POST /get_kyc | Double-spend Token B.");
-            return Err(StatusCode::CONFLICT);
-        }
-    }
-
     // Vérifier la ring signature de l'utilisateur.
     let msg = format!("GET_KYC:{}", payload.token_b);
     {
@@ -354,19 +342,19 @@ async fn handle_get_kyc(
         })?
     };
 
-    // Brûler le Token B.
     let ring_size;
     {
-        let mut st = state.write().unwrap();
+        let st = state.read().unwrap();
         ring_size = st.user_group.members.len();
-        {
-            let db = st.db.lock().unwrap();
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        if let Ok(db) = st.db.lock() {
+            let _ = db.execute(
+                "INSERT INTO api_usage (client_name, action, is_agent, timestamp) VALUES ('_direct','kyc_human',0,?1)",
+                params![ts],
+            );
         }
-        st.total_tokens_b_burned += 1;
         st.log("GET_KYC", "OK", &hex_ki[..16]);
-        println!("[FLUX 3] POST /get_kyc | KYC delivered anonymously. ring_size={} total_burned={}",
-            ring_size, st.total_tokens_b_burned);
+        println!("[FLUX 3] POST /get_kyc | KYC delivered anonymously. ring_size={}", ring_size);
     }
 
     Ok(Json(GetKycResponse { profile }))
@@ -629,43 +617,7 @@ async fn dev_get_kyc(
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(payload): Json<DevGetKycRequest>,
 ) -> Result<Json<GetKycResponse>, (StatusCode, Json<serde_json::Value>)> {
-    // 1. Valider Token B.
-    //    Mode "db_managed" : le frontend n'a pas de vrai blind token,
-    //    on vérifie juste que le client a assez de tokens_b en DB.
-    let db_managed_mode = payload.token_b == "db_managed"
-        || !payload.token_b.contains(':');
-    {
-        let st = state.read().unwrap();
-        if db_managed_mode {
-            // Vérifier le solde Token B du client en DB
-            if payload.site_name.is_empty() {
-                return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "site_name required for db_managed token mode"}))));
-            }
-            let db = st.db.lock().unwrap();
-            let balance: i64 = db.query_row(
-                "SELECT tokens_b FROM clients WHERE name = ?1",
-                params![payload.site_name],
-                |row| row.get(0),
-            ).unwrap_or(0);
-            if balance < 1 {
-                return Err((StatusCode::PAYMENT_REQUIRED, Json(serde_json::json!({"error": "Insufficient Token B balance"}))));
-            }
-        } else {
-            if !verify_token(&st.token_secret, "TOKEN_B", &payload.token_b) {
-                return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid Token B signature"}))));
-            }
-            // Atomically claim the token: INSERT OR IGNORE, then check changes().
-            // If changes() == 0 another request already spent it.
-            let tv = token_value(&payload.token_b).to_string();
-            let db = st.db.lock().unwrap();
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
-            if db.changes() == 0 {
-                return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error": "Token B already spent"}))));
-            }
-        }
-    }
-
-    // 2. Reconstruire l'identité utilisateur.
+    // Reconstruire l'identité utilisateur.
     let oprf_result = {
         let st = state.read().unwrap();
         dev_oprf_eval(st.k, &payload.email, &payload.password)
@@ -700,32 +652,24 @@ async fn dev_get_kyc(
         ).map_err(|_| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Profile not found"}))))?
     };
 
-    // 5. Décrémenter solde du client (token already burned in step 1 for non-db_managed mode).
+    // 5. Record api_usage + user→client relation.
     {
-        let mut st = state.write().unwrap();
-        {
-            let db = st.db.lock().unwrap();
-            if !db_managed_mode {
-                // Already inserted in step 1 — nothing to do here.
-            }
-            if !payload.site_name.is_empty() {
-                let _ = db.execute(
-                    "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
-                    params![payload.site_name],
-                );
-                // Enregistrer la relation user→client (kyc_retrieval)
-                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-                let _ = db.execute(
-                    "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
-                     VALUES (?1, ?2, 'kyc_retrieval', ?3)",
-                    params![payload.site_name, hex_ki, ts],
-                );
-            }
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let _ = db.execute(
+            "INSERT INTO api_usage (client_name, action, is_agent, timestamp) VALUES (?1,'kyc_human',0,?2)",
+            params![payload.site_name, ts],
+        );
+        if !payload.site_name.is_empty() {
+            let _ = db.execute(
+                "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
+                 VALUES (?1, ?2, 'kyc_retrieval', ?3)",
+                params![payload.site_name, hex_ki, ts],
+            );
         }
-        st.total_tokens_b_burned += 1;
         st.log("DEV_GET_KYC", "OK", &payload.email);
-        println!("[DEV/FLUX3] get_kyc | site={} email={} | total_consumed={}",
-            payload.site_name, payload.email, st.total_tokens_b_burned);
+        println!("[DEV/FLUX3] get_kyc | site={} email={}", payload.site_name, payload.email);
     }
 
     Ok(Json(GetKycResponse { profile }))
@@ -746,7 +690,6 @@ struct DevClientRecord {
     public_key_hex: String,
     key_image_hex:  String,
     client_type:    String,
-    tokens_b:       i64,
 }
 
 async fn dev_get_clients(
@@ -755,7 +698,7 @@ async fn dev_get_clients(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT name, public_key_hex, key_image_hex, client_type, tokens_b FROM clients ORDER BY id"
+        "SELECT name, public_key_hex, key_image_hex, client_type FROM clients ORDER BY id"
     ).unwrap();
     let records: Vec<DevClientRecord> = stmt.query_map([], |row| {
         Ok(DevClientRecord {
@@ -763,7 +706,6 @@ async fn dev_get_clients(
             public_key_hex: row.get(1)?,
             key_image_hex:  row.get(2)?,
             client_type:    row.get(3)?,
-            tokens_b:       row.get(4)?,
         })
     }).unwrap().flatten().collect();
     Json(records)
@@ -780,7 +722,7 @@ async fn dev_get_client_detail(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     db.query_row(
-        "SELECT name, public_key_hex, key_image_hex, client_type, tokens_b
+        "SELECT name, public_key_hex, key_image_hex, client_type
          FROM clients WHERE name = ?1",
         params![name],
         |row| Ok(DevClientRecord {
@@ -788,7 +730,6 @@ async fn dev_get_client_detail(
             public_key_hex: row.get(1)?,
             key_image_hex:  row.get(2)?,
             client_type:    row.get(3)?,
-            tokens_b:       row.get(4)?,
         }),
     ).map(Json).map_err(|_| StatusCode::NOT_FOUND)
 }
@@ -831,55 +772,6 @@ async fn dev_get_client_users(
         })
     }).unwrap().flatten().collect();
     Json(records)
-}
-
-// ─────────────────────────────────────────────────────
-//  POST /dev/buy_tokens — achat direct de Token B (fiat simulé)
-// ─────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct DevBuyTokensRequest {
-    site_name: String,
-    amount: i64,
-}
-
-#[derive(Serialize)]
-struct DevBuyTokensResponse {
-    tokens_b_added: i64,
-    new_tokens_b: i64,
-}
-
-async fn dev_buy_tokens(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    Json(payload): Json<DevBuyTokensRequest>,
-) -> Result<Json<DevBuyTokensResponse>, (StatusCode, String)> {
-    if payload.amount < 1 || payload.amount > 10_000 {
-        return Err((StatusCode::BAD_REQUEST, "amount must be 1..10000".into()));
-    }
-
-    let mut st = state.write().unwrap();
-    let db = st.db.lock().unwrap();
-
-    let _ = db.execute(
-        "UPDATE clients SET tokens_b = tokens_b + ?1 WHERE name = ?2",
-        params![payload.amount, payload.site_name],
-    );
-
-    let new_b: i64 = db.query_row(
-        "SELECT tokens_b FROM clients WHERE name = ?1",
-        params![payload.site_name],
-        |row| row.get(0),
-    ).map_err(|_| (StatusCode::NOT_FOUND, format!("Client '{}' not found", payload.site_name)))?;
-
-    drop(db);
-    st.total_tokens_b_issued += payload.amount as usize;
-    st.log("BUY_TOKENS", "OK", &format!("site={} amount={}", payload.site_name, payload.amount));
-    println!("[DEV] buy_tokens | site={} | amount={}", payload.site_name, payload.amount);
-
-    Ok(Json(DevBuyTokensResponse {
-        tokens_b_added: payload.amount,
-        new_tokens_b: new_b,
-    }))
 }
 
 // ─────────────────────────────────────────────────────
@@ -979,22 +871,7 @@ async fn handle_verify_proof(
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(payload): Json<ZkpVerifyRequest>,
 ) -> Result<Json<ZkpVerifyResponse>, (StatusCode, String)> {
-    // 1. Valider Token B.
-    let tv = token_value(&payload.prepaid_token).to_string();
-    {
-        let st = state.read().unwrap();
-        if !verify_token(&st.token_secret, "TOKEN_B", &payload.prepaid_token) {
-            return Err((StatusCode::PAYMENT_REQUIRED, "Invalid Token B".into()));
-        }
-        let db = st.db.lock().unwrap();
-        let exists: bool = db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
-            params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
-        if exists {
-            return Err((StatusCode::CONFLICT, "Token B already spent".into()));
-        }
-    }
-
-    // 2. Vérifier la ring signature du client ZKP_ONLY.
+    // 1. Vérifier la ring signature du client ZKP_ONLY.
     let client_ring_points: Vec<RistrettoPoint> = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
@@ -1052,14 +929,15 @@ async fn handle_verify_proof(
     let ring_size = ring_points.len();
     let verified  = ring::verify(payload.message.as_bytes(), &ring_points, &payload.user_signature);
 
-    // 5. Brûler le Token B si valide.
     if verified {
-        let mut st = state.write().unwrap();
-        {
-            let db = st.db.lock().unwrap();
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+        let st = state.read().unwrap();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        if let Ok(db) = st.db.lock() {
+            let _ = db.execute(
+                "INSERT INTO api_usage (client_name, action, is_agent, timestamp) VALUES ('_zkp','zkp_login',0,?1)",
+                params![ts],
+            );
         }
-        st.total_tokens_b_burned += 1;
         st.log("ZKP_VERIFY", "OK", &payload.message[..payload.message.len().min(20)]);
     }
 
@@ -1118,42 +996,7 @@ async fn dev_zkp_login(
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(payload): Json<DevZkpLoginRequest>,
 ) -> Result<Json<DevZkpLoginResponse>, (StatusCode, String)> {
-    // 1. Valider + anti-double-spend Token B
-    //    Mode "db_managed" : le frontend n'a pas de vrai blind token,
-    //    on vérifie le solde en DB au lieu de la signature HMAC.
-    let db_managed_mode = payload.token_b == "db_managed"
-        || !payload.token_b.contains(':');
-    {
-        let st = state.read().unwrap();
-        if db_managed_mode {
-            if payload.site_name.is_empty() {
-                return Err((StatusCode::BAD_REQUEST, "site_name required for db_managed token mode".into()));
-            }
-            let db = st.db.lock().unwrap();
-            let balance: i64 = db.query_row(
-                "SELECT tokens_b FROM clients WHERE name = ?1",
-                params![payload.site_name],
-                |row| row.get(0),
-            ).unwrap_or(0);
-            if balance < 1 {
-                return Err((StatusCode::PAYMENT_REQUIRED, "Insufficient Token B balance".into()));
-            }
-        } else {
-            let token_secret = st.token_secret.clone();
-            if !verify_token(&token_secret, "TOKEN_B", &payload.token_b) {
-                return Err((StatusCode::PAYMENT_REQUIRED, "Invalid Token B".into()));
-            }
-            // Atomically claim: INSERT OR IGNORE then check changes().
-            let tv = token_value(&payload.token_b).to_string();
-            let db = st.db.lock().unwrap();
-            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
-            if db.changes() == 0 {
-                return Err((StatusCode::CONFLICT, "Token B already spent".into()));
-            }
-        }
-    }
-
-    // 2. Reconstruire l'identité utilisateur depuis OPRF serveur
+    // 1. Reconstruire l'identité utilisateur depuis OPRF serveur
     let server_k = state.read().unwrap().k;
     let oprf_result = dev_oprf_eval(server_k, &payload.email, &payload.password);
     let user_identity = Identity::from_oprf(oprf_result);
@@ -1234,20 +1077,11 @@ async fn dev_zkp_login(
         return Err((StatusCode::INTERNAL_SERVER_ERROR, "Internal ring signature failure".into()));
     }
 
-    // 7. Brûler Token B + décrémenter solde client + journaliser
+    // 6. Journaliser
     let ring_size = user_ring_points.len();
     let client_ring_size = client_ring_points.len();
     {
-        let mut st = state.write().unwrap();
-        {
-            let db = st.db.lock().unwrap();
-            // Token already burned atomically in step 1.
-            let _ = db.execute(
-                "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
-                params![payload.site_name],
-            );
-        }
-        st.total_tokens_b_burned += 1;
+        let st = state.read().unwrap();
         let log_claims: Vec<String> = {
             let mut c = vec![];
             if let Some(age) = payload.min_age { c.push(format!("age≥{}", age)); }
@@ -1255,6 +1089,13 @@ async fn dev_zkp_login(
             if c.is_empty() { c.push("registered_user".to_string()); }
             c
         };
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        if let Ok(db) = st.db.lock() {
+            let _ = db.execute(
+                "INSERT INTO api_usage (client_name, action, is_agent, timestamp) VALUES (?1,'zkp_login',0,?2)",
+                params![payload.site_name, ts],
+            );
+        }
         st.log("ZKP_VERIFY", "OK", &format!("site={} ring={} claims={}",
             payload.site_name, ring_size, log_claims.join(",")));
         println!("[ZKP][DEV] /dev/zkp_login | site={} user_ring={} client_ring={}",
@@ -1619,23 +1460,25 @@ async fn kyc_retrieve(
         return Err((StatusCode::UNAUTHORIZED, "Consent token was not issued for this site".into()));
     }
 
-    // Verify site has enough tokens_b + determine client_type
+    // Determine client_type
     let client_type: String = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        let (balance, ctype): (i64, String) = db.query_row(
-            "SELECT tokens_b, client_type FROM clients WHERE name = ?1",
+        db.query_row(
+            "SELECT client_type FROM clients WHERE name = ?1",
             params![payload.site_name],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).map_err(|_| (StatusCode::UNAUTHORIZED, "Unknown site".into()))?;
-        if balance < 1 {
-            return Err((StatusCode::PAYMENT_REQUIRED, "Insufficient Token B balance".into()));
-        }
-        ctype
+            |r| r.get(0),
+        ).map_err(|_| (StatusCode::UNAUTHORIZED, "Unknown site".into()))?
     };
 
     // Verify Groth16 proof via issuer if provided (required for ZKP_ONLY clients)
     let groth16_verified: Option<bool> = if let Some(ref proof) = payload.zkp_proof {
+        // Basic signal count validation before forwarding
+        if let Some(ref signals) = payload.zkp_public_signals {
+            if signals.is_empty() {
+                return Err((StatusCode::BAD_REQUEST, "zkp_public_signals must not be empty when zkp_proof is provided".into()));
+            }
+        }
         let (circuit, signals) = (
             payload.zkp_circuit.clone().unwrap_or_else(|| "AgeVerification".to_string()),
             payload.zkp_public_signals.clone().unwrap_or_default(),
@@ -1689,26 +1532,26 @@ async fn kyc_retrieve(
         ).map_err(|_| (StatusCode::NOT_FOUND, "User profile not found".into()))?
     };
 
-    // Mark token as used + decrement site tokens_b
+    // Mark token as used + record api_usage
     {
-        let mut st = state.write().unwrap();
+        let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
         let _ = db.execute(
             "UPDATE consent_log SET token_used = 1 WHERE consent_token = ?1",
             params![payload.consent_token],
         );
-        let _ = db.execute(
-            "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
-            params![payload.site_name],
-        );
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let is_agent_int = if issuing_agent_id.is_some() { 1i64 } else { 0i64 };
+        let action = if issuing_agent_id.is_some() { "kyc_agent" } else { "kyc_human" };
+        let _ = db.execute(
+            "INSERT INTO api_usage (client_name, action, is_agent, timestamp) VALUES (?1,?2,?3,?4)",
+            params![payload.site_name, action, is_agent_int, ts],
+        );
         let _ = db.execute(
             "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
              VALUES (?1, ?2, 'kyc_retrieval', ?3)",
             params![payload.site_name, user_ki, ts],
         );
-        drop(db);
-        st.total_tokens_b_burned += 1;
         st.log("KYC_RETRIEVE", "OK", &format!("site={} user={}", payload.site_name, &user_ki[..16]));
     }
 
@@ -2225,15 +2068,15 @@ async fn agent_kyc_consent(
         }
     }
 
-    // 3. Verify consent request exists + is for this site
+    // 3. Verify consent request exists + is for this site + not yet claimed
     let stored_site: String = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
         db.query_row(
-            "SELECT site_name FROM consent_log WHERE request_id = ?1 AND token_used = 0 AND revoked = 0",
+            "SELECT site_name FROM consent_log WHERE request_id = ?1 AND token_used = 0 AND revoked = 0 AND consent_token IS NULL",
             params![payload.request_id],
             |r| r.get(0),
-        ).map_err(|_| (StatusCode::NOT_FOUND, "Consent request not found or already used".into()))?
+        ).map_err(|_| (StatusCode::NOT_FOUND, "Consent request not found, already claimed, or already used".into()))?
     };
     if stored_site != payload.site_name {
         return Err((StatusCode::UNAUTHORIZED, "Request ID does not match site_name".into()));
@@ -2253,12 +2096,16 @@ async fn agent_kyc_consent(
     let expires_at = now + 300;
 
     {
-        let mut st = state.write().unwrap();
+        let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        let _ = db.execute(
-            "UPDATE consent_log SET consent_token = ?1, user_key_image = ?2, granted_at = ?3, issuing_agent_id = ?4 WHERE request_id = ?5",
+        // Atomic: only update if consent_token is still NULL (race-safe)
+        let rows = db.execute(
+            "UPDATE consent_log SET consent_token = ?1, user_key_image = ?2, granted_at = ?3, issuing_agent_id = ?4 WHERE request_id = ?5 AND consent_token IS NULL",
             params![consent_token, human_key_image, now, agent_id, payload.request_id],
-        );
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if rows == 0 {
+            return Err((StatusCode::CONFLICT, "Consent already claimed by another agent".into()));
+        }
         st.log("AGENT_KYC_CONSENT", "OK",
             &format!("agent={} site={} human={}", &agent_id[..16], payload.site_name, &human_key_image[..16]));
     }
@@ -2305,9 +2152,6 @@ struct AgentVcIssueBody {
     description: String,
     /// JSON array of allowed actions, e.g. ["read:profile", "prove:age", "prove:nationality"].
     scope: Vec<String>,
-    /// Liveness proof from mock or real provider.
-    /// { confidence: 0-1, method: "passive"|"active", provider: string }
-    liveness_proof: serde_json::Value,
     /// Lifetime hours (default 24, max 720).
     #[serde(default = "default_vc_ttl")]
     ttl_hours: i64,
@@ -2323,16 +2167,18 @@ async fn agent_vc_issue(
         return Err((StatusCode::BAD_REQUEST, "human_key_image and agent_checksum required".into()));
     }
 
-    // 1. Validate liveness proof
-    let liveness_confidence = payload.liveness_proof
-        .get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let liveness_alive = payload.liveness_proof
-        .get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    if !liveness_alive || liveness_confidence < 0.7 {
-        return Err((StatusCode::FORBIDDEN,
-            format!("Liveness check failed: alive={} confidence={:.2}. Minimum confidence 0.70 required.",
-                liveness_alive, liveness_confidence)));
+    // 1. Verify human is in user_group (bank KYC already validated them)
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let exists: bool = db.query_row(
+            "SELECT COUNT(*) FROM users WHERE key_image_hex = ?1",
+            params![payload.human_key_image],
+            |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
+        if !exists {
+            return Err((StatusCode::NOT_FOUND, "Human user not found — must be registered via bank KYC first".into()));
+        }
     }
 
     // 2. Uniqueness check — each human may issue at most 10 active VCs
@@ -2384,13 +2230,8 @@ async fn agent_vc_issue(
             "humanOwner": format!("did:sauron:user:{}", &payload.human_key_image[..16]),
             "description": payload.description,
             "scope": payload.scope,
-            "liveness": {
-                "confidence": liveness_confidence,
-                "provider": payload.liveness_proof.get("provider").and_then(|v| v.as_str()).unwrap_or("mock"),
-                "method": payload.liveness_proof.get("method").and_then(|v| v.as_str()).unwrap_or("passive"),
-                "verifiedAt": now,
-            },
-            "rootOfTrust": "did:sauron:idp"  // SauronID = sole authority, no external dependency
+            // Trust derives from human's bank-verified KYC — no separate liveness needed
+            "rootOfTrust": "did:sauron:idp"
         },
     });
 
@@ -2423,10 +2264,33 @@ async fn agent_vc_issue(
 
         // Persist VC
         db.execute(
-            "INSERT OR REPLACE INTO agent_vcs (agent_id, vc_json, liveness_passed, vc_hash, issued_at, expires_at)
-             VALUES (?1,?2,1,?3,?4,?5)",
+            "INSERT OR REPLACE INTO agent_vcs (agent_id, vc_json, vc_hash, issued_at, expires_at)
+             VALUES (?1,?2,?3,?4,?5)",
             params![agent_id, vc_canonical, vc_hash, now, expires_at],
         ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // Push a server-generated Ristretto point to agent_group ring so ring checks work
+    {
+        use sha2::Digest as _;
+        let mut h = Sha256::new();
+        h.update(b"AGENT_RING_KEY:");
+        h.update(agent_id.as_bytes());
+        let seed_bytes: [u8; 32] = h.finalize().into();
+        let scalar = curve25519_dalek::scalar::Scalar::from_bytes_mod_order(seed_bytes);
+        let pt = curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT * scalar;
+        let pub_hex = hex::encode(pt.compress().as_bytes());
+        {
+            let mut st = state.write().unwrap();
+            if !st.agent_group.members.contains(&pt) {
+                st.agent_group.members.push(pt);
+            }
+            let db = st.db.lock().unwrap();
+            let _ = db.execute(
+                "UPDATE agents SET public_key_hex = ?1 WHERE agent_id = ?2",
+                params![pub_hex, agent_id],
+            );
+        }
     }
 
     // 7. Forge A-JWT so agent can start using it immediately
@@ -2445,8 +2309,7 @@ async fn agent_vc_issue(
             &format!("agent={} human={}", &agent_id[..16], &payload.human_key_image[..16]));
     }
 
-    println!("[KYA] Self-sovereign VC issued | agent={} liveness={:.2} scope={:?}",
-        &agent_id[..16], liveness_confidence, payload.scope);
+    println!("[KYA] Self-sovereign VC issued | agent={} scope={:?}", &agent_id[..16], payload.scope);
 
     Ok(Json(serde_json::json!({
         "agent_id": agent_id,
@@ -2454,7 +2317,6 @@ async fn agent_vc_issue(
         "vc_hash": vc_hash,
         "ajwt": ajwt,
         "expires_at": expires_at,
-        "trust_chain": "SauronID self-sovereign (no bank dependency)",
-        "liveness_confidence": liveness_confidence,
+        "trust_chain": "SauronID self-sovereign (bank KYC as root of trust)",
     })))
 }

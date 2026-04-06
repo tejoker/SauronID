@@ -7,23 +7,19 @@ import * as crypto from "crypto";
 import { AgentConfig, computeChecksum } from "./checksum";
 import { PopKeyPair, generatePopKeyPair, signPopChallenge } from "./pop-keys";
 import {
-    forgeAgentToken,
-    verifyAgentToken,
-    createDelegationToken,
-    initializeIdPKeys,
     AgentIntent,
     AJWTPayload,
 } from "./ajwt";
 
 export interface IdPClientConfig {
-    /** SauronID IdP URL */
+    /** SauronID backend URL (where /agent/register lives) */
     idpUrl: string;
-    /** Human subject DID (the user who owns this agent) */
-    subjectDid: string;
+    /** Human key_image_hex (the user who owns this agent) */
+    humanKeyImage: string;
     /** Agent configuration */
     agentConfig: AgentConfig;
-    /** Target audience for tokens */
-    audience: string | string[];
+    /** Target audience for tokens (kept for compatibility) */
+    audience?: string | string[];
 }
 
 /**
@@ -69,19 +65,22 @@ export class AgentShimClient {
     }
 
     /**
-     * Request an A-JWT from the SauronID IdP.
+     * Request an A-JWT from the SauronID server.
      *
-     * @param intent  What the agent is authorized to do
-     * @param ttlSeconds Token lifetime (default 300s)
-     * @returns The A-JWT compact JWS string
+     * Calls POST /agent/register on the Rust backend — the server signs
+     * the token with HMAC-SHA256 so it can be verified via POST /agent/verify.
+     *
+     * @param intent  What the agent is authorized to do (stored as intent_json)
+     * @param ttlSeconds Token lifetime (default 3600s)
+     * @returns The A-JWT string (HMAC-SHA256, verifiable by the SauronID server)
      */
     async requestToken(
         intent: AgentIntent,
-        ttlSeconds: number = 300
+        ttlSeconds: number = 3600
     ): Promise<string> {
         this.ensureInitialized();
 
-        // Recheck the agent hasn't been modified
+        // Integrity check
         const currentChecksum = computeChecksum(this.config.agentConfig);
         if (currentChecksum !== this.checksum) {
             throw new Error(
@@ -90,34 +89,42 @@ export class AgentShimClient {
             );
         }
 
-        // For the hackathon, we forge locally (in production, this would call the IdP API)
-        const token = await forgeAgentToken({
-            subjectDid: this.config.subjectDid,
-            audience: this.config.audience,
-            intent,
-            agentChecksum: this.checksum,
-            popKeyPair: this.popKeyPair!,
-            ttlSeconds,
-            agentName: this.config.agentConfig.version,
+        const popPubHex = this.popKeyPair!.thumbprint;
+
+        const response = await fetch(`${this.config.idpUrl}/agent/register`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                human_key_image: this.config.humanKeyImage,
+                agent_checksum: this.checksum,
+                intent_json: JSON.stringify(intent),
+                public_key_hex: popPubHex,
+                ttl_secs: ttlSeconds,
+            }),
         });
 
-        this.currentToken = token;
-        this.tokenPayload = await verifyAgentToken(token);
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`A-JWT request failed (${response.status}): ${err}`);
+        }
 
-        return token;
+        const data = await response.json();
+        this.currentToken = data.ajwt;
+        // Parse minimal payload for expiry tracking
+        try {
+            const parts = data.ajwt.split(".");
+            const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+            this.tokenPayload = { ...payload, intent } as AJWTPayload;
+        } catch { /* ignore parse errors */ }
+
+        return data.ajwt;
     }
 
     /**
      * Delegate a sub-task to a child agent.
      *
-     * Creates a new A-JWT for the child with:
-     *   - Narrowed scope
-     *   - Extended delegation chain
-     *   - Child's own PoP binding
-     *
-     * @param childConfig   The child agent's config
-     * @param scope         Narrowed permission scope for the child
-     * @returns             A-JWT for the child agent
+     * Registers a new agent on the SauronID server with narrowed scope.
+     * The child gets its own A-JWT signed by the server.
      */
     async delegateToAgent(
         childConfig: AgentConfig,
@@ -135,19 +142,29 @@ export class AgentShimClient {
         const childChecksum = computeChecksum(childConfig);
         const childPopKeyPair = await generatePopKeyPair();
 
-        const childToken = await createDelegationToken(
-            this.currentToken,
-            childChecksum,
-            childPopKeyPair,
-            scope,
-            childConfig.version
-        );
-
-        return {
-            token: childToken,
-            childChecksum,
-            childPopKeyPair,
+        const intent: AgentIntent = {
+            action: `delegated:${scope.join(",")}`,
+            constraints: { delegated_from: this.checksum, scope },
         };
+
+        const response = await fetch(`${this.config.idpUrl}/agent/register`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                human_key_image: this.config.humanKeyImage,
+                agent_checksum: childChecksum,
+                intent_json: JSON.stringify(intent),
+                public_key_hex: childPopKeyPair.thumbprint,
+                ttl_secs: 3600,
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Delegation failed: ${await response.text()}`);
+        }
+        const data = await response.json();
+
+        return { token: data.ajwt, childChecksum, childPopKeyPair };
     }
 
     /**

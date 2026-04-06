@@ -27,7 +27,6 @@ use sha2::{Sha256, Digest};
 use hmac::{Hmac, Mac};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::time::{SystemTime, UNIX_EPOCH};
-use curve25519_dalek::ristretto::CompressedRistretto;
 use crate::state::ServerState;
 
 type HmacSha256 = Hmac<Sha256>;

@@ -52,8 +52,6 @@ pub struct ServerState {
     pub jwt_secret: Vec<u8>,
     /// URL du service issuer ZKP (BabyJubJub/Groth16).
     pub issuer_url: String,
-    pub total_tokens_b_issued: usize,
-    pub total_tokens_b_burned: usize,
     pub merkle_ledger: MerkleCommitmentLedger,
     pub solana_service: Option<std::sync::Arc<SolanaService>>,
 }
@@ -158,8 +156,6 @@ impl ServerState {
             token_secret,
             jwt_secret,
             issuer_url,
-            total_tokens_b_issued: 0,
-            total_tokens_b_burned: 0,
             merkle_ledger,
             solana_service: SolanaService::from_env().map(std::sync::Arc::new),
         }
