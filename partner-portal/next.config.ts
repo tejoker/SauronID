@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  transpilePackages: ["snarkjs"],
+  turbopack: {},
   async rewrites() {
     const kycOrigin = process.env.KYC_INTERNAL_URL || "http://localhost:8000";
     const camaraOrigin = process.env.CAMARA_INTERNAL_URL || "http://localhost:8004";

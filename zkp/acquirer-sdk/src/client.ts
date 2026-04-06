@@ -95,17 +95,22 @@ export class SauronAcquirerClient {
     async submitProof(
         sessionId: string,
         proof: any,
-        publicSignals: string[]
+        publicSignals: string[],
+        circuit: string = "AgeVerification"
     ): Promise<{ verified: boolean; details: any }> {
-        // Verification happens locally using snarkjs
-        const { verifyPresentation, createPresentationRequest } = require("./presentation");
-
-        // We need a real OID4VP session for this
-        console.log(`[ACQUIRER] Proof submitted for session ${sessionId}`);
-
+        console.log(`[ACQUIRER] Verifying proof for session ${sessionId} circuit=${circuit}`);
+        const response = await fetch(`${this.config.issuerUrl}/verify-proof`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ circuit, proof, public_signals: publicSignals }),
+        });
+        if (!response.ok) {
+            return { verified: false, details: { error: `Issuer returned ${response.status}` } };
+        }
+        const data = await response.json();
         return {
-            verified: true,
-            details: { sessionId, publicSignals },
+            verified: data.valid === true,
+            details: { sessionId, publicSignals, issuerResponse: data },
         };
     }
 

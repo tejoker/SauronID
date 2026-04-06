@@ -9,7 +9,6 @@ export const KYC_API = process.env.NEXT_PUBLIC_KYC_URL || "/api/kyc/api";
 export interface Client {
   name: string;
   public_key_hex: string;
-  private_key_hex: string;
   key_image_hex: string;
   client_type: "FULL_KYC" | "ZKP_ONLY" | "BANK";
   tokens_b: number;
@@ -59,7 +58,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     try {
       const [clientsRes, statsRes] = await Promise.all([
         fetch(`${API}/dev/clients`),
-        fetch(`${API}/admin/stats`, { headers: { "x-admin-key": "super_secret_hackathon_key" } }),
+        fetch(`/api/stats`),
       ]);
       if (clientsRes.ok) {
         const data: Client[] = await clientsRes.json();

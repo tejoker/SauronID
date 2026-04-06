@@ -37,7 +37,7 @@ sys.path.insert(0, DIR)
 from config import N_SEED_USERS, N_PERSONAS
 
 DEFAULT_SERVER   = os.environ.get("SAURON_URL", "http://localhost:3001")
-ADMIN_KEY        = "super_secret_hackathon_key"
+ADMIN_KEY        = os.environ.get("SAURON_ADMIN_KEY", "super_secret_hackathon_key")
 COMPANIES_CSV    = os.path.join(DIR, "companies.csv")
 PERSONAS_CSV     = os.path.join(DIR, "personas.csv")
 

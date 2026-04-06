@@ -21,6 +21,8 @@ import express from "express";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
+import * as path from "path";
+import * as fs from "fs";
 
 // @ts-ignore
 const circomlibjs = require("circomlibjs");
@@ -393,6 +395,87 @@ app.get("/status", (req, res) => {
         inclusionTreeSize: inclusionTreeLeaves.length,
         pendingPreAuthCodes: Array.from(preAuthCodes.values()).filter((c) => !c.used).length,
     });
+});
+
+/**
+ * GET /issuer-pubkey
+ * Returns the BabyJubJub EdDSA public key (decimal strings).
+ * Used by the client to verify credential signatures before generating Groth16 proofs.
+ */
+app.get("/issuer-pubkey", (_req, res) => {
+    if (!eddsa) {
+        return res.status(503).json({ error: "Crypto not initialized" });
+    }
+    res.json({
+        Ax: eddsa.F.toObject(issuerPubKey[0]).toString(),
+        Ay: eddsa.F.toObject(issuerPubKey[1]).toString(),
+    });
+});
+
+/**
+ * POST /register-credential
+ * Called by the Rust backend after a successful user registration.
+ * Creates a pre-authorized code so the user's browser can later claim their credential.
+ * Body: { subjectDid: string, claims: { date_of_birth, nationality, document_number?, expiry_date? } }
+ */
+app.post("/register-credential", (req, res) => {
+    const { subjectDid, claims } = req.body;
+
+    if (!subjectDid || !claims) {
+        return res.status(400).json({ error: "subjectDid and claims required" });
+    }
+
+    const code: PreAuthCode = {
+        code: uuidv4(),
+        subjectDid,
+        claims,
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours — user claims later
+        used: false,
+    };
+
+    preAuthCodes.set(code.code, code);
+
+    console.log(`[ISSUER] /register-credential | subjectDid=${subjectDid} code=${code.code}`);
+
+    res.json({
+        "pre-authorized_code": code.code,
+        expires_in: 86400,
+    });
+});
+
+/**
+ * POST /verify-proof
+ * Verifies a client-generated Groth16 proof.
+ * Body: { circuit: "AgeVerification" | "MerkleInclusion" | "CredentialVerification", proof: object, publicSignals: string[] }
+ * Response: { verified: boolean }
+ */
+app.post("/verify-proof", async (req, res) => {
+    const { circuit, proof, publicSignals } = req.body;
+
+    if (!circuit || !proof || !publicSignals) {
+        return res.status(400).json({ error: "circuit, proof, and publicSignals required" });
+    }
+
+    const allowed = ["AgeVerification", "MerkleInclusion", "CredentialVerification"];
+    if (!allowed.includes(circuit)) {
+        return res.status(400).json({ error: `circuit must be one of: ${allowed.join(", ")}` });
+    }
+
+    try {
+        const vkPath = path.join(__dirname, `../../build/keys/${circuit}_verification_key.json`);
+        if (!fs.existsSync(vkPath)) {
+            return res.status(404).json({ error: `Verification key not found for circuit: ${circuit}` });
+        }
+        const vk = JSON.parse(fs.readFileSync(vkPath, "utf-8"));
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { groth16 } = require("snarkjs");
+        const verified: boolean = await groth16.verify(vk, publicSignals, proof);
+        console.log(`[ISSUER] /verify-proof | circuit=${circuit} | verified=${verified}`);
+        res.json({ verified });
+    } catch (err: any) {
+        console.error("[ISSUER] /verify-proof error:", err);
+        res.status(500).json({ error: "verification_error", description: err.message });
+    }
 });
 
 // ─── Startup ────────────────────────────────────────────────────────

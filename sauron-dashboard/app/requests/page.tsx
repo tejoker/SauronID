@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { Card } from "../shared";
-import { API, ADMIN_KEY } from "../context/DashContext";
 
 interface RequestEvent {
   client_name: string;
@@ -16,9 +15,7 @@ export default function RequestsPage() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/admin/requests`, {
-        headers: { "x-admin-key": ADMIN_KEY },
-      });
+      const res = await fetch(`/api/admin/requests`);
       if (res.ok) setEvents(await res.json());
     } catch {}
   }, []);

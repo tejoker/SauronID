@@ -49,3 +49,8 @@ company_id,name,category,size_tier,client_type,countries_served,base_monthly_cus
 48,StellarInvest,investment,startup,FULL_KYC,usa;china;fr;uk;ire;swe,695
 49,TrustPath,investment,sme,FULL_KYC,usa;china;fr;uk;ire;swe,1569
 50,ApexWealth,investment,startup,FULL_KYC,usa;china;fr;uk;ire;swe,481
+51,BNP Paribas,bank,enterprise,BANK,fr;be;lux;uk;ger;ita,84000
+52,Societe Generale,bank,enterprise,BANK,fr;uk;ger;esp;ita,68000
+53,Credit Agricole,bank,enterprise,BANK,fr;ita;uk;ger,72000
+54,Deutsche Bank,bank,enterprise,BANK,ger;uk;fr;usa;sing,55000
+55,ING Group,bank,enterprise,BANK,nl;be;ger;fr;uk,61000

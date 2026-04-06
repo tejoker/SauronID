@@ -8,3 +8,4 @@ pub mod sites;
 pub mod billing;
 pub mod merkle;
 pub mod solana_service;
+pub mod agent;

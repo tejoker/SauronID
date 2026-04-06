@@ -181,8 +181,6 @@ How Digital Identity Powers Integrated Fraud Detection - Wavetec, consulté le m
 Decentralized Identifiers (DIDs) v1.0 - W3C, consulté le mars 3, 2026, https://www.w3.org/TR/did-1.0/
 
 
-
-
 Pour valider rigoureusement l'implémentation du protocole SauronID détaillée dans ce rapport, il est impératif d'adopter une approche d'audit "Zero Trust". Étant donné que la moindre vulnérabilité dans les circuits cryptographiques ou la logique de révocation pourrait compromettre l'identité numérique de millions d'utilisateurs et d'agents, la batterie de tests doit être exhaustive.
 Voici un plan de vérification détaillé et structuré, divisé selon les domaines de responsabilité des deux ingénieurs, avec les protocoles précis pour chaque test.
 

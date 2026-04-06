@@ -25,7 +25,9 @@ pub async fn auth_middleware(
         .get("x-admin-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if key != "super_secret_hackathon_key" {
+    let expected = std::env::var("SAURON_ADMIN_KEY")
+        .unwrap_or_else(|_| "super_secret_hackathon_key".to_string());
+    if key != expected.as_str() {
         return Err(StatusCode::UNAUTHORIZED);
     }
     Ok(next.run(request).await)

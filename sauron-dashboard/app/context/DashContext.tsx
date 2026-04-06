@@ -4,7 +4,6 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 
 export const API      = process.env.NEXT_PUBLIC_API_URL      || "http://localhost:3001";
 export const DASH_API = process.env.NEXT_PUBLIC_DASH_API_URL || "http://localhost:8002";
-export const ADMIN_KEY = "super_secret_hackathon_key";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface LiveStats {
@@ -55,11 +54,10 @@ export function DashProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const h = { "x-admin-key": ADMIN_KEY };
       const [sRes, cRes, uRes] = await Promise.all([
-        fetch(`${API}/admin/stats`,   { headers: h }),
+        fetch(`/api/admin/stats`),
         fetch(`${API}/dev/clients`),
-        fetch(`${API}/admin/users`,   { headers: h }),
+        fetch(`/api/admin/users`),
       ]);
       if (sRes.ok)  setStats(await sRes.json());
       if (cRes.ok)  setClients(await cRes.json());

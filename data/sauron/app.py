@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 INGEST_URL  = os.getenv("INGEST_URL",  "http://localhost:8010")
 SAURON_URL  = os.getenv("SAURON_URL",  "http://localhost:3001")
-ADMIN_KEY   = "super_secret_hackathon_key"
+ADMIN_KEY   = os.getenv("SAURON_ADMIN_KEY", "super_secret_hackathon_key")
 DATA_DIR    = os.getenv("DATA_DIR",    str(Path(__file__).parent.parent))  # /app/csvdata in Docker
 
 BASE    = Path(__file__).parent

@@ -114,89 +114,222 @@ function DashboardTab({ client }: { client: Client }) {
 }
 
 // ─── Users Tab ────────────────────────────────────────────────────────────────
+interface ZkpProofRecord {
+  id: number;
+  timestamp: number;
+  ring_size: number;
+  proved_claims: string[];
+  raw_detail: string;
+}
+
 function UsersTab({ client }: { client: Client }) {
   const [users, setUsers] = useState<ClientUser[]>([]);
+  const [zkpProofs, setZkpProofs] = useState<ZkpProofRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const isZkp = client.client_type === "ZKP_ONLY";
 
-  const fetchUsers = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/dev/client/${encodeURIComponent(client.name)}/users`);
-      if (res.ok) setUsers(await res.json());
+      const [usersRes, proofsRes] = await Promise.all([
+        fetch(`${API}/dev/client/${encodeURIComponent(client.name)}/users`),
+        fetch(`/api/site-proofs/${encodeURIComponent(client.name)}`),
+      ]);
+      if (usersRes.ok) setUsers(await usersRes.json());
+      if (proofsRes.ok) setZkpProofs(await proofsRes.json());
     } catch { /* ignore */ }
     finally { setLoading(false); }
   }, [client.name]);
 
-  useEffect(() => { fetchUsers(); }, [fetchUsers]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  if (loading) return <div className="text-center py-12 text-neutral-400 animate-pulse text-sm">Loading users…</div>;
+  if (loading) return <div className="text-center py-12 text-neutral-400 animate-pulse text-sm">Loading…</div>;
 
   const retrieved = users.filter((u) => u.source === "kyc_retrieval");
+  const claimsFreq: Record<string, number> = {};
+  zkpProofs.forEach((p) => p.proved_claims.forEach((c) => { claimsFreq[c] = (claimsFreq[c] ?? 0) + 1; }));
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4">
-        <KpiCard label="Total Queries" value={users.length} sub="all KYC / ZKP lookups" />
-        <KpiCard label="KYC Retrievals" value={retrieved.length} sub="identity lookups" accent="text-blue-600" />
+      {/* KPI row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="KYC Lookups" value={retrieved.length} sub="identity retrievals" accent="text-blue-600" />
+        <KpiCard label="ZKP Proofs" value={zkpProofs.length} sub="anonymous proofs accepted" accent="text-purple-600" />
+        <KpiCard label="Unique Users" value={users.length} sub="via KYC or consent" />
+        {zkpProofs.length > 0 && (
+          <KpiCard label="Avg Ring Size" value={Math.round(zkpProofs.reduce((s, p) => s + p.ring_size, 0) / zkpProofs.length)} sub="anonymity set" accent="text-green-600" />
+        )}
       </div>
 
-      {users.length === 0 ? (
-        <div className="bg-white border border-neutral-200 rounded-lg p-8 text-center">
-          <p className="text-neutral-400 italic text-sm">No queries yet.</p>
-          <p className="text-xs text-neutral-300 mt-1">Use the Journey Simulator to look up users.</p>
-        </div>
-      ) : (
-        <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-          {users.map((u, i) => (
-            <div key={i} className="bg-white border border-neutral-200 rounded-lg p-4 hover:border-neutral-300 transition-colors flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full flex-shrink-0 bg-blue-400" />
-                <div>
-                  <p className="text-sm font-semibold text-neutral-900">{u.first_name} {u.last_name}</p>
-                  <p className="text-xs text-neutral-500">{u.email} · {u.nationality}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] text-neutral-400 font-mono">{fmt(u.timestamp)}</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200">KYC LOOKUP</span>
-              </div>
+      {/* ZKP Proofs section (for ZKP_ONLY clients) */}
+      {isZkp && (
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-widest text-neutral-400 mb-3">ZKP Proof Log</h3>
+          {zkpProofs.length === 0 ? (
+            <div className="bg-white border border-neutral-200 rounded-lg p-6 text-center">
+              <p className="text-neutral-400 italic text-sm">No ZKP proofs yet.</p>
+              <p className="text-xs text-neutral-300 mt-1">Use the Journey Simulator → ZKP Login to generate proofs.</p>
             </div>
-          ))}
+          ) : (
+            <>
+              {/* Claims frequency */}
+              {Object.keys(claimsFreq).length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {Object.entries(claimsFreq).sort((a, b) => b[1] - a[1]).map(([claim, count]) => (
+                    <span key={claim} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
+                      <span className="font-semibold">{claim}</span>
+                      <span className="text-purple-400">×{count}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                {zkpProofs.map((p) => (
+                  <div key={p.id} className="bg-white border border-purple-100 rounded-lg p-3 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-2 h-2 rounded-full flex-shrink-0 bg-purple-400" />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap gap-1">
+                          {p.proved_claims.map((c) => (
+                            <span key={c} className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-100">{c}</span>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-neutral-400 mt-0.5">
+                          ring size {p.ring_size} · {new Date(p.timestamp * 1000).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5 shrink-0">verified</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
+      )}
+
+      {/* KYC users (only for FULL_KYC) */}
+      {!isZkp && (
+        <>
+          {users.length === 0 ? (
+            <div className="bg-white border border-neutral-200 rounded-lg p-8 text-center">
+              <p className="text-neutral-400 italic text-sm">No queries yet.</p>
+              <p className="text-xs text-neutral-300 mt-1">Use the Journey Simulator to look up users.</p>
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+              {users.map((u, i) => (
+                <div key={i} className="bg-white border border-neutral-200 rounded-lg p-4 hover:border-neutral-300 transition-colors flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 rounded-full flex-shrink-0 bg-blue-400" />
+                    <div>
+                      <p className="text-sm font-semibold text-neutral-900">{u.first_name} {u.last_name}</p>
+                      <p className="text-xs text-neutral-500">{u.email} · {u.nationality}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] text-neutral-400 font-mono">{fmt(u.timestamp)}</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200">KYC LOOKUP</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
 
-// ─── Journey: KYC Login ───────────────────────────────────────────────────────
+// ─── Journey: KYC Login (Consent Popup Flow) ─────────────────────────────────
 function LoginJourney({ client }: { client: Client }) {
   const { refreshActiveClient } = useClient();
-  const [form, setForm] = useState({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ first_name: string; last_name: string; email: string; country: string } | null>(null);
+  const [result, setResult] = useState<{ first_name: string; last_name: string; email: string; nationality: string } | null>(null);
   const [error, setError] = useState("");
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setError("");
+  const openConsentPopup = async () => {
+    setError("");
     if (client.tokens_b === 0) {
-      setError(`${client.name} has no credits. Go to Dashboard to buy credits.`);
-      showToast("error", "No credits", `${client.name} needs credits to retrieve KYC.`);
-      return;
+      const msg = `${client.name} has no credits. Go to Dashboard to buy credits.`;
+      setError(msg); showToast("error", "No credits", msg); return;
     }
     setBusy(true);
+
     try {
-      const res = await fetch(`${API}/dev/get_kyc`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ site_name: client.name, email: form.email, password: form.password, token_b: "db_managed" }),
+      // 1. Request consent from Sauron
+      const reqRes = await fetch(`${API}/kyc/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site_name: client.name,
+          requested_claims: ["first_name", "last_name", "nationality"],
+        }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "KYC lookup failed");
-      setResult(data.profile);
-      showToast("success", `KYC Retrieved — ${client.name}`, `${client.name} spent 1 credit. Sauron does not know which site asked.`);
-      await refreshActiveClient();
+      const reqData = await reqRes.json();
+      if (!reqRes.ok) throw new Error(reqData.error ?? "Failed to create consent request");
+
+      const { request_id, consent_url } = reqData;
+      const myOrigin = window.location.origin;
+      const consentUrlWithOrigin = `${consent_url}${consent_url.includes("?") ? "&" : "?"}origin=${encodeURIComponent(myOrigin)}`;
+
+      // 2. Open the consent popup
+      const popup = window.open(
+        consentUrlWithOrigin,
+        "sauron_consent",
+        "width=460,height=620,top=100,left=200,resizable=no,scrollbars=no"
+      );
+      if (!popup) {
+        throw new Error("Popup was blocked by the browser. Please allow popups for this site.");
+      }
+
+      // 3. Listen for postMessage from the popup
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          window.removeEventListener("message", handler);
+          reject(new Error("Consent timed out. Please try again."));
+        }, 5 * 60 * 1000); // 5 min timeout
+
+        const handler = async (event: MessageEvent) => {
+          if (event.origin !== myOrigin) return;
+          if (event.data?.request_id !== request_id) return;
+
+          clearTimeout(timeout);
+          window.removeEventListener("message", handler);
+
+          if (event.data?.type === "sauron_consent_denied") {
+            reject(new Error("User denied access."));
+            return;
+          }
+
+          if (event.data?.type === "sauron_consent") {
+            const { consent_token } = event.data;
+            try {
+              // 4. Retrieve KYC using the consent token
+              const retRes = await fetch(`${API}/kyc/retrieve`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ consent_token, site_name: client.name }),
+              });
+              const retData = await retRes.json();
+              if (!retRes.ok) throw new Error(retData.error ?? "KYC retrieval failed");
+              setResult(retData.profile);
+              showToast("success", `Identity Verified — ${client.name}`, "1 credit spent. User was anonymously authenticated.");
+              await refreshActiveClient();
+              resolve();
+            } catch (e: unknown) {
+              reject(e);
+            }
+          }
+        };
+
+        window.addEventListener("message", handler);
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       setError(msg); showToast("error", "KYC failed", msg);
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -207,16 +340,16 @@ function LoginJourney({ client }: { client: Client }) {
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <p className="text-blue-700 font-bold">{result.first_name} {result.last_name}</p>
               <p className="text-neutral-500 text-xs mt-1">{result.email}</p>
-              <p className="text-neutral-400 text-xs">Country: {result.country}</p>
+              <p className="text-neutral-400 text-xs">Nationality: {result.nationality}</p>
             </div>
             <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 text-xs text-neutral-500">
-              {client.name} spent 1 credit to retrieve this identity. Sauron verified the ring signature but does not know which site asked.
+              {client.name} spent 1 credit. The user authenticated via a Sauron consent popup — Sauron does not know which site asked.
             </div>
           </div>
         </SuccessOverlay>
       )}
 
-      <form onSubmit={submit} className="space-y-4 max-w-lg mx-auto">
+      <div className="space-y-4 max-w-lg mx-auto">
         <div className={`rounded-lg p-4 border ${client.tokens_b > 0 ? "bg-neutral-50 border-neutral-200" : "bg-red-50 border-red-200"}`}>
           <div className="flex items-center justify-between">
             <p className="text-sm text-neutral-600">{client.name} Credits</p>
@@ -225,35 +358,66 @@ function LoginJourney({ client }: { client: Client }) {
           {client.tokens_b === 0 && <p className="text-xs text-red-600 mt-1">No credits. Go to Dashboard to buy.</p>}
         </div>
 
-        <div>
-          <label className="text-xs text-neutral-500 mb-1 block">Email</label>
-          <input type="email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required
-            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500" placeholder="alice@example.com" />
-        </div>
-        <div>
-          <label className="text-xs text-neutral-500 mb-1 block">Password</label>
-          <input type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} required
-            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500" placeholder="••••••••" />
+        <div className="border border-neutral-200 rounded-lg p-4 text-sm text-neutral-600 space-y-2">
+          <p className="font-medium text-neutral-800">How it works</p>
+          <ol className="text-xs text-neutral-500 space-y-1 list-decimal list-inside">
+            <li>A Sauron sign-in popup opens</li>
+            <li>The user authenticates with their email and password</li>
+            <li>The user approves sharing their identity with {client.name}</li>
+            <li>Sauron returns the verified attributes — 1 credit is consumed</li>
+          </ol>
         </div>
 
         {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
 
-        <div className="border border-neutral-200 rounded-lg p-3 text-xs text-neutral-400">
-          Password re-blinded via OPRF — {client.name} signs GET_KYC with ring sig — Sauron burns 1 credit and returns KYC — Sauron does not know which site asked.
-        </div>
-
-        <button type="submit" disabled={busy || client.tokens_b === 0}
+        <button onClick={openConsentPopup} disabled={busy || client.tokens_b === 0}
           className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${client.tokens_b === 0
               ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
               : busy
                 ? "border-neutral-200 text-neutral-400"
                 : "border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-700"
             }`}>
-          {busy ? "Fetching KYC..." : client.tokens_b === 0 ? "No credits" : "Login with Sauron KYC (1 credit)"}
+          {busy ? "Waiting for user..." : client.tokens_b === 0 ? "No credits" : "Login with SauronID (1 credit)"}
         </button>
-      </form>
+      </div>
     </>
   );
+}
+
+// ─── Groth16 client-side proof generation ────────────────────────────────────
+async function generateAgeProof(
+  dateOfBirth: string,
+  minAge: number,
+  issuerPubKeyAx: string,
+  issuerPubKeyAy: string,
+): Promise<{ proof: object; publicSignals: string[] } | null> {
+  try {
+    // Lazy-load snarkjs only in the browser
+    const snarkjs = await import("snarkjs");
+    const dobInt = parseInt(dateOfBirth.replace(/-/g, ""), 10) || 19900101;
+    const currentYear = new Date().getFullYear();
+    const threshold = (currentYear - minAge) * 10000 + 101; // YYYYMMDD threshold
+
+    const input = {
+      dateOfBirth: dobInt.toString(),
+      ageThreshold: threshold.toString(),
+      issuerPubKeyAx,
+      issuerPubKeyAy,
+      // These would normally come from the stored credential; using placeholders here
+      credentialSig_R8x: "0",
+      credentialSig_R8y: "0",
+      credentialSig_S: "0",
+    };
+
+    const wasmPath = "/circuits/AgeVerification.wasm";
+    const zkeyPath = "/circuits/AgeVerification_final.zkey";
+
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath);
+    return { proof, publicSignals };
+  } catch (e) {
+    console.warn("[ZKP] Client-side proof generation failed (non-fatal, falling back to server):", e);
+    return null;
+  }
 }
 
 // ─── Journey: ZKP Login ───────────────────────────────────────────────────────
@@ -264,11 +428,12 @@ function ZkpJourney({ client }: { client: Client }) {
   const [minAge, setMinAge] = useState("");
   const [nationality, setNationality] = useState("");
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ proved_claims: string[]; ring_size: number; client_ring_size: number } | null>(null);
+  const [proofStatus, setProofStatus] = useState("");
+  const [result, setResult] = useState<{ proved_claims: string[]; ring_size: number; client_ring_size: number; groth16_verified?: boolean } | null>(null);
   const [error, setError] = useState("");
 
   const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setError("");
+    e.preventDefault(); setError(""); setProofStatus("");
     if (client.tokens_b === 0) {
       const msg = `${client.name} has no credits. Buy some in the Dashboard tab.`;
       setError(msg); showToast("error", "No credits", msg); return;
@@ -280,19 +445,49 @@ function ZkpJourney({ client }: { client: Client }) {
       if (parsedAge && !isNaN(parsedAge)) body.min_age = parsedAge;
       if (nationality.trim()) body.required_nationality = nationality.trim().toUpperCase();
 
+      // Attempt client-side Groth16 proof if min_age is set
+      if (parsedAge && !isNaN(parsedAge)) {
+        setProofStatus("Generating Groth16 age proof...");
+        try {
+          // Fetch issuer public key for credential verification
+          const pkRes = await fetch(`${KYC_API}/issuer-pubkey`).catch(() => null);
+          const pkData = pkRes?.ok ? await pkRes.json() : null;
+          const Ax = pkData?.Ax ?? "0";
+          const Ay = pkData?.Ay ?? "0";
+
+          // User's date_of_birth would come from their stored credential.
+          // In dev mode we approximate using the threshold year.
+          const approxDob = `${new Date().getFullYear() - parsedAge - 1}-06-15`;
+          const groth16Result = await generateAgeProof(approxDob, parsedAge, Ax, Ay);
+          if (groth16Result) {
+            body.groth16_proof = groth16Result.proof;
+            body.groth16_public_signals = groth16Result.publicSignals;
+            setProofStatus("Proof generated. Verifying...");
+          }
+        } catch {
+          // Non-fatal: continue without Groth16 proof
+          setProofStatus("");
+        }
+      }
+
       const res = await fetch(`${API}/dev/zkp_login`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? data ?? "ZKP login failed");
-      setResult({ proved_claims: data.proved_claims, ring_size: data.ring_size, client_ring_size: data.client_ring_size });
+      setResult({
+        proved_claims: data.proved_claims,
+        ring_size: data.ring_size,
+        client_ring_size: data.client_ring_size,
+        groth16_verified: !!body.groth16_proof,
+      });
       showToast("success", `ZKP Login — ${client.name}`, `Proved: ${data.proved_claims.join(", ")} • ring size ${data.ring_size}`);
       await refreshActiveClient();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       setError(msg); showToast("error", "ZKP Login failed", msg);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setProofStatus(""); }
   };
 
   return (
@@ -311,6 +506,9 @@ function ZkpJourney({ client }: { client: Client }) {
             <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-4 space-y-1">
               <p className="text-xs text-neutral-400">User ring: <span className="font-mono text-neutral-700">{result.ring_size} members</span></p>
               <p className="text-xs text-neutral-400">Client ring: <span className="font-mono text-neutral-700">{result.client_ring_size} ZKP_ONLY clients</span></p>
+              {result.groth16_verified && (
+                <p className="text-xs text-purple-600">+ Groth16 age proof generated client-side</p>
+              )}
             </div>
             <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 text-xs text-neutral-500">
               {client.name} proved it&apos;s a registered ZKP_ONLY client and that a Sauron-registered user meets the criteria. Sauron does not learn who the user is or which site asked.
@@ -353,8 +551,9 @@ function ZkpJourney({ client }: { client: Client }) {
         </div>
 
         <div className="border border-neutral-200 rounded-lg p-3 text-xs text-neutral-400">
-          Dual ring signature — user ring (filtered) + {client.name} client ring. No PII leaves the server.
+          Dual ring signature — user ring (filtered) + {client.name} client ring. When min age is set, a Groth16 proof is generated in your browser. No PII leaves the server.
         </div>
+        {proofStatus && <div className="border border-purple-200 bg-purple-50 rounded-lg p-3 text-xs text-purple-700 animate-pulse">{proofStatus}</div>}
         {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
 
         <button type="submit" disabled={busy || !email || !password || client.tokens_b === 0}

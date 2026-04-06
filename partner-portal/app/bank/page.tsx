@@ -1,32 +1,13 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
-import { useClient, API, KYC_API, type Client, type ClientUser } from "../context/ClientContext";
+import { useState, useEffect, useCallback } from "react";
+import { useClient, API, type Client, type ClientUser } from "../context/ClientContext";
 import { showToast } from "../components/Toast";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const NAT_TO_COUNTRY: Record<string, string> = {
-  FRA: "FR", DEU: "DE", GBR: "GB", ESP: "ES", ITA: "IT",
-  NLD: "NL", BEL: "BE", POL: "PL", SWE: "SE", PRT: "PT",
-  USA: "US", JPN: "JP", BRA: "BR", IND: "IN",
-};
 const fmt = (ts: number) => new Date(ts * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-type Tab = "dashboard" | "users" | "register";
-type KYCStep = "idle" | "id_cam" | "selfie_cam" | "loading" | "result";
-
-interface KYCAPIResult {
-  decision: "pass" | "review" | "fail";
-  decision_reason: string;
-  face_match_score: number;
-  face_match_label: string;
-  face_match_reasoning: string;
-  extracted_fields: {
-    document_type: string; full_name: string; first_name: string; last_name: string;
-    date_of_birth: string; nationality: string; document_number: string; expiry_date: string;
-    gender: string | null;
-  };
-}
+type Tab = "dashboard" | "users" | "link" | "agents";
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub, accent }: { label: string; value: number | string; sub?: string; accent?: string }) {
@@ -52,137 +33,6 @@ function SuccessOverlay({ title, children, onClose }: { title: string; children:
   );
 }
 
-// ─── KYC Camera Flow ──────────────────────────────────────────────────────────
-function KYCCameraFlow({ onDone, onClose }: { onDone: (result: KYCAPIResult) => void; onClose: () => void }) {
-  const [step, setStep] = useState<KYCStep>("id_cam");
-  const [idImage, setIdImage] = useState<string | null>(null);
-  const [kycResult, setKycResult] = useState<KYCAPIResult | null>(null);
-  const [kycError, setKycError] = useState("");
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const stopStream = () => { streamRef.current?.getTracks().forEach((t) => t.stop()); streamRef.current = null; };
-
-  const startCamera = async (facingMode: "environment" | "user") => {
-    stopStream();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
-      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
-      streamRef.current = stream;
-    } catch {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
-      streamRef.current = stream;
-    }
-  };
-
-  useEffect(() => {
-    if (step === "id_cam") startCamera("environment");
-    else if (step === "selfie_cam") startCamera("user");
-    return stopStream;
-  }, [step]);
-
-  const captureId = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    canvas.getContext("2d")!.drawImage(videoRef.current, 0, 0);
-    setIdImage(canvas.toDataURL("image/jpeg", 0.85));
-    setStep("selfie_cam");
-  };
-
-  const captureSelfie = async () => {
-    if (!videoRef.current || !canvasRef.current || !idImage) return;
-    const canvas = canvasRef.current;
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    canvas.getContext("2d")!.drawImage(videoRef.current, 0, 0);
-    const selfieImage = canvas.toDataURL("image/jpeg", 0.85);
-    stopStream();
-    setStep("loading");
-    try {
-      const res = await fetch(`${KYC_API}/verify`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id_image: idImage, selfie_image: selfieImage }),
-      });
-      const data: KYCAPIResult = await res.json();
-      setKycResult(data);
-      setStep("result");
-    } catch {
-      setKycError("KYC API unavailable. Check that the service is running.");
-      setStep("result");
-    }
-  };
-
-  useEffect(() => {
-    if (step === "result" && kycResult) {
-      if (kycResult.decision === "pass") onDone(kycResult);
-    }
-  }, [step, kycResult, onDone]);
-
-  const isId = step === "id_cam";
-
-  if (step === "loading") return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
-      <div className="bg-white rounded-xl p-8 text-center space-y-3">
-        <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin mx-auto" />
-        <p className="text-sm text-neutral-600">Verifying identity…</p>
-      </div>
-    </div>
-  );
-
-  if (step === "result") return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6">
-      <div className="bg-white rounded-xl p-8 max-w-sm w-full space-y-4">
-        {kycError ? (
-          <><p className="text-red-600 text-sm font-semibold">Error</p><p className="text-xs text-neutral-500">{kycError}</p></>
-        ) : kycResult ? (
-          <>
-            <p className={`text-sm font-bold ${kycResult.decision === "pass" ? "text-green-700" : "text-yellow-700"}`}>
-              {kycResult.decision === "pass" ? "Identity Verified" : "Review Required"}
-            </p>
-            <p className="text-xs text-neutral-500">{kycResult.decision_reason}</p>
-          </>
-        ) : null}
-        <button onClick={onClose} className="w-full border border-neutral-200 rounded-lg py-2.5 text-sm text-neutral-700 hover:border-neutral-400 transition-colors">Close</button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 bg-black z-50 flex flex-col">
-      <div className="flex items-center justify-between p-4 bg-black/80">
-        <p className="text-white text-sm font-medium">{isId ? "Scan ID Document" : "Take Selfie"}</p>
-        <button onClick={() => { stopStream(); onClose(); }} className="text-white/60 hover:text-white text-xs border border-white/20 px-3 py-1.5 rounded-lg transition-colors">Cancel</button>
-      </div>
-      <div className="flex-1 relative overflow-hidden">
-        <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
-        <canvas ref={canvasRef} className="hidden" />
-        {isId ? (
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[82%] rounded-xl border-2 border-blue-400" style={{ aspectRatio: "1.586/1", boxShadow: "0 0 0 9999px rgba(0,0,0,0.4)" }} />
-          </div>
-        ) : (
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute inset-0 bg-black/40" />
-            <div className="absolute top-[46%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[50%]" style={{ aspectRatio: "1/1", borderRadius: "50%", boxShadow: "0 0 0 9999px rgba(0,0,0,0.4)", border: "2px solid rgb(96,165,250)" }} />
-          </div>
-        )}
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/60 text-white text-[11px] px-3 py-1.5 rounded-full border border-white/10 whitespace-nowrap">
-          {isId ? "Align your ID in the frame" : "Centre your face and look ahead"}
-        </div>
-      </div>
-      <div className="flex flex-col items-center gap-1.5 py-4 bg-white">
-        <button onClick={isId ? captureId : captureSelfie} className="rounded-full border-4 border-neutral-900 p-1 hover:border-neutral-600 transition-colors" style={{ width: 56, height: 56 }}>
-          <div className="w-full h-full rounded-full bg-neutral-900 hover:bg-neutral-700 transition-colors" />
-        </button>
-        <p className="text-[11px] text-neutral-400">{isId ? "Capture ID document" : "Take selfie"}</p>
-      </div>
-    </div>
-  );
-}
 
 // ─── Bank Dashboard ───────────────────────────────────────────────────────────
 function BankDashboard({ client }: { client: Client }) {
@@ -267,162 +117,298 @@ function BankUsersTab({ client }: { client: Client }) {
   );
 }
 
-// ─── Register User Tab ────────────────────────────────────────────────────────
-function RegisterTab({ client }: { client: Client }) {
+// ─── Link Customer Tab ────────────────────────────────────────────────────────
+// The bank already has the customer's KYC from their own onboarding.
+// This form simply attests those verified attributes to Sauron.
+// No camera, no document scanning needed.
+function LinkCustomerTab({ client }: { client: Client }) {
   const { refreshActiveClient } = useClient();
-  const [form, setForm] = useState({ email: "", password: "" });
+  const [form, setForm] = useState({
+    email: "", password: "",
+    first_name: "", last_name: "",
+    date_of_birth: "", nationality: "FRA",
+  });
   const [busy, setBusy] = useState(false);
-  const [showKYC, setShowKYC] = useState(false);
-  const [kyc, setKyc] = useState<KYCAPIResult | null>(null);
-  const [result, setResult] = useState<{ first_name: string; last_name: string; email: string } | null>(null);
+  const [result, setResult] = useState<{ first_name: string; last_name: string } | null>(null);
   const [error, setError] = useState("");
 
-  const handleKYCDone = (r: KYCAPIResult) => {
-    setKyc(r); setShowKYC(false);
-    showToast("success", "Identity verified", `${r.extracted_fields.full_name} — ${r.extracted_fields.document_type}`);
-  };
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setForm((p) => ({ ...p, [k]: e.target.value }));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.email || !form.password || !kyc) return;
-    const f = kyc.extracted_fields;
-    const country = NAT_TO_COUNTRY[f.nationality] ?? "FR";
     setBusy(true); setError("");
     try {
       const res = await fetch(`${API}/dev/register_user`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ site_name: client.name, email: form.email, password: form.password, first_name: f.first_name, last_name: f.last_name, country, date_of_birth: f.date_of_birth, nationality: f.nationality }),
+        body: JSON.stringify({
+          site_name: client.name,
+          email: form.email,
+          password: form.password,
+          first_name: form.first_name,
+          last_name: form.last_name,
+          date_of_birth: form.date_of_birth,
+          nationality: form.nationality.toUpperCase(),
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Registration failed");
-      setResult({ first_name: f.first_name, last_name: f.last_name, email: form.email });
-      showToast("success", `${client.name}: user enrolled`, `${f.first_name} ${f.last_name} KYC committed to Sauron.`);
+      if (!res.ok) throw new Error(data.error ?? "Linking failed");
+      setResult({ first_name: form.first_name, last_name: form.last_name });
+      setForm({ email: "", password: "", first_name: "", last_name: "", date_of_birth: "", nationality: "FRA" });
+      showToast("success", `${client.name}: customer linked`, `${form.first_name} ${form.last_name} is now on SauronID.`);
       await refreshActiveClient();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      setError(msg); showToast("error", "Registration failed", msg);
+      setError(msg); showToast("error", "Link failed", msg);
     } finally { setBusy(false); }
   };
 
-  const handleMobileConnect = async () => {
-    const phoneNumber = window.prompt("Enter your phone number for CAMARA Mobile Connect verification (e.g. +33612345678):");
-    if (!phoneNumber) return;
-    setBusy(true);
-    try {
-      const res = await fetch("/api/camara/issue-tier2", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phoneNumber }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Mobile Connect failed");
-      const mappedResult: KYCAPIResult = {
-        decision: "pass",
-        decision_reason: "Verified via CAMARA Network Auth",
-        face_match_score: 1.0,
-        face_match_label: "high",
-        face_match_reasoning: "Not applicable (Tier 2 Telecom Auth)",
-        extracted_fields: {
-          document_type: "tier_2_telecom",
-          full_name: "Mobile Verified User",
-          first_name: "Mobile",
-          last_name: "Verified",
-          date_of_birth: "01/01/2000",
-          nationality: "FRA",
-          document_number: data.credentialSubject.phoneNumberHash.substring(0, 10),
-          expiry_date: "31/12/2099",
-          gender: "U",
-        },
-      };
-      handleKYCDone(mappedResult);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Mobile Connect Error";
-      setError(msg);
-      showToast("error", "Mobile Connect failed", msg);
-    } finally { setBusy(false); }
-  };
+  const ready = form.email && form.password && form.first_name && form.last_name && form.date_of_birth && form.nationality;
 
   return (
     <>
-      {showKYC && <KYCCameraFlow onDone={handleKYCDone} onClose={() => setShowKYC(false)} />}
       {result && (
-        <SuccessOverlay title="User Enrolled" onClose={() => setResult(null)}>
+        <SuccessOverlay title="Customer Linked" onClose={() => setResult(null)}>
           <div className="space-y-3 text-sm">
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-              <p className="text-amber-700 font-semibold mb-1">Welcome, {result.first_name}!</p>
-              <p className="text-neutral-500 text-xs">KYC committed to the Sauron network via ring signature.</p>
+              <p className="text-amber-700 font-semibold mb-1">{result.first_name} {result.last_name} is now on SauronID</p>
+              <p className="text-neutral-500 text-xs">
+                The customer can now use SauronID to authenticate on any partner site with a ZKP — no PII is ever shared with third parties.
+              </p>
             </div>
-            <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 text-xs text-neutral-500">
-              {client.name} enrolled this user at no cost. The user&apos;s identity is now stored in Sauron and can be retrieved anonymously by authorised retail sites.
+            <div className="bg-neutral-50 border border-neutral-100 rounded-lg p-3 text-xs text-neutral-500">
+              {client.name} attested the customer&apos;s identity to Sauron at no cost. Ring signature committed on-chain.
             </div>
           </div>
         </SuccessOverlay>
       )}
 
-      <form onSubmit={submit} className="space-y-4 max-w-lg mx-auto">
-        <div className={`rounded-xl border-2 p-4 ${kyc ? (kyc.decision === "pass" ? "border-green-300 bg-green-50" : "border-yellow-300 bg-yellow-50") : "border-dashed border-neutral-300"}`}>
-          {kyc ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <p className={`text-xs font-bold uppercase tracking-wide ${kyc.decision === "pass" ? "text-green-700" : "text-yellow-700"}`}>
-                  {kyc.decision === "pass" ? "Identity Verified" : "Review Needed"}
-                </p>
-                <button type="button" onClick={() => setKyc(null)} className="text-[10px] text-neutral-400 hover:text-red-500 border border-neutral-200 px-2 py-0.5 rounded">Reset</button>
-              </div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                {([["Name", kyc.extracted_fields.full_name], ["DOB", kyc.extracted_fields.date_of_birth], ["Nationality", kyc.extracted_fields.nationality], ["Method", kyc.extracted_fields.document_type === "tier_2_telecom" ? "Mobile Connect" : `Face Match: ${Math.round(kyc.face_match_score * 100)}%`]] as [string, string][]).filter(([, v]) => v).map(([k, v]) => (
-                  <div key={k}><span className="text-neutral-400">{k}: </span><span className="font-mono text-neutral-700">{v}</span></div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="text-center space-y-3">
-              <p className="text-sm text-neutral-500">Step 1 — Verify customer identity</p>
-              <div className="flex flex-col gap-2">
-                <button type="button" onClick={() => setShowKYC(true)} className="w-full px-5 py-2.5 rounded-lg text-sm font-semibold border transition-all bg-blue-50 text-blue-700 border-blue-200 hover:opacity-80">
-                  Full KYC (Camera + ID)
-                </button>
-                <div className="flex items-center gap-2">
-                  <div className="h-px bg-neutral-200 flex-1"></div>
-                  <span className="text-[10px] text-neutral-400 uppercase font-bold tracking-widest">OR</span>
-                  <div className="h-px bg-neutral-200 flex-1"></div>
-                </div>
-                <button type="button" onClick={handleMobileConnect} className="w-full px-5 py-2.5 rounded-lg text-sm font-semibold border transition-all bg-purple-50 text-purple-700 border-purple-200 hover:opacity-80 flex items-center justify-center gap-2">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
-                  Mobile Connect (Tier 2 / Fast)
-                </button>
-              </div>
-              <p className="text-[10px] text-neutral-300 mt-2">Powered by GSMA Open Gateway Network Auth & Gemini Vision</p>
-            </div>
-          )}
+      <div className="max-w-lg mx-auto space-y-5">
+        {/* Explainer */}
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-xs text-amber-800 space-y-1">
+          <p className="font-semibold">How linking works</p>
+          <ol className="list-decimal list-inside space-y-1 text-amber-700">
+            <li>Your bank already holds verified KYC for this customer</li>
+            <li>Enter their details below — {client.name} signs the commitment with a ring signature</li>
+            <li>The customer gets a SauronID credential derived from your attestation</li>
+            <li>They can now ZKP-authenticate on retail sites — their data never leaves Sauron</li>
+          </ol>
         </div>
 
-        <div className={`space-y-3 transition-opacity ${kyc ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
-          <div>
-            <label className="text-xs text-neutral-500 mb-1 block">Customer Email</label>
-            <input type="email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required={!!kyc}
-              className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500" placeholder="alice@example.com" />
+        <form onSubmit={submit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-neutral-500 mb-1 block">First name</label>
+              <input value={form.first_name} onChange={set("first_name")} required placeholder="Alice"
+                className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" />
+            </div>
+            <div>
+              <label className="text-xs text-neutral-500 mb-1 block">Last name</label>
+              <input value={form.last_name} onChange={set("last_name")} required placeholder="Dupont"
+                className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" />
+            </div>
           </div>
-          <div>
-            <label className="text-xs text-neutral-500 mb-1 block">Customer Password</label>
-            <input type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} required={!!kyc}
-              className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500" placeholder="••••••••" />
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-neutral-500 mb-1 block">Date of birth</label>
+              <input type="date" value={form.date_of_birth} onChange={set("date_of_birth")} required
+                className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" />
+            </div>
+            <div>
+              <label className="text-xs text-neutral-500 mb-1 block">Nationality (ISO 3)</label>
+              <input value={form.nationality} onChange={set("nationality")} maxLength={3} placeholder="FRA"
+                className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm uppercase focus:outline-none focus:border-amber-400" />
+            </div>
           </div>
+
+          <div className="border-t border-neutral-100 pt-4 space-y-3">
+            <p className="text-xs text-neutral-500 font-medium">Customer SauronID credentials</p>
+            <p className="text-xs text-neutral-400">
+              The customer will use these to log in on retail sites via the SauronID consent popup.
+            </p>
+            <div>
+              <label className="text-xs text-neutral-500 mb-1 block">Email</label>
+              <input type="email" value={form.email} onChange={set("email")} required placeholder="alice@example.com"
+                className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" />
+            </div>
+            <div>
+              <label className="text-xs text-neutral-500 mb-1 block">Password</label>
+              <input type="password" value={form.password} onChange={set("password")} required placeholder="••••••••"
+                className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" />
+            </div>
+          </div>
+
+          {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
+
+          <div className="bg-neutral-50 border border-neutral-100 rounded-lg p-3 text-xs text-neutral-400">
+            Password blinded via OPRF — {client.name} signs the registration with a ring signature — KYC committed to Sauron at no cost.
+          </div>
+
+          <button type="submit" disabled={busy || !ready}
+            className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${!ready || busy
+                ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
+                : "bg-amber-500 text-white border-amber-500 hover:bg-amber-600"
+              }`}>
+            {busy ? "Linking..." : `Link customer to SauronID via ${client.name}`}
+          </button>
+        </form>
+      </div>
+    </>
+  );
+}
+
+// ─── Agents Tab ───────────────────────────────────────────────────────────────
+interface AgentRecord {
+  agent_id: string;
+  human_key_image: string;
+  agent_checksum: string;
+  intent_json: string;
+  issued_at: number;
+  expires_at: number;
+  revoked: boolean;
+}
+
+function AgentsTab(_: { client: Client }) {
+  const [humanKeyImage, setHumanKeyImage] = useState("");
+  const [agentChecksum, setAgentChecksum] = useState("");
+  const [intentJson, setIntentJson] = useState('{"action":"kyc_lookup","resource":"sauron_api"}');
+  const [ttl, setTtl] = useState("3600");
+  const [busy, setBusy] = useState(false);
+  const [agents, setAgents] = useState<AgentRecord[]>([]);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState<{ agent_id: string; ajwt: string } | null>(null);
+
+  const register = async (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    setError(""); setSuccess(null);
+    if (!humanKeyImage || !agentChecksum) { setError("human_key_image and agent_checksum required"); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/agent/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          human_key_image: humanKeyImage,
+          agent_checksum: agentChecksum,
+          intent_json: intentJson,
+          ttl_secs: parseInt(ttl, 10) || 3600,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Agent registration failed");
+      setSuccess({ agent_id: data.agent_id, ajwt: data.ajwt });
+      showToast("success", "Agent registered", `agent_id: ${data.agent_id}`);
+      if (humanKeyImage) loadAgents(humanKeyImage);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setError(msg); showToast("error", "Registration failed", msg);
+    } finally { setBusy(false); }
+  };
+
+  const loadAgents = async (ki: string) => {
+    if (!ki) return;
+    try {
+      const res = await fetch(`${API}/agent/list/${encodeURIComponent(ki)}`);
+      if (res.ok) setAgents(await res.json());
+    } catch { /* ignore */ }
+  };
+
+  const revoke = async (agentId: string) => {
+    if (!humanKeyImage) return;
+    try {
+      const res = await fetch(`${API}/agent/${encodeURIComponent(agentId)}`, {
+        method: "DELETE",
+        headers: { "x-human-key-image": humanKeyImage },
+      });
+      if (res.ok) {
+        showToast("success", "Agent revoked", agentId);
+        loadAgents(humanKeyImage);
+      }
+    } catch { /* ignore */ }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-semibold text-neutral-900 mb-1">Register an AI Agent</h2>
+        <p className="text-xs text-neutral-500">
+          An A-JWT (Agentic JWT) allows an AI agent to call the Sauron API on behalf of a registered user.
+          The token encodes the agent checksum and intent so any drift is immediately detectable.
+        </p>
+      </div>
+
+      <form onSubmit={register} className="space-y-4 max-w-xl">
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">Human key_image_hex</label>
+          <input value={humanKeyImage} onChange={(e) => setHumanKeyImage(e.target.value)}
+            onBlur={() => loadAgents(humanKeyImage)}
+            placeholder="64-char hex from /dev/register_user response"
+            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-neutral-500" />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">Agent checksum (SHA-256 of agent config)</label>
+          <input value={agentChecksum} onChange={(e) => setAgentChecksum(e.target.value)}
+            placeholder="sha256 hex"
+            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-neutral-500" />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">Intent JSON</label>
+          <textarea value={intentJson} onChange={(e) => setIntentJson(e.target.value)} rows={3}
+            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-neutral-500" />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">TTL (seconds)</label>
+          <input type="number" value={ttl} onChange={(e) => setTtl(e.target.value)} min={60} max={86400}
+            className="w-32 bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-neutral-500" />
         </div>
 
-        <div className="border border-neutral-200 rounded-lg p-3 text-xs text-neutral-400">
-          Password blinded via OPRF (Ristretto255) — {client.name} signs with ring signature — KYC committed to Sauron at no cost.
-        </div>
         {error && <div className="border border-red-200 bg-red-50 rounded-lg p-3 text-xs text-red-600">{error}</div>}
 
-        <button type="submit" disabled={busy || !kyc || !form.email || !form.password}
-          className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all border ${busy || !kyc || !form.email || !form.password
-              ? "border-neutral-200 text-neutral-300 cursor-not-allowed"
-              : "bg-amber-500 text-white border-amber-500 hover:bg-amber-600"
-            }`}>
-          {busy ? "Enrolling..." : kyc ? `Enrol Customer via ${client.name}` : "Complete KYC first"}
+        <button type="submit" disabled={busy}
+          className={`py-2.5 px-6 rounded-lg font-semibold text-sm border ${busy
+            ? "border-neutral-200 text-neutral-400 cursor-not-allowed"
+            : "bg-amber-500 text-white border-amber-500 hover:bg-amber-600"}`}>
+          {busy ? "Registering..." : "Register Agent"}
         </button>
       </form>
-    </>
+
+      {success && (
+        <div className="border border-green-200 bg-green-50 rounded-lg p-4 space-y-2">
+          <p className="text-xs font-semibold text-green-800">Agent registered successfully</p>
+          <p className="text-xs text-neutral-600">agent_id: <span className="font-mono">{success.agent_id}</span></p>
+          <div>
+            <p className="text-xs text-neutral-500 mb-1">A-JWT (pass this in x-agent-jwt header):</p>
+            <textarea readOnly value={success.ajwt} rows={4}
+              className="w-full bg-white border border-neutral-200 rounded text-xs font-mono p-2 resize-none" />
+          </div>
+        </div>
+      )}
+
+      {agents.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-neutral-800 mb-3">Agents for this user</h3>
+          <div className="space-y-2">
+            {agents.map((a) => (
+              <div key={a.agent_id} className={`border rounded-lg p-3 flex items-start justify-between gap-4 ${a.revoked ? "border-red-200 bg-red-50" : "border-neutral-200 bg-white"}`}>
+                <div className="space-y-0.5 min-w-0">
+                  <p className="text-xs font-mono text-neutral-700 truncate">{a.agent_id}</p>
+                  <p className="text-xs text-neutral-500">checksum: <span className="font-mono">{a.agent_checksum.slice(0, 16)}...</span></p>
+                  <p className="text-xs text-neutral-400">expires: {new Date(a.expires_at * 1000).toLocaleString()}</p>
+                  {a.revoked && <span className="text-xs text-red-600 font-semibold">REVOKED</span>}
+                </div>
+                {!a.revoked && (
+                  <button onClick={() => revoke(a.agent_id)}
+                    className="text-xs text-red-500 border border-red-200 rounded px-2 py-1 hover:bg-red-50 whitespace-nowrap shrink-0">
+                    Revoke
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -440,8 +426,9 @@ export default function BankPortal() {
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "dashboard", label: "Dashboard" },
-    { key: "users", label: "Enrolled Users" },
-    { key: "register", label: "Enrol Customer" },
+    { key: "users", label: "Linked Customers" },
+    { key: "link", label: "Link Customer" },
+    { key: "agents", label: "AI Agents" },
   ];
 
   return (
@@ -467,7 +454,8 @@ export default function BankPortal() {
       <div className="max-w-[1200px] mx-auto px-6 py-8">
         {tab === "dashboard" && <BankDashboard client={client} />}
         {tab === "users" && <BankUsersTab client={client} />}
-        {tab === "register" && <RegisterTab client={client} />}
+        {tab === "link" && <LinkCustomerTab client={client} />}
+        {tab === "agents" && <AgentsTab client={client} />}
       </div>
     </div>
   );

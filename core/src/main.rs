@@ -1,17 +1,18 @@
 use axum::{
-    routing::{get, post},
+    routing::{get, post, delete},
     extract::{State, Json, Path},
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     Router,
     middleware,
 };
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::params;
-use sauron_core::{oprf, ring, state::{ServerState, verify_token, token_value}, admin, billing};
-use sauron_core::{identity::{Identity, UserData}, db};
+use sauron_core::{oprf, ring, state::{ServerState, verify_token, token_value, sign_token}, admin, billing};
+use sauron_core::{identity::{Identity, UserData}, db, agent};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::RistrettoPoint;
-use sha2::{Sha512, Digest};
+use sha2::{Sha256, Sha512, Digest};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
@@ -57,6 +58,29 @@ async fn main() {
         .route("/zkp/client_ring",   get(handle_zkp_client_ring))
         // DEV ZKP (frontend-friendly — crypto côté serveur)
         .route("/dev/zkp_login",     post(dev_zkp_login))
+        // A-JWT Agentic Layer
+        .route("/agent/register",                        post(agent::register_agent))
+        .route("/agent/verify",                          post(agent::verify_agent_token))
+        .route("/agent/list/{human_key_image}",          get(agent::list_agents))
+        .route("/agent/{agent_id}",                      get(agent::get_agent).delete(agent::revoke_agent))
+        // User consent flow (KYC retrieval with explicit user consent)
+        .route("/kyc/request",                           post(kyc_request))
+        .route("/kyc/consent",                           post(kyc_consent))
+        .route("/kyc/consent_info/{request_id}",         get(kyc_consent_info))
+        .route("/kyc/retrieve",                          post(kyc_retrieve))
+        // Trusted device (silent re-auth)
+        .route("/auth/device/issue",  post(device_issue))
+        .route("/auth/device/check",  post(device_check))
+        // User self-service (manage own consents + agents)
+        .route("/user/auth",          post(user_auth))
+        .route("/user/consents",      get(user_consents))
+        .route("/user/profile",       get(user_profile))
+        .route("/user/credential",    get(user_get_credential))
+        .route("/user/consent/{request_id}", delete(user_revoke_consent))
+        // Agent KYC consent flow (agent acts on behalf of human)
+        .route("/agent/kyc/consent",  post(agent_kyc_consent))
+        // Self-sovereign agent VC (KYA without banks)
+        .route("/agent/vc/issue",     post(agent_vc_issue))
         // DATA: analytics pré-calculées (stats, forecast, fraud)
         .route("/data/{data_type}/{company_id}", get(data_get).post(data_put))
         .route("/data/companies",    get(data_companies))
@@ -527,6 +551,60 @@ async fn dev_register_user(
         }
     }
 
+    // ── ZKP Credential Issuance (non-bloquant) ───────────────────────────────
+    // Appel asynchrone au service issuer pour pré-autoriser l'émission d'un
+    // credential BabyJubJub signé. L'utilisateur pourra ensuite récupérer son
+    // credential et générer des preuves Groth16 côté client.
+    // Une erreur du service issuer n'empêche pas l'enregistrement.
+    {
+        let issuer_url = state.read().unwrap().issuer_url.clone();
+        let subject_did = format!("did:sauron:user:{}", &hex_ki[..16]);
+        let dob = payload.date_of_birth.clone();
+        let nat = payload.nationality.clone();
+        let state2 = Arc::clone(&state);
+        let hex_ki2 = hex_ki.clone();
+        tokio::spawn(async move {
+            let body = serde_json::json!({
+                "subjectDid": subject_did,
+                "claims": {
+                    "date_of_birth": dob,
+                    "nationality": nat,
+                    "document_number": "000000",
+                    "expiry_date": "2030-12-31",
+                }
+            });
+            match reqwest::Client::new()
+                .post(&format!("{}/register-credential", issuer_url))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    if let Ok(data) = r.json::<serde_json::Value>().await {
+                        if let Some(code) = data.get("pre-authorized_code").and_then(|v| v.as_str()) {
+                            // Store code in DB so /user/credential can claim it later.
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+                            if let Ok(db) = state2.read().unwrap().db.lock() {
+                                let _ = db.execute(
+                                    "INSERT OR REPLACE INTO credential_codes
+                                     (key_image_hex, pre_auth_code, subject_did, issued_at, claimed)
+                                     VALUES (?1,?2,?3,?4,0)",
+                                    params![hex_ki2, code, subject_did, ts],
+                                );
+                            }
+                            println!("[ZKP] Credential pre-auth stored for {} | code={}",
+                                &subject_did, &code[..8]);
+                        }
+                    }
+                }
+                Ok(r) => eprintln!("[ZKP][WARN] /register-credential returned {} (non-fatal)", r.status()),
+                Err(e) => eprintln!("[ZKP][WARN] Issuer unreachable (non-fatal): {}", e),
+            }
+        });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     Ok(Json(DevRegisterResponse {
         public_key_hex: hex_pk,
         message: format!("{} registered", payload.email),
@@ -576,11 +654,12 @@ async fn dev_get_kyc(
             if !verify_token(&st.token_secret, "TOKEN_B", &payload.token_b) {
                 return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid Token B signature"}))));
             }
-            let tv = token_value(&payload.token_b);
+            // Atomically claim the token: INSERT OR IGNORE, then check changes().
+            // If changes() == 0 another request already spent it.
+            let tv = token_value(&payload.token_b).to_string();
             let db = st.db.lock().unwrap();
-            let exists: bool = db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
-                params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
-            if exists {
+            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            if db.changes() == 0 {
                 return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error": "Token B already spent"}))));
             }
         }
@@ -621,14 +700,13 @@ async fn dev_get_kyc(
         ).map_err(|_| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Profile not found"}))))?
     };
 
-    // 5. Brûler le Token B + décrémenter solde du client.
+    // 5. Décrémenter solde du client (token already burned in step 1 for non-db_managed mode).
     {
         let mut st = state.write().unwrap();
         {
             let db = st.db.lock().unwrap();
             if !db_managed_mode {
-                let tv = token_value(&payload.token_b).to_string();
-                let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+                // Already inserted in step 1 — nothing to do here.
             }
             if !payload.site_name.is_empty() {
                 let _ = db.execute(
@@ -664,12 +742,11 @@ async fn dev_get_sites() -> Json<Vec<serde_json::Value>> {
 
 #[derive(Serialize)]
 struct DevClientRecord {
-    name:            String,
-    public_key_hex:  String,
-    private_key_hex: String,
-    key_image_hex:   String,
-    client_type:     String,
-    tokens_b:        i64,
+    name:           String,
+    public_key_hex: String,
+    key_image_hex:  String,
+    client_type:    String,
+    tokens_b:       i64,
 }
 
 async fn dev_get_clients(
@@ -678,16 +755,15 @@ async fn dev_get_clients(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_b FROM clients ORDER BY id"
+        "SELECT name, public_key_hex, key_image_hex, client_type, tokens_b FROM clients ORDER BY id"
     ).unwrap();
     let records: Vec<DevClientRecord> = stmt.query_map([], |row| {
         Ok(DevClientRecord {
-            name:            row.get(0)?,
-            public_key_hex:  row.get(1)?,
-            private_key_hex: row.get(2)?,
-            key_image_hex:   row.get(3)?,
-            client_type:     row.get(4)?,
-            tokens_b:        row.get(5)?,
+            name:           row.get(0)?,
+            public_key_hex: row.get(1)?,
+            key_image_hex:  row.get(2)?,
+            client_type:    row.get(3)?,
+            tokens_b:       row.get(4)?,
         })
     }).unwrap().flatten().collect();
     Json(records)
@@ -704,16 +780,15 @@ async fn dev_get_client_detail(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     db.query_row(
-        "SELECT name, public_key_hex, private_key_hex, key_image_hex, client_type, tokens_b
+        "SELECT name, public_key_hex, key_image_hex, client_type, tokens_b
          FROM clients WHERE name = ?1",
         params![name],
         |row| Ok(DevClientRecord {
-            name:            row.get(0)?,
-            public_key_hex:  row.get(1)?,
-            private_key_hex: row.get(2)?,
-            key_image_hex:   row.get(3)?,
-            client_type:     row.get(4)?,
-            tokens_b:        row.get(5)?,
+            name:           row.get(0)?,
+            public_key_hex: row.get(1)?,
+            key_image_hex:  row.get(2)?,
+            client_type:    row.get(3)?,
+            tokens_b:       row.get(4)?,
         }),
     ).map(Json).map_err(|_| StatusCode::NOT_FOUND)
 }
@@ -1068,12 +1143,11 @@ async fn dev_zkp_login(
             if !verify_token(&token_secret, "TOKEN_B", &payload.token_b) {
                 return Err((StatusCode::PAYMENT_REQUIRED, "Invalid Token B".into()));
             }
+            // Atomically claim: INSERT OR IGNORE then check changes().
             let tv = token_value(&payload.token_b).to_string();
             let db = st.db.lock().unwrap();
-            let exists: bool =
-                db.query_row("SELECT COUNT(*) FROM tokens_b_spent WHERE hash = ?1",
-                    params![tv], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
-            if exists {
+            let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
+            if db.changes() == 0 {
                 return Err((StatusCode::CONFLICT, "Token B already spent".into()));
             }
         }
@@ -1167,10 +1241,7 @@ async fn dev_zkp_login(
         let mut st = state.write().unwrap();
         {
             let db = st.db.lock().unwrap();
-            if !db_managed_mode {
-                let tv = token_value(&payload.token_b).to_string();
-                let _ = db.execute("INSERT OR IGNORE INTO tokens_b_spent (hash) VALUES (?1)", params![tv]);
-            }
+            // Token already burned atomically in step 1.
             let _ = db.execute(
                 "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
                 params![payload.site_name],
@@ -1262,6 +1333,470 @@ async fn data_put(
     Ok(Json(serde_json::json!({"ok": true, "company_id": company_id, "data_type": data_type})))
 }
 
+// ─────────────────────────────────────────────────────
+//  Phase 2: User Consent Flow
+//
+//  OAuth-style popup: retail site requests consent, user approves in a Sauron
+//  popup, site retrieves KYC using a one-time consent_token.
+//
+//  POST /kyc/request       — site asks for user consent (returns request_id + popup URL)
+//  GET  /kyc/consent_info  — consent page fetches request info (site name, claims)
+//  POST /kyc/consent       — user approves (email+password, dev mode)
+//  POST /kyc/retrieve      — site retrieves KYC using the consent_token
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct KycRequestBody {
+    /// Name of the site requesting consent.
+    site_name: String,
+    /// Attributes the site wants to receive (e.g. ["first_name","nationality"]).
+    #[serde(default)]
+    requested_claims: Vec<String>,
+    /// Optional redirect URL to postMessage the consent_token back to.
+    #[serde(default)]
+    redirect_origin: String,
+}
+
+#[derive(Serialize)]
+struct KycRequestResponse {
+    request_id: String,
+    consent_url: String,
+    expires_at: i64,
+}
+
+async fn kyc_request(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<KycRequestBody>,
+) -> Result<Json<KycRequestResponse>, (StatusCode, String)> {
+    if payload.site_name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "site_name required".into()));
+    }
+
+    // Verify the site is registered
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let exists: bool = db.query_row(
+            "SELECT COUNT(*) FROM clients WHERE name = ?1 AND client_type != 'BANK'",
+            params![payload.site_name],
+            |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
+        if !exists {
+            return Err((StatusCode::NOT_FOUND, format!("Site '{}' not found or is a bank", payload.site_name)));
+        }
+    }
+
+    // Generate request_id
+    use sha2::{Sha256, Digest as _};
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let mut h = Sha256::new();
+    h.update(payload.site_name.as_bytes());
+    h.update(&ts.to_le_bytes());
+    let request_id = hex::encode(&h.finalize()[..16]);
+
+    let claims_json = serde_json::to_string(&payload.requested_claims).unwrap_or_else(|_| "[]".into());
+    let expires_at = ts + 600; // 10 minutes
+
+    // Store pending consent request (user_key_image empty until user consents)
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        // We store metadata in a temp table entry in requests_log, and the actual
+        // consent row gets created when the user approves.
+        // For now, store it as a JSON blob in the detail column.
+        let detail = format!(
+            "request_id={} site={} claims={} origin={}",
+            request_id, payload.site_name, claims_json, payload.redirect_origin
+        );
+        let _ = db.execute(
+            "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1,'KYC_REQUEST','PENDING',?2)",
+            params![ts, detail],
+        );
+    }
+
+    let consent_url = format!(
+        "{}/consent?request_id={}&site={}&claims={}",
+        std::env::var("NEXT_PUBLIC_API_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+        request_id,
+        urlencoding_simple(&payload.site_name),
+        urlencoding_simple(&claims_json),
+    );
+
+    Ok(Json(KycRequestResponse { request_id, consent_url, expires_at }))
+}
+
+fn urlencoding_simple(s: &str) -> String {
+    s.chars().map(|c| {
+        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c.to_string() }
+        else { format!("%{:02X}", c as u32) }
+    }).collect()
+}
+
+#[derive(Serialize)]
+struct KycConsentInfo {
+    request_id: String,
+    site_name: String,
+    requested_claims: Vec<String>,
+    status: String,
+}
+
+async fn kyc_consent_info(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    axum::extract::Path(request_id): axum::extract::Path<String>,
+) -> Result<Json<KycConsentInfo>, (StatusCode, String)> {
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+
+    // First check if already consented
+    let consented: Option<(String, String)> = db.query_row(
+        "SELECT site_name, '' FROM consent_log WHERE request_id = ?1",
+        params![request_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).ok();
+
+    if let Some((site_name, _)) = consented {
+        return Ok(Json(KycConsentInfo {
+            request_id,
+            site_name,
+            requested_claims: vec![],
+            status: "granted".into(),
+        }));
+    }
+
+    // Look up the pending request in requests_log
+    let detail: String = db.query_row(
+        "SELECT detail FROM requests_log WHERE action_type='KYC_REQUEST' AND detail LIKE ?1 ORDER BY id DESC LIMIT 1",
+        params![format!("request_id={} %", request_id)],
+        |r| r.get(0),
+    ).map_err(|_| (StatusCode::NOT_FOUND, "Consent request not found or expired".into()))?;
+
+    // Parse detail string
+    let site_name = detail.split("site=").nth(1)
+        .and_then(|s| s.split(' ').next())
+        .unwrap_or("unknown").to_string();
+    let claims_raw = detail.split("claims=").nth(1)
+        .and_then(|s| s.split(" origin=").next())
+        .unwrap_or("[]");
+    let requested_claims: Vec<String> = serde_json::from_str(claims_raw).unwrap_or_default();
+
+    Ok(Json(KycConsentInfo {
+        request_id,
+        site_name,
+        requested_claims,
+        status: "pending".into(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct KycConsentBody {
+    request_id: String,
+    email: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct KycConsentResponse {
+    consent_token: String,
+    expires_at: i64,
+}
+
+async fn kyc_consent(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<KycConsentBody>,
+) -> Result<Json<KycConsentResponse>, (StatusCode, String)> {
+    // Validate the consent request exists and is pending
+    let (site_name, _claims_json) = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+
+        // Check not already consented
+        let already: bool = db.query_row(
+            "SELECT COUNT(*) FROM consent_log WHERE request_id = ?1",
+            params![payload.request_id],
+            |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
+        if already {
+            return Err((StatusCode::CONFLICT, "Consent already given for this request".into()));
+        }
+
+        let detail: String = db.query_row(
+            "SELECT detail FROM requests_log WHERE action_type='KYC_REQUEST' AND detail LIKE ?1 ORDER BY id DESC LIMIT 1",
+            params![format!("request_id={} %", payload.request_id)],
+            |r| r.get(0),
+        ).map_err(|_| (StatusCode::NOT_FOUND, "Consent request not found or expired".into()))?;
+
+        let site = detail.split("site=").nth(1)
+            .and_then(|s| s.split(' ').next())
+            .unwrap_or("unknown").to_string();
+        let claims = detail.split("claims=").nth(1)
+            .and_then(|s| s.split(" origin=").next())
+            .unwrap_or("[]").to_string();
+        (site, claims)
+    };
+
+    // Authenticate the user (dev mode: OPRF server-side)
+    let server_k = state.read().unwrap().k;
+    let oprf_result = dev_oprf_eval(server_k, &payload.email, &payload.password);
+    let user_identity = Identity::from_oprf(oprf_result);
+    let hex_ki = hex::encode(user_identity.key_image().compress().as_bytes());
+
+    // Verify user exists
+    {
+        let st = state.read().unwrap();
+        if !st.user_group.members.contains(&user_identity.public) {
+            return Err((StatusCode::NOT_FOUND, format!("{} is not registered on Sauron", payload.email)));
+        }
+    }
+
+    // Generate consent_token
+    use sha2::{Sha256, Digest as _};
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let mut h = Sha256::new();
+    h.update(payload.request_id.as_bytes());
+    h.update(hex_ki.as_bytes());
+    h.update(&ts.to_le_bytes());
+    let consent_token = hex::encode(&h.finalize()[..]);
+    let expires_at = ts + 300; // 5 minutes to use the token
+
+    // Store in consent_log
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO consent_log (request_id, user_key_image, site_name, granted_at, consent_token)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![payload.request_id, hex_ki, site_name, ts, consent_token],
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Also log the consent in requests_log
+        let _ = db.execute(
+            "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1,'KYC_CONSENT','OK',?2)",
+            params![ts, format!("site={} user={}", site_name, &hex_ki[..16])],
+        );
+    }
+
+    println!("[CONSENT] User {} consented for site {} | request_id={}", payload.email, site_name, payload.request_id);
+
+    Ok(Json(KycConsentResponse { consent_token, expires_at }))
+}
+
+#[derive(Deserialize)]
+struct KycRetrieveBody {
+    /// The consent_token returned to the site after user approval.
+    consent_token: String,
+    /// Site name (for balance decrement).
+    site_name: String,
+    /// Optional Groth16 ZKP proof submitted by the client.
+    #[serde(default)]
+    zkp_proof: Option<serde_json::Value>,
+    /// Circuit name for the ZKP proof (e.g. "AgeVerification").
+    #[serde(default)]
+    zkp_circuit: Option<String>,
+    /// Public signals for the ZKP proof.
+    #[serde(default)]
+    zkp_public_signals: Option<Vec<String>>,
+}
+
+async fn kyc_retrieve(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<KycRetrieveBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (user_ki, stored_site, token_used, issuing_agent_id) = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT user_key_image, site_name, token_used, issuing_agent_id FROM consent_log WHERE consent_token = ?1",
+            params![payload.consent_token],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)),
+        ).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid or expired consent token".into()))?
+    };
+
+    if token_used != 0 {
+        return Err((StatusCode::CONFLICT, "Consent token already used".into()));
+    }
+
+    if stored_site != payload.site_name {
+        return Err((StatusCode::UNAUTHORIZED, "Consent token was not issued for this site".into()));
+    }
+
+    // Verify site has enough tokens_b + determine client_type
+    let client_type: String = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let (balance, ctype): (i64, String) = db.query_row(
+            "SELECT tokens_b, client_type FROM clients WHERE name = ?1",
+            params![payload.site_name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|_| (StatusCode::UNAUTHORIZED, "Unknown site".into()))?;
+        if balance < 1 {
+            return Err((StatusCode::PAYMENT_REQUIRED, "Insufficient Token B balance".into()));
+        }
+        ctype
+    };
+
+    // Verify Groth16 proof via issuer if provided (required for ZKP_ONLY clients)
+    let groth16_verified: Option<bool> = if let Some(ref proof) = payload.zkp_proof {
+        let (circuit, signals) = (
+            payload.zkp_circuit.clone().unwrap_or_else(|| "AgeVerification".to_string()),
+            payload.zkp_public_signals.clone().unwrap_or_default(),
+        );
+        let issuer_url = state.read().unwrap().issuer_url.clone();
+        let verify_body = serde_json::json!({
+            "circuit": circuit,
+            "proof": proof,
+            "public_signals": signals
+        });
+        match reqwest::Client::new()
+            .post(format!("{issuer_url}/verify-proof"))
+            .json(&verify_body)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                let resp: serde_json::Value = r.json().await.unwrap_or_default();
+                let ok = resp.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+                Some(ok)
+            }
+            _ => Some(false),
+        }
+    } else {
+        None
+    };
+
+    // ZKP_ONLY clients must supply a valid proof
+    if client_type == "ZKP_ONLY" {
+        match groth16_verified {
+            Some(true) => {}
+            Some(false) => return Err((StatusCode::UNAUTHORIZED, "ZKP proof verification failed".into())),
+            None => return Err((StatusCode::BAD_REQUEST, "ZKP_ONLY site requires a zkp_proof in the request".into())),
+        }
+    }
+
+    // Fetch profile
+    let profile: UserData = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT first_name, last_name, email, date_of_birth, nationality FROM users WHERE key_image_hex = ?1",
+            params![user_ki],
+            |row| Ok(UserData {
+                first_name:    row.get(0)?,
+                last_name:     row.get(1)?,
+                email:         row.get(2)?,
+                date_of_birth: row.get(3)?,
+                nationality:   row.get(4)?,
+            }),
+        ).map_err(|_| (StatusCode::NOT_FOUND, "User profile not found".into()))?
+    };
+
+    // Mark token as used + decrement site tokens_b
+    {
+        let mut st = state.write().unwrap();
+        let db = st.db.lock().unwrap();
+        let _ = db.execute(
+            "UPDATE consent_log SET token_used = 1 WHERE consent_token = ?1",
+            params![payload.consent_token],
+        );
+        let _ = db.execute(
+            "UPDATE clients SET tokens_b = MAX(0, tokens_b - 1) WHERE name = ?1",
+            params![payload.site_name],
+        );
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let _ = db.execute(
+            "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp)
+             VALUES (?1, ?2, 'kyc_retrieval', ?3)",
+            params![payload.site_name, user_ki, ts],
+        );
+        drop(db);
+        st.total_tokens_b_burned += 1;
+        st.log("KYC_RETRIEVE", "OK", &format!("site={} user={}", payload.site_name, &user_ki[..16]));
+    }
+
+    // ── Ring membership verification ─────────────────────────────────────────
+    // Verify human is in user_group ring.
+    // If consent was issued by an agent, also verify agent is in agent_group ring.
+    // Agent inherits human's ring membership — site sees BOTH proofs.
+    let (human_in_user_ring, agent_in_agent_ring, agent_pub_key_hex) = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+
+        // Resolve human public key from DB
+        let human_pub_hex: Option<String> = db.query_row(
+            "SELECT public_key_hex FROM users WHERE key_image_hex = ?1",
+            params![user_ki],
+            |r| r.get(0),
+        ).ok();
+
+        let human_in_ring = if let Some(ref hex) = human_pub_hex {
+            if let Ok(bytes) = hex::decode(hex) {
+                if let Ok(arr) = bytes.try_into() as Result<[u8; 32], _> {
+                    if let Some(pt) = CompressedRistretto(arr).decompress() {
+                        st.user_group.members.contains(&pt)
+                    } else { false }
+                } else { false }
+            } else { false }
+        } else { false };
+
+        // If agent-issued consent, verify agent ring membership
+        let (agent_in_ring, agent_hex) = if let Some(ref aid) = issuing_agent_id {
+            let agent_hex: Option<String> = db.query_row(
+                "SELECT public_key_hex FROM agents WHERE agent_id = ?1 AND revoked = 0",
+                params![aid],
+                |r| r.get(0),
+            ).ok();
+            let in_ring = if let Some(ref hex) = agent_hex {
+                if !hex.is_empty() {
+                    if let Ok(bytes) = hex::decode(hex) {
+                        if let Ok(arr) = bytes.try_into() as Result<[u8; 32], _> {
+                            if let Some(pt) = CompressedRistretto(arr).decompress() {
+                                st.agent_group.members.contains(&pt)
+                            } else { false }
+                        } else { false }
+                    } else { false }
+                } else {
+                    // Agent registered without public key (A-JWT only flow) — trust via A-JWT
+                    true
+                }
+            } else { false };
+            (in_ring, agent_hex)
+        } else {
+            (false, None)
+        };
+
+        (human_in_ring, agent_in_ring, agent_hex)
+    };
+
+    let is_agent = issuing_agent_id.is_some();
+
+    println!("[CONSENT] KYC retrieved by site {} | is_agent={} user_ring={} agent_ring={}",
+        payload.site_name, is_agent, human_in_user_ring, agent_in_agent_ring);
+
+    let mut resp = serde_json::json!({
+        "profile": {
+            "first_name": profile.first_name,
+            "last_name": profile.last_name,
+            "email": profile.email,
+            "date_of_birth": profile.date_of_birth,
+            "nationality": profile.nationality,
+        },
+        // Identity provenance — site MUST know if human or agent acted
+        "identity": {
+            "is_agent": is_agent,
+            "agent_id": issuing_agent_id,
+            "agent_pub_key_hex": agent_pub_key_hex,
+            // Ring membership: both must be true for agent-initiated flow to be trusted
+            "human_in_user_ring": human_in_user_ring,
+            "agent_in_agent_ring": if is_agent { Some(agent_in_agent_ring) } else { None },
+            // Summary: trust = human verified + (if agent: agent also verified in its ring)
+            "trust_verified": human_in_user_ring && (!is_agent || agent_in_agent_ring),
+        }
+    });
+    if let Some(v) = groth16_verified {
+        resp["groth16_verified"] = serde_json::Value::Bool(v);
+    }
+    Ok(Json(resp))
+}
+
 /// GET /data/companies — liste tous les company_id qui ont des données.
 async fn data_companies(
     State(state): State<Arc<RwLock<ServerState>>>,
@@ -1276,4 +1811,650 @@ async fn data_companies(
         .filter_map(|r| r.ok())
         .collect();
     Ok(Json(serde_json::json!({"company_ids": ids})))
+}
+// ─────────────────────────────────────────────────────
+//  Helpers: user session (stateless HMAC, 1h TTL)
+// ─────────────────────────────────────────────────────
+
+fn issue_user_session(jwt_secret: &[u8], key_image: &str) -> (String, i64) {
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+    let payload = format!("{}|{}", key_image, expires_at);
+    let mut h = Sha256::new();
+    h.update(jwt_secret);
+    h.update(b"|SESSION|");
+    h.update(payload.as_bytes());
+    let sig = hex::encode(h.finalize());
+    (format!("{}|{}", payload, sig), expires_at)
+}
+
+fn verify_user_session(jwt_secret: &[u8], session: &str) -> Option<String> {
+    let pos = session.rfind('|')?;
+    let payload = &session[..pos];
+    let sig = &session[pos + 1..];
+    let mut h = Sha256::new();
+    h.update(jwt_secret);
+    h.update(b"|SESSION|");
+    h.update(payload.as_bytes());
+    if hex::encode(h.finalize()) != sig { return None; }
+    let pos2 = payload.rfind('|')?;
+    let expires_at: i64 = payload[pos2 + 1..].parse().ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    if expires_at < now { return None; }
+    Some(payload[..pos2].to_string())
+}
+
+fn session_key_image(headers: &HeaderMap, jwt_secret: &[u8]) -> Option<String> {
+    let val = headers.get("x-sauron-session")?.to_str().ok()?;
+    verify_user_session(jwt_secret, val)
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /user/auth — email+password → session token
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct UserAuthBody { email: String, password: String }
+
+async fn user_auth(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<UserAuthBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (server_k, jwt_secret) = {
+        let st = state.read().unwrap();
+        (st.k, st.jwt_secret.clone())
+    };
+    let oprf_result = dev_oprf_eval(server_k, &payload.email, &payload.password);
+    let identity = Identity::from_oprf(oprf_result);
+    {
+        let st = state.read().unwrap();
+        if !st.user_group.members.contains(&identity.public) {
+            return Err((StatusCode::UNAUTHORIZED, "User not registered".into()));
+        }
+    }
+    let key_image = hex::encode(identity.key_image().compress().as_bytes());
+    let profile: Option<(String, String)> = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT first_name, last_name FROM users WHERE key_image_hex = ?1",
+            params![key_image],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ).ok()
+    };
+    let (session, expires_at) = issue_user_session(&jwt_secret, &key_image);
+    Ok(Json(serde_json::json!({
+        "session": session,
+        "key_image": key_image,
+        "expires_at": expires_at,
+        "first_name": profile.as_ref().map(|p| &p.0).unwrap_or(&String::new()),
+        "last_name":  profile.as_ref().map(|p| &p.1).unwrap_or(&String::new()),
+    })))
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /user/profile
+// ─────────────────────────────────────────────────────
+
+async fn user_profile(
+    headers: HeaderMap,
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let key_image = session_key_image(&headers, &jwt_secret)
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session".into()))?;
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    let profile: UserData = db.query_row(
+        "SELECT first_name, last_name, email, date_of_birth, nationality FROM users WHERE key_image_hex = ?1",
+        params![key_image],
+        |r| Ok(UserData { first_name: r.get(0)?, last_name: r.get(1)?, email: r.get(2)?, date_of_birth: r.get(3)?, nationality: r.get(4)? }),
+    ).map_err(|_| (StatusCode::NOT_FOUND, "Profile not found".into()))?;
+    Ok(Json(serde_json::json!({
+        "key_image": key_image,
+        "first_name": profile.first_name,
+        "last_name": profile.last_name,
+        "email": profile.email,
+        "date_of_birth": profile.date_of_birth,
+        "nationality": profile.nationality,
+    })))
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /user/consents — list all consents for user
+// ─────────────────────────────────────────────────────
+
+async fn user_consents(
+    headers: HeaderMap,
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let key_image = session_key_image(&headers, &jwt_secret)
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session".into()))?;
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT request_id, site_name, granted_at, token_used, revoked FROM consent_log
+         WHERE user_key_image = ?1 ORDER BY granted_at DESC LIMIT 100"
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let rows: Vec<serde_json::Value> = stmt.query_map(params![key_image], |r| {
+        Ok(serde_json::json!({
+            "request_id":  r.get::<_, String>(0)?,
+            "site_name":   r.get::<_, String>(1)?,
+            "granted_at":  r.get::<_, i64>(2)?,
+            "used":        r.get::<_, i64>(3)? != 0,
+            "revoked":     r.get::<_, i64>(4)? != 0,
+        }))
+    }).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .filter_map(|r| r.ok()).collect();
+    Ok(Json(serde_json::json!({ "consents": rows })))
+}
+
+// ─────────────────────────────────────────────────────
+//  DELETE /user/consent/{request_id} — revoke a consent
+// ─────────────────────────────────────────────────────
+
+async fn user_revoke_consent(
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let key_image = session_key_image(&headers, &jwt_secret)
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session".into()))?;
+    let st = state.read().unwrap();
+    let db = st.db.lock().unwrap();
+    let n = db.execute(
+        "UPDATE consent_log SET revoked = 1 WHERE request_id = ?1 AND user_key_image = ?2",
+        params![request_id, key_image],
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if n == 0 {
+        return Err((StatusCode::NOT_FOUND, "Consent not found or not yours".into()));
+    }
+    Ok(Json(serde_json::json!({ "revoked": true })))
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /auth/device/issue — issue trusted device token
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DeviceIssueBody {
+    consent_token: String,
+    fingerprint: String,
+    site_name: String,
+}
+
+async fn device_issue(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<DeviceIssueBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Verify consent_token exists (used or unused both ok — user just proved they own it)
+    let user_ki = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT user_key_image FROM consent_log WHERE consent_token = ?1 AND site_name = ?2 AND revoked = 0",
+            params![payload.consent_token, payload.site_name],
+            |r| r.get::<_, String>(0),
+        ).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid consent token or site mismatch".into()))?
+    };
+
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let expires_at = now as i64 + 30 * 24 * 3600;
+
+    // Random-ish token_id (sha256 of nonce + user + site)
+    let token_id = {
+        let mut h = Sha256::new();
+        h.update(now.to_le_bytes());
+        h.update(payload.fingerprint.as_bytes());
+        h.update(user_ki.as_bytes());
+        h.update(payload.site_name.as_bytes());
+        hex::encode(h.finalize())
+    };
+    let device_token = format!("{}:{}", token_id, sign_token(&jwt_secret, "DEVICE", &token_id));
+
+    let token_hash = hex::encode(Sha256::digest(token_id.as_bytes()));
+    let fp_hash = hex::encode(Sha256::digest(payload.fingerprint.as_bytes()));
+
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO device_tokens (token_hash, user_key_image, site_name, fingerprint_hash, issued_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![token_hash, user_ki, payload.site_name, fp_hash, now as i64, expires_at],
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    Ok(Json(serde_json::json!({ "device_token": device_token, "expires_at": expires_at })))
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /auth/device/check — silent re-auth via device token
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DeviceCheckBody {
+    device_token: String,
+    site_name: String,
+    fingerprint: String,
+}
+
+async fn device_check(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<DeviceCheckBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+
+    if !verify_token(&jwt_secret, "DEVICE", &payload.device_token) {
+        return Ok(Json(serde_json::json!({ "valid": false, "reason": "bad_signature" })));
+    }
+
+    let token_id = token_value(&payload.device_token);
+    let token_hash = hex::encode(Sha256::digest(token_id.as_bytes()));
+    let fp_hash = hex::encode(Sha256::digest(payload.fingerprint.as_bytes()));
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+
+    let row: Option<(String, String, String, i64, i64)> = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT user_key_image, site_name, fingerprint_hash, expires_at, revoked FROM device_tokens WHERE token_hash = ?1",
+            params![token_hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).ok()
+    };
+
+    let (user_ki, stored_site, stored_fp, expires_at, revoked) = match row {
+        None => return Ok(Json(serde_json::json!({ "valid": false, "reason": "not_found" }))),
+        Some(r) => r,
+    };
+
+    if revoked != 0 || expires_at < now || stored_site != payload.site_name || stored_fp != fp_hash {
+        return Ok(Json(serde_json::json!({ "valid": false, "reason": "expired_or_mismatch" })));
+    }
+
+    // Issue a fresh silent consent_token
+    let nonce = now.to_string();
+    let consent_token = hex::encode(Sha256::digest(
+        format!("{}:{}:{}:{}", jwt_secret.len(), token_id, payload.site_name, nonce).as_bytes()
+    ));
+    let request_id = format!("device-{}-{}", &token_id[..12], nonce);
+
+    {
+        let mut st = state.write().unwrap();
+        let db = st.db.lock().unwrap();
+        let _ = db.execute(
+            "INSERT OR IGNORE INTO consent_log (request_id, user_key_image, site_name, granted_at, consent_token, token_used)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![request_id, user_ki, payload.site_name, now, consent_token],
+        );
+        st.log("DEVICE_SILENT", "OK", &format!("site={}", payload.site_name));
+    }
+
+    Ok(Json(serde_json::json!({ "valid": true, "consent_token": consent_token })))
+}
+
+// ─────────────────────────────────────────────────────
+//  GET /user/credential — fetch BabyJubJub VC for ZKP proofs (frictionless)
+//
+//  Called automatically by the consent popup after the user authenticates.
+//  No extra user action needed — credential retrieved in background.
+// ─────────────────────────────────────────────────────
+
+async fn user_get_credential(
+    headers: HeaderMap,
+    State(state): State<Arc<RwLock<ServerState>>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let key_image = session_key_image(&headers, &jwt_secret)
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session".into()))?;
+
+    // Look up pre-auth code
+    let (pre_auth_code, subject_did, claimed) = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT pre_auth_code, subject_did, claimed FROM credential_codes WHERE key_image_hex = ?1",
+            params![key_image],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+        ).map_err(|_| (StatusCode::NOT_FOUND, "No credential registered. Register via a bank or enroll first.".into()))?
+    };
+
+    if claimed != 0 {
+        // Already claimed — return cached VC from user_credentials table
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        if let Ok(vc_json) = db.query_row(
+            "SELECT credential_json FROM user_credentials WHERE key_image_hex = ?1",
+            params![key_image],
+            |r| r.get::<_, String>(0),
+        ) {
+            let vc: serde_json::Value = serde_json::from_str(&vc_json)
+                .unwrap_or(serde_json::json!({ "raw": vc_json }));
+            return Ok(Json(serde_json::json!({ "credential": vc, "cached": true })));
+        }
+    }
+
+    // Claim from issuer
+    let issuer_url = state.read().unwrap().issuer_url.clone();
+    let body = serde_json::json!({
+        "grant_type": "urn:ietf:params:oauth:grant-type:pre-authorized_code",
+        "pre-authorized_code": pre_auth_code,
+        "subject_did": subject_did,
+    });
+
+    let resp = reqwest::Client::new()
+        .post(format!("{issuer_url}/credential"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer unreachable: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err((StatusCode::BAD_GATEWAY, "Issuer returned error during credential claim".into()));
+    }
+
+    let vc: serde_json::Value = resp.json().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer response parse error: {e}")))?;
+
+    // Cache credential + mark code as claimed
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let _ = db.execute(
+            "INSERT OR REPLACE INTO user_credentials (key_image_hex, credential_json, issued_at) VALUES (?1,?2,?3)",
+            params![key_image, vc.to_string(), ts],
+        );
+        let _ = db.execute(
+            "UPDATE credential_codes SET claimed = 1 WHERE key_image_hex = ?1",
+            params![key_image],
+        );
+    }
+
+    Ok(Json(serde_json::json!({ "credential": vc, "cached": false })))
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /agent/kyc/consent — agent acts on behalf of human
+//
+//  Agent presents A-JWT → server validates → issues consent_token
+//  in the human owner's name → site can call /kyc/retrieve normally.
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AgentKycConsentBody {
+    /// A-JWT issued to the agent by SauronID.
+    ajwt: String,
+    /// Site requesting KYC.
+    site_name: String,
+    /// Consent request ID (from /kyc/request).
+    request_id: String,
+}
+
+async fn agent_kyc_consent(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<AgentKycConsentBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // 1. Verify A-JWT
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let claims = agent::verify_ajwt(&jwt_secret, &payload.ajwt)
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired A-JWT".into()))?;
+
+    let human_key_image = claims.get("sub").and_then(|v| v.as_str())
+        .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing sub claim".into()))?
+        .to_string();
+    let agent_id = claims.get("agent_id").and_then(|v| v.as_str())
+        .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing agent_id".into()))?
+        .to_string();
+
+    // 2. Verify agent not revoked
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let revoked: i64 = db.query_row(
+            "SELECT revoked FROM agents WHERE agent_id = ?1",
+            params![agent_id],
+            |r| r.get(0),
+        ).unwrap_or(1);
+        if revoked != 0 {
+            return Err((StatusCode::UNAUTHORIZED, "Agent has been revoked".into()));
+        }
+    }
+
+    // 3. Verify consent request exists + is for this site
+    let stored_site: String = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT site_name FROM consent_log WHERE request_id = ?1 AND token_used = 0 AND revoked = 0",
+            params![payload.request_id],
+            |r| r.get(0),
+        ).map_err(|_| (StatusCode::NOT_FOUND, "Consent request not found or already used".into()))?
+    };
+    if stored_site != payload.site_name {
+        return Err((StatusCode::UNAUTHORIZED, "Request ID does not match site_name".into()));
+    }
+
+    // 4. Issue consent_token for the human
+    let consent_token = {
+        let mut h = Sha256::new();
+        h.update(jwt_secret.as_slice());
+        h.update(b"|AGENT_CONSENT|");
+        h.update(payload.request_id.as_bytes());
+        h.update(human_key_image.as_bytes());
+        h.update(agent_id.as_bytes());
+        hex::encode(h.finalize())
+    };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let expires_at = now + 300;
+
+    {
+        let mut st = state.write().unwrap();
+        let db = st.db.lock().unwrap();
+        let _ = db.execute(
+            "UPDATE consent_log SET consent_token = ?1, user_key_image = ?2, granted_at = ?3, issuing_agent_id = ?4 WHERE request_id = ?5",
+            params![consent_token, human_key_image, now, agent_id, payload.request_id],
+        );
+        st.log("AGENT_KYC_CONSENT", "OK",
+            &format!("agent={} site={} human={}", &agent_id[..16], payload.site_name, &human_key_image[..16]));
+    }
+
+    println!("[AGENT] KYC consent issued | agent={} site={}", &agent_id[..16], payload.site_name);
+
+    Ok(Json(serde_json::json!({
+        "consent_token": consent_token,
+        "expires_at": expires_at,
+        "on_behalf_of": human_key_image,
+        "agent_id": agent_id,
+    })))
+}
+
+// ─────────────────────────────────────────────────────
+//  POST /agent/vc/issue — self-sovereign agent VC (KYA without banks)
+//
+//  Protocol:
+//    1. Human proves liveness (passed as liveness_proof).
+//       In prod: OPRF key_image proves uniqueness, liveness_confidence proves humanness.
+//       In dev: accepted if confidence ≥ 0.7 (mock provider).
+//    2. Sauron verifies the human is unique (key_image must not have issued >N VCs).
+//    3. Sauron issues a signed Agent VC:
+//         - agent_id, agent_checksum, human_key_image
+//         - scope (what the agent may do)
+//         - timestamp + expiry
+//         - Merkle-committed (tamper-evident log)
+//       Signed with server JWT secret (same trust anchor as A-JWT).
+//    4. VC stored in agent_vcs table.
+//    5. Optional: agent_checksum anchored to on-chain AgentDelegationRegistry
+//       (existing Solana/EVM contracts).
+//
+//  Trust chain: SauronID server key → VC → agent_id
+//  Verification by retail site: POST /agent/verify with A-JWT → server returns VC proof.
+// ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AgentVcIssueBody {
+    /// Human owner's key_image (OPRF-derived, collision-resistant).
+    human_key_image: String,
+    /// SHA-256 of agent's behavioral config (tamper detection).
+    agent_checksum: String,
+    /// Human-readable description of agent's purpose.
+    description: String,
+    /// JSON array of allowed actions, e.g. ["read:profile", "prove:age", "prove:nationality"].
+    scope: Vec<String>,
+    /// Liveness proof from mock or real provider.
+    /// { confidence: 0-1, method: "passive"|"active", provider: string }
+    liveness_proof: serde_json::Value,
+    /// Lifetime hours (default 24, max 720).
+    #[serde(default = "default_vc_ttl")]
+    ttl_hours: i64,
+}
+
+fn default_vc_ttl() -> i64 { 24 }
+
+async fn agent_vc_issue(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<AgentVcIssueBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if payload.human_key_image.is_empty() || payload.agent_checksum.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "human_key_image and agent_checksum required".into()));
+    }
+
+    // 1. Validate liveness proof
+    let liveness_confidence = payload.liveness_proof
+        .get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let liveness_alive = payload.liveness_proof
+        .get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if !liveness_alive || liveness_confidence < 0.7 {
+        return Err((StatusCode::FORBIDDEN,
+            format!("Liveness check failed: alive={} confidence={:.2}. Minimum confidence 0.70 required.",
+                liveness_alive, liveness_confidence)));
+    }
+
+    // 2. Uniqueness check — each human may issue at most 10 active VCs
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let active_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM agent_vcs
+             WHERE agent_id IN (SELECT agent_id FROM agents WHERE human_key_image = ?1)
+             AND revoked = 0 AND expires_at > ?2",
+            params![payload.human_key_image, now],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if active_count >= 10 {
+            return Err((StatusCode::TOO_MANY_REQUESTS,
+                "Maximum 10 active agent VCs per human. Revoke some first.".into()));
+        }
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let ttl_secs = payload.ttl_hours.clamp(1, 720) * 3600;
+    let expires_at = now + ttl_secs;
+
+    // 3. Derive agent_id
+    let agent_id = {
+        let mut h = Sha256::new();
+        h.update(payload.agent_checksum.as_bytes());
+        h.update(payload.human_key_image.as_bytes());
+        h.update(&now.to_le_bytes());
+        format!("agt_{}", &hex::encode(h.finalize())[..24])
+    };
+
+    // 4. Build VC (self-sovereign, Sauron as issuer)
+    let vc = serde_json::json!({
+        "@context": [
+            "https://www.w3.org/2018/credentials/v1",
+            "https://sauronid.io/credentials/agent/v1"
+        ],
+        "id": format!("urn:sauronid:agent-vc:{}", agent_id),
+        "type": ["VerifiableCredential", "SauronAgentCredential"],
+        "issuer": "did:sauron:idp",
+        "issuanceDate": now,
+        "expirationDate": expires_at,
+        "credentialSubject": {
+            "id": format!("did:sauron:agent:{}", agent_id),
+            "agentId": agent_id,
+            "agentChecksum": payload.agent_checksum,
+            "humanOwner": format!("did:sauron:user:{}", &payload.human_key_image[..16]),
+            "description": payload.description,
+            "scope": payload.scope,
+            "liveness": {
+                "confidence": liveness_confidence,
+                "provider": payload.liveness_proof.get("provider").and_then(|v| v.as_str()).unwrap_or("mock"),
+                "method": payload.liveness_proof.get("method").and_then(|v| v.as_str()).unwrap_or("passive"),
+                "verifiedAt": now,
+            },
+            "rootOfTrust": "did:sauron:idp"  // SauronID = sole authority, no external dependency
+        },
+    });
+
+    // 5. Sign VC (HMAC-SHA256 over canonical JSON — same trust anchor as A-JWT)
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let vc_canonical = vc.to_string();
+    let mut h = Sha256::new();
+    h.update(&jwt_secret);
+    h.update(b"|VC|");
+    h.update(vc_canonical.as_bytes());
+    let vc_hash = hex::encode(h.finalize());
+
+    // 6. Persist in agents + agent_vcs tables
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        // Register in agents table (so A-JWT flow works normally)
+        db.execute(
+            "INSERT OR REPLACE INTO agents
+             (agent_id, human_key_image, agent_checksum, intent_json, public_key_hex, issued_at, expires_at, revoked)
+             VALUES (?1,?2,?3,?4,'',?5,?6,0)",
+            params![
+                agent_id,
+                payload.human_key_image,
+                payload.agent_checksum,
+                serde_json::json!({ "description": payload.description, "scope": payload.scope }).to_string(),
+                now, expires_at,
+            ],
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Persist VC
+        db.execute(
+            "INSERT OR REPLACE INTO agent_vcs (agent_id, vc_json, liveness_passed, vc_hash, issued_at, expires_at)
+             VALUES (?1,?2,1,?3,?4,?5)",
+            params![agent_id, vc_canonical, vc_hash, now, expires_at],
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // 7. Forge A-JWT so agent can start using it immediately
+    let ajwt = agent::forge_ajwt(
+        &jwt_secret,
+        &payload.human_key_image,
+        &agent_id,
+        &payload.agent_checksum,
+        &serde_json::json!({ "description": payload.description, "scope": payload.scope }).to_string(),
+        ttl_secs,
+    );
+
+    {
+        let st = state.read().unwrap();
+        st.log("AGENT_VC_ISSUE", "OK",
+            &format!("agent={} human={}", &agent_id[..16], &payload.human_key_image[..16]));
+    }
+
+    println!("[KYA] Self-sovereign VC issued | agent={} liveness={:.2} scope={:?}",
+        &agent_id[..16], liveness_confidence, payload.scope);
+
+    Ok(Json(serde_json::json!({
+        "agent_id": agent_id,
+        "vc": vc,
+        "vc_hash": vc_hash,
+        "ajwt": ajwt,
+        "expires_at": expires_at,
+        "trust_chain": "SauronID self-sovereign (no bank dependency)",
+        "liveness_confidence": liveness_confidence,
+    })))
 }

@@ -1,28 +1,30 @@
 use rusqlite::Connection;
 
-/// Ouvre une base SQLite **en mémoire** (vierge à chaque démarrage) et initialise le schéma.
+/// Ouvre une base SQLite persistante (chemin depuis DATABASE_PATH, défaut ./sauron.db).
 pub fn open_db() -> Connection {
-    let conn = Connection::open_in_memory().expect("cannot open in-memory SQLite");
+    let path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./sauron.db".to_string());
+    let conn = Connection::open(&path).unwrap_or_else(|e| {
+        panic!("cannot open SQLite at '{}': {}", path, e)
+    });
     init_schema(&conn);
-    println!("[DB] In-memory SQLite initialized.");
+    println!("[DB] SQLite opened at '{}'.", path);
     conn
 }
 
-/// Crée toutes les tables au premier démarrage.
+/// Crée toutes les tables si elles n'existent pas encore (idempotent).
 pub fn init_schema(conn: &Connection) {
     conn.execute_batch("
         PRAGMA journal_mode = WAL;
+        PRAGMA foreign_keys = ON;
 
-        -- Sites partenaires (Issuers KYC + Receivers ZKP)
-        -- Les clés privées sont stockées exceptionnellement pour le hackathon
-        -- afin d'être servies au frontend via /dev/clients.
+        -- Sites partenaires (banks + retail sites)
         CREATE TABLE IF NOT EXISTS clients (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             name            TEXT    UNIQUE NOT NULL,
             public_key_hex  TEXT    NOT NULL,
             private_key_hex TEXT    NOT NULL,
             key_image_hex   TEXT    NOT NULL,
-            client_type     TEXT    NOT NULL CHECK(client_type IN ('FULL_KYC', 'ZKP_ONLY')),
+            client_type     TEXT    NOT NULL CHECK(client_type IN ('FULL_KYC', 'ZKP_ONLY', 'BANK')),
             tokens_a        INTEGER NOT NULL DEFAULT 0,
             tokens_b        INTEGER NOT NULL DEFAULT 0
         );
@@ -38,7 +40,15 @@ pub fn init_schema(conn: &Connection) {
             nationality     TEXT NOT NULL DEFAULT ''
         );
 
-        -- Relation Client ↔ User (qui a onboardé qui, qui a récupéré le KYC de qui)
+        -- Credentials ZKP signés par l'issuer BabyJubJub pour chaque utilisateur.
+        -- Stockés côté serveur pour être récupérés par le client (consent popup).
+        CREATE TABLE IF NOT EXISTS user_credentials (
+            key_image_hex   TEXT PRIMARY KEY,
+            credential_json TEXT NOT NULL,
+            issued_at       INTEGER NOT NULL
+        );
+
+        -- Relation Client <-> User
         CREATE TABLE IF NOT EXISTS user_registrations (
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
             client_name        TEXT    NOT NULL,
@@ -48,13 +58,40 @@ pub fn init_schema(conn: &Connection) {
             UNIQUE(client_name, user_key_image_hex, source)
         );
 
-        -- Tokens A brûlés lors des échanges (Flux 2) — anti-double-dépense
-        CREATE TABLE IF NOT EXISTS tokens_a_burned (
+        -- Consentements utilisateur (RGPD-auditable).
+        CREATE TABLE IF NOT EXISTS consent_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id      TEXT    UNIQUE NOT NULL,
+            user_key_image  TEXT    NOT NULL,
+            site_name       TEXT    NOT NULL,
+            granted_at      INTEGER NOT NULL,
+            consent_token   TEXT    UNIQUE,
+            token_used      INTEGER NOT NULL DEFAULT 0,
+            revoked         INTEGER NOT NULL DEFAULT 0,
+            -- non-null when consent was granted by an agent (not the human directly)
+            issuing_agent_id TEXT   DEFAULT NULL
+        );
+
+        -- Agents IA délégués par des utilisateurs humains.
+        CREATE TABLE IF NOT EXISTS agents (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id         TEXT    UNIQUE NOT NULL,
+            human_key_image  TEXT    NOT NULL,
+            agent_checksum   TEXT    NOT NULL,
+            intent_json      TEXT    NOT NULL DEFAULT '{}',
+            public_key_hex   TEXT    NOT NULL,
+            issued_at        INTEGER NOT NULL,
+            expires_at       INTEGER NOT NULL,
+            revoked          INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- Tokens B dépensés (anti-double-dépense)
+        CREATE TABLE IF NOT EXISTS tokens_b_spent (
             hash TEXT PRIMARY KEY
         );
 
-        -- Tokens B dépensés lors des récupérations KYC/ZKP (Flux 3) — anti-double-dépense
-        CREATE TABLE IF NOT EXISTS tokens_b_spent (
+        -- Tokens A brûlés (legacy, conservé pour compatibilité)
+        CREATE TABLE IF NOT EXISTS tokens_a_burned (
             hash TEXT PRIMARY KEY
         );
 
@@ -67,8 +104,7 @@ pub fn init_schema(conn: &Connection) {
             detail      TEXT    NOT NULL DEFAULT ''
         );
 
-        -- Données analytics pré-calculées (stats, forecast, fraud)
-        -- Stockées comme blobs JSON par company_id + data_type.
+        -- Données analytics pré-calculées
         CREATE TABLE IF NOT EXISTS company_data (
             company_id  INTEGER NOT NULL,
             data_type   TEXT    NOT NULL CHECK(data_type IN ('stats', 'forecast', 'fraud_summary', 'fraud_recent')),
@@ -76,15 +112,42 @@ pub fn init_schema(conn: &Connection) {
             PRIMARY KEY (company_id, data_type)
         );
 
-        -- Commitment Ledger (Merkle Tree — Préparation Solana).
-        -- Chaque ligne représente une feuille de l'arbre de Merkle :
-        -- le commitment est le SHA256 d'un secret généré par le client KYC.
-        -- Cet ordre chronologique permet de reconstruire l'arbre en mémoire
-        -- au redémarrage du serveur avec une fidélité bit-à-bit.
+        -- Commitment Ledger (Merkle Tree)
         CREATE TABLE IF NOT EXISTS merkle_leaves (
             seq             INTEGER PRIMARY KEY AUTOINCREMENT,
             commitment_hex  TEXT    NOT NULL UNIQUE,
             registered_at   INTEGER NOT NULL
+        );
+
+        -- ZKP pre-auth codes (issuer credential claims)
+        CREATE TABLE IF NOT EXISTS credential_codes (
+            key_image_hex   TEXT    PRIMARY KEY,
+            pre_auth_code   TEXT    NOT NULL,
+            subject_did     TEXT    NOT NULL,
+            issued_at       INTEGER NOT NULL,
+            claimed         INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- Self-sovereign agent VCs (KYA independent path)
+        CREATE TABLE IF NOT EXISTS agent_vcs (
+            agent_id        TEXT    PRIMARY KEY,
+            vc_json         TEXT    NOT NULL,
+            liveness_passed INTEGER NOT NULL DEFAULT 0,
+            vc_hash         TEXT    NOT NULL,
+            issued_at       INTEGER NOT NULL,
+            expires_at      INTEGER NOT NULL,
+            revoked         INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- Trusted device tokens (silent re-auth)
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            token_hash      TEXT    PRIMARY KEY,
+            user_key_image  TEXT    NOT NULL,
+            site_name       TEXT    NOT NULL,
+            fingerprint_hash TEXT   NOT NULL,
+            issued_at       INTEGER NOT NULL,
+            expires_at      INTEGER NOT NULL,
+            revoked         INTEGER NOT NULL DEFAULT 0
         );
     ").expect("DB schema init failed");
 }
