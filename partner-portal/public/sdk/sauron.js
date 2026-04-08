@@ -6,7 +6,7 @@
  * Usage:
  *   <script src="https://your-domain/sdk/sauron.js"></script>
  *   <div data-sauron-site="YourSite"
- *        data-sauron-claims="first_name,nationality"
+ *        data-sauron-claims="age_over_threshold,age_threshold"
  *        data-sauron-api="http://localhost:3001"></div>
  *
  *   Or programmatically:
@@ -88,10 +88,22 @@
     this.config = Object.assign({
       apiUrl: 'http://localhost:3001',
       portalUrl: 'http://localhost:3000',
-      claims: ['first_name', 'last_name', 'nationality'],
+      claims: ['age_over_threshold', 'age_threshold'],
       buttonText: 'Continue with SauronID',
       theme: 'dark',
       silentAuth: true,
+      autoZkpMode: 'browser',
+      proverModuleUrl: null,
+      snarkjsCdn: 'https://cdn.jsdelivr.net/npm/snarkjs@0.7.6/build/snarkjs.min.js',
+      minAge: 18,
+      preferredCircuit: 'CredentialVerification',
+      requiredNationalityHash: '0',
+      ageCircuitWasmUrl: null,
+      ageCircuitZkeyUrl: null,
+      credentialCircuitWasmUrl: null,
+      credentialCircuitZkeyUrl: null,
+      requiredAction: null,
+      getZkpPresentation: null,
       onSuccess: function () {},
       onError: function (err) { console.error('[SauronID]', err); },
       onLoading: function () {},
@@ -99,6 +111,8 @@
     }, config);
     this._fp = getFingerprint();
     this._storageKey = 'sauron_device_' + this.config.siteName;
+    this._sessionStorageKey = this._storageKey + '_session';
+    this._proverModulePromise = null;
   }
 
   // ── Render button into element ────────────────────────────────────────────
@@ -165,20 +179,30 @@
     .then(function (data) {
       if (!data.valid) {
         self._clearDeviceToken();
+        self._clearUserSession();
         self._renderButton(el || self._container);
         self._setLoading(false);
         return;
       }
-      // Retrieve KYC with consent_token
-      return self._retrieveProfile(data.consent_token);
+      var userSession = data.user_session || self._loadUserSession();
+      if (!userSession) {
+        self._clearDeviceToken();
+        self._renderButton(el || self._container);
+        self._setLoading(false);
+        return;
+      }
+      self._saveUserSession(userSession);
+      return self._retrieveProfile(data.consent_token, { userSession: userSession });
     })
     .then(function (profile) {
       if (!profile) return;
-      self._renderBadge(el || self._container, profile.first_name);
+      self._setLoading(false);
+      self._renderBadge(el || self._container, null);
       self.config.onSuccess(profile);
     })
     .catch(function (err) {
       self._clearDeviceToken();
+      self._clearUserSession();
       self._renderButton(el || self._container);
       self._setLoading(false);
     });
@@ -216,7 +240,7 @@
       }
 
       // 4. Wait for postMessage
-      var consent_token = await new Promise(function (resolve, reject) {
+      var consent_data = await new Promise(function (resolve, reject) {
         var timeout = setTimeout(function () {
           window.removeEventListener('message', handler);
           reject(new Error('Consent timed out'));
@@ -228,7 +252,7 @@
           clearTimeout(timeout);
           window.removeEventListener('message', handler);
           if (event.data && event.data.type === 'sauron_consent') {
-            resolve(event.data.consent_token);
+            resolve(event.data);
           } else {
             reject(new Error('User denied consent'));
           }
@@ -236,8 +260,16 @@
         window.addEventListener('message', handler);
       });
 
+      var consent_token = consent_data.consent_token;
+      if (!consent_token) throw new Error('Consent token missing from popup response');
+      if (consent_data.user_session) {
+        self._saveUserSession(consent_data.user_session);
+      }
+
       // 5. Retrieve profile
-      var profile = await self._retrieveProfile(consent_token);
+      var profile = await self._retrieveProfile(consent_token, {
+        userSession: consent_data.user_session || self._loadUserSession(),
+      });
 
       // 6. Issue device token for future silent auth
       try {
@@ -257,7 +289,8 @@
       } catch (_) { /* non-critical */ }
 
       // 7. Update UI + callback
-      self._renderBadge(self._container, profile.first_name);
+      self._setLoading(false);
+      self._renderBadge(self._container, null);
       self.config.onSuccess(profile);
 
     } catch (err) {
@@ -267,18 +300,138 @@
   };
 
   // ── Retrieve profile from consent token ──────────────────────────────────
-  SauronID.prototype._retrieveProfile = async function (consent_token) {
+  SauronID.prototype._ensureProverModule = function () {
+    var self = this;
+    if (global.SauronZKProver) {
+      return Promise.resolve(global.SauronZKProver);
+    }
+
+    if (this._proverModulePromise) {
+      return this._proverModulePromise;
+    }
+
+    this._proverModulePromise = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      var base = self.config.portalUrl.replace(/\/$/, '');
+      script.src = self.config.proverModuleUrl || (base + '/sdk/zkp-prover.js');
+      script.async = true;
+      script.onload = function () {
+        if (global.SauronZKProver) {
+          resolve(global.SauronZKProver);
+        } else {
+          reject(new Error('Prover module loaded but global SauronZKProver missing'));
+        }
+      };
+      script.onerror = function () {
+        reject(new Error('Failed to load Sauron ZKP prover module'));
+      };
+      document.head.appendChild(script);
+    });
+
+    return this._proverModulePromise;
+  };
+
+  SauronID.prototype._getBrowserPresentation = async function (ctx) {
+    if (!ctx.userSession) {
+      throw new Error('User session required for browser auto-prover mode');
+    }
+    var prover = await this._ensureProverModule();
+    var base = this.config.portalUrl.replace(/\/$/, '');
+    var credentialWasmUrl = this.config.credentialCircuitWasmUrl || (base + '/circuits/CredentialVerification.wasm');
+    var credentialZkeyUrl = this.config.credentialCircuitZkeyUrl || (base + '/circuits/CredentialVerification_final.zkey');
+    var ageWasmUrl = this.config.ageCircuitWasmUrl || (base + '/circuits/AgeVerification.wasm');
+    var ageZkeyUrl = this.config.ageCircuitZkeyUrl || (base + '/circuits/AgeVerification_final.zkey');
+
+    if (this.config.preferredCircuit !== 'AgeVerification') {
+      try {
+        return await prover.generateCredentialPresentation({
+          apiUrl: this.config.apiUrl,
+          userSession: ctx.userSession,
+          minAge: this.config.minAge,
+          requiredNationalityHash: this.config.requiredNationalityHash,
+          wasmUrl: credentialWasmUrl,
+          zkeyUrl: credentialZkeyUrl,
+          snarkjsCdn: this.config.snarkjsCdn,
+        });
+      } catch (_) {
+        // Fall back to age-only circuit if credential circuit assets/material unavailable.
+      }
+    }
+
+    return prover.generateAgePresentation({
+      apiUrl: this.config.apiUrl,
+      userSession: ctx.userSession,
+      minAge: this.config.minAge,
+      wasmUrl: ageWasmUrl,
+      zkeyUrl: ageZkeyUrl,
+      snarkjsCdn: this.config.snarkjsCdn,
+    });
+  };
+
+  SauronID.prototype._getDevPresentation = function () {
+    return {
+      proof: {
+        dev_mock: true,
+        protocol: 'groth16',
+        curve: 'bn128',
+      },
+      circuit: 'AgeVerification',
+      public_signals: ['1', String(this.config.minAge || 18)],
+    };
+  };
+
+  SauronID.prototype._resolvePresentation = async function (consent_token, opts) {
+    var ctx = Object.assign({}, opts || {}, {
+      consent_token: consent_token,
+      site_name: this.config.siteName,
+      claims: this.config.claims,
+    });
+
+    if (typeof this.config.getZkpPresentation === 'function') {
+      return this.config.getZkpPresentation(ctx);
+    }
+
+    if (this.config.autoZkpMode === 'browser') {
+      return this._getBrowserPresentation(ctx);
+    }
+
+    if (this.config.autoZkpMode === 'dev') {
+      return this._getDevPresentation();
+    }
+
+    throw new Error('No ZKP presenter configured. Provide getZkpPresentation(), or set autoZkpMode to "browser" or "dev".');
+  };
+
+  SauronID.prototype._inferRequiredAction = function () {
+    if (this.config.requiredAction) return this.config.requiredAction;
+    var claims = this.config.claims || [];
+    if (claims.indexOf('nationality_match') !== -1) return 'prove_nationality';
+    if (claims.indexOf('age_over_threshold') !== -1 || claims.indexOf('age_threshold') !== -1) return 'prove_age';
+    return 'read_identity';
+  };
+
+  SauronID.prototype._retrieveProfile = async function (consent_token, opts) {
+    var presentation = await this._resolvePresentation(consent_token, opts);
+
+    if (!presentation || !presentation.proof || !presentation.public_signals) {
+      throw new Error('getZkpPresentation() returned an invalid payload');
+    }
+
     var res = await fetch(this.config.apiUrl + '/kyc/retrieve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         consent_token: consent_token,
         site_name: this.config.siteName,
+        required_action: this._inferRequiredAction(),
+        zkp_proof: presentation.proof,
+        zkp_circuit: presentation.circuit || 'CredentialVerification',
+        zkp_public_signals: presentation.public_signals,
       }),
     });
-    if (!res.ok) throw new Error('Profile retrieval failed');
+    if (!res.ok) throw new Error('ZKP retrieval failed');
     var data = await res.json();
-    return data.profile || data;
+    return data;
   };
 
   // ── Device token storage ──────────────────────────────────────────────────
@@ -292,9 +445,21 @@
     try { localStorage.removeItem(this._storageKey); } catch (_) {}
   };
 
+  SauronID.prototype._saveUserSession = function (session) {
+    if (!session) return;
+    try { localStorage.setItem(this._sessionStorageKey, session); } catch (_) {}
+  };
+  SauronID.prototype._loadUserSession = function () {
+    try { return localStorage.getItem(this._sessionStorageKey); } catch (_) { return null; }
+  };
+  SauronID.prototype._clearUserSession = function () {
+    try { localStorage.removeItem(this._sessionStorageKey); } catch (_) {}
+  };
+
   // ── Logout ────────────────────────────────────────────────────────────────
   SauronID.prototype.logout = function () {
     this._clearDeviceToken();
+    this._clearUserSession();
     if (this._container) this._renderButton(this._container);
   };
 
@@ -309,8 +474,9 @@
 
       var sdk = new SauronID({
         siteName: siteName,
-        claims: claims.length ? claims : ['first_name', 'last_name', 'nationality'],
+        claims: claims.length ? claims : ['age_over_threshold', 'age_threshold'],
         apiUrl: apiUrl,
+        portalUrl: window.location.origin,
         buttonText: btnText,
         onSuccess: function (profile) {
           var ev = new CustomEvent('sauronid:success', { detail: profile, bubbles: true });
@@ -320,6 +486,7 @@
           var ev = new CustomEvent('sauronid:error', { detail: err.message, bubbles: true });
           el.dispatchEvent(ev);
         },
+        autoZkpMode: 'browser',
       });
       sdk.render(el);
     });

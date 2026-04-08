@@ -97,10 +97,38 @@ export default function ConsentPage() {
 
       setStep("granted");
 
+      // Authenticate user session so the SDK can fetch credential + generate proof locally.
+      let userSession: string | null = null;
+      try {
+        const authRes = await fetch(`${KYC_API}/user/auth`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        if (authRes.ok) {
+          const authData = await authRes.json();
+          userSession = authData.session || null;
+          if (userSession) {
+            // Warm credential cache now to minimize latency in opener app.
+            await fetch(`${KYC_API}/user/credential`, {
+              method: "GET",
+              headers: { "x-sauron-session": userSession },
+            }).catch(() => null);
+          }
+        }
+      } catch {
+        // Non-fatal. SDK can still proceed if it has another valid session.
+      }
+
       // Post the consent_token back to the opener, then close
       if (window.opener) {
         window.opener.postMessage(
-          { type: "sauron_consent", consent_token: data.consent_token, request_id: requestId },
+          {
+            type: "sauron_consent",
+            consent_token: data.consent_token,
+            user_session: userSession,
+            request_id: requestId,
+          },
           openerOrigin
         );
       }
@@ -122,16 +150,16 @@ export default function ConsentPage() {
   }, [requestId, openerOrigin]);
 
   const claimLabels: Record<string, string> = {
-    first_name: "First name",
-    last_name: "Last name",
-    email: "Email address",
-    date_of_birth: "Date of birth",
-    nationality: "Nationality",
+    age_over_threshold: "Age over threshold (ZKP)",
+    age_threshold: "Requested age threshold value",
+    credential_valid: "Credential validity proof (ZKP)",
+    nationality_match: "Nationality match proof (ZKP)",
+    merkle_inclusion: "Ledger inclusion proof (ZKP)",
   };
 
   const displayClaims = requestedClaims.length > 0
     ? requestedClaims
-    : ["first_name", "last_name", "nationality"];
+    : ["age_over_threshold", "age_threshold"];
 
   return (
     <div style={{

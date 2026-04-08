@@ -11,10 +11,10 @@ const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function post(url: string, body: unknown) {
+async function post(url: string, body: unknown, headers?: Record<string, string>) {
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(body),
   });
   return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
@@ -140,6 +140,7 @@ export default function TestPage() {
   // Shared state — user session persists across flows
   const [session, setSession] = useState("");
   const [keyImage, setKeyImage] = useState("");
+  const [publicKeyHex, setPublicKeyHex] = useState("");
 
   // ── Flow 0: Register user (dev) ───────────────────────────────────────────
   const [regEmail, setRegEmail] = useState("alice@test.com");
@@ -148,7 +149,7 @@ export default function TestPage() {
   const [regLast, setRegLast] = useState("Martin");
   const [regDob, setRegDob] = useState("1990-03-15");
   const [regNat, setRegNat] = useState("FR");
-  const [regSite, setRegSite] = useState("TestSite");
+  const [regSite, setRegSite] = useState("Discord");
   const [regLoading, setRegLoading] = useState(false);
   const [regResult, setRegResult] = useState<Result>(null);
 
@@ -159,6 +160,9 @@ export default function TestPage() {
       date_of_birth: regDob, nationality: regNat, site_name: regSite,
     });
     setRegResult(r);
+    if (r.ok && (r.data as any).public_key_hex) {
+      setPublicKeyHex((r.data as any).public_key_hex);
+    }
     setRegLoading(false);
   };
 
@@ -191,7 +195,7 @@ export default function TestPage() {
   };
 
   // ── Flow 3: Human KYC consent → retrieve (shows ring) ────────────────────
-  const [kycSite, setKycSite] = useState("TestSite");
+  const [kycSite, setKycSite] = useState("Discord");
   const [kycLoading, setKycLoading] = useState(false);
   const [kycResult, setKycResult] = useState<Result>(null);
   const [kycConsentToken, setKycConsentToken] = useState("");
@@ -203,7 +207,7 @@ export default function TestPage() {
     // 1. Create consent request
     const reqR = await post(`${API}/kyc/request`, {
       site_name: kycSite,
-      requested_claims: ["first_name", "last_name", "nationality"],
+      requested_claims: ["age_over_threshold", "age_threshold"],
     });
     if (!reqR.ok) { setKycResult(reqR); setKycLoading(false); return; }
     const { request_id, consent_url } = reqR.data as any;
@@ -230,7 +234,14 @@ export default function TestPage() {
     setKycConsentToken(consent_token);
 
     // 4. Retrieve — server returns identity.is_agent + ring membership
-    const retR = await post(`${API}/kyc/retrieve`, { consent_token, site_name: kycSite });
+    const retR = await post(`${API}/kyc/retrieve`, {
+      consent_token,
+      site_name: kycSite,
+      required_action: "prove_age",
+      zkp_proof: { dev_mock: true },
+      zkp_circuit: "AgeVerification",
+      zkp_public_signals: ["1", "18"],
+    });
     setKycResult(retR);
     setKycLoading(false);
   }, [kycSite]);
@@ -253,8 +264,9 @@ export default function TestPage() {
       human_key_image: agentHuman,
       agent_checksum: agentChecksum,
       intent_json: JSON.stringify({ description: agentDesc, scope: ["prove:age", "prove:nationality"] }),
+      public_key_hex: publicKeyHex,
       ttl_secs: parseInt(agentTtl),
-    });
+    }, session ? { "x-sauron-session": session } : undefined);
     setAgentResult(r);
     if (r.ok && (r.data as any).ajwt) {
       setStoredAjwt((r.data as any).ajwt);
@@ -284,7 +296,7 @@ export default function TestPage() {
       scope: vcScope.split(",").map(s => s.trim()),
       liveness_proof: { alive: true, confidence: parseFloat(vcLiveness), method: "passive", provider: "mock" },
       ttl_hours: parseInt(vcTtl),
-    });
+    }, session ? { "x-sauron-session": session } : undefined);
     setVcResult(r);
     if (r.ok && (r.data as any).ajwt) {
       setStoredAjwt((r.data as any).ajwt);
@@ -294,7 +306,7 @@ export default function TestPage() {
   };
 
   // ── Flow 6: Agent KYC consent (agent acts for human) ─────────────────────
-  const [agKycSite, setAgKycSite] = useState("TestSite");
+  const [agKycSite, setAgKycSite] = useState("Discord");
   const [agKycAjwt, setAgKycAjwt] = useState("");
   const [agKycLoading, setAgKycLoading] = useState(false);
   const [agKycResult, setAgKycResult] = useState<Result>(null);
@@ -308,7 +320,7 @@ export default function TestPage() {
     // 1. Site creates consent request
     const reqR = await post(`${API}/kyc/request`, {
       site_name: agKycSite,
-      requested_claims: ["first_name", "last_name", "nationality"],
+      requested_claims: ["age_over_threshold", "age_threshold"],
     });
     if (!reqR.ok) { setAgKycResult(reqR); setAgKycLoading(false); return; }
     const { request_id } = reqR.data as any;
@@ -323,7 +335,14 @@ export default function TestPage() {
     const { consent_token } = consentR.data as any;
 
     // 3. Site retrieves — response includes identity.is_agent=true + ring verification
-    const retR = await post(`${API}/kyc/retrieve`, { consent_token, site_name: agKycSite });
+    const retR = await post(`${API}/kyc/retrieve`, {
+      consent_token,
+      site_name: agKycSite,
+      required_action: "prove_age",
+      zkp_proof: { dev_mock: true },
+      zkp_circuit: "AgeVerification",
+      zkp_public_signals: ["1", "18"],
+    }, agKycAjwt ? { "x-agent-ajwt": agKycAjwt } : undefined);
     setAgKycResult({
       ok: retR.ok,
       data: {
@@ -364,7 +383,10 @@ export default function TestPage() {
 
   const doRevoke = async () => {
     setRevokeLoading(true);
-    const r = await fetch(`${API}/agent/${revokeId}`, { method: "DELETE" });
+    const r = await fetch(`${API}/agent/${revokeId}`, {
+      method: "DELETE",
+      headers: session ? { "x-sauron-session": session } : undefined,
+    });
     setRevokeResult({ ok: r.ok, data: await r.json().catch(() => ({})) });
     setRevokeLoading(false);
   };

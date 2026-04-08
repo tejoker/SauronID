@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/api/kyc/:path*",
-        destination: `${kycOrigin}/:path*`,
+        destination: `${kycOrigin}/api/kyc/:path*`,
       },
       {
         source: "/api/camara/:path*",

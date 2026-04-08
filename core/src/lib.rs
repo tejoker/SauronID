@@ -8,3 +8,4 @@ pub mod sites;
 pub mod merkle;
 pub mod solana_service;
 pub mod agent;
+pub mod policy;

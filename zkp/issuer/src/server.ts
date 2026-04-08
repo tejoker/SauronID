@@ -144,6 +144,42 @@ function signPoseidon(message: bigint): { R8x: string; R8y: string; S: string } 
     };
 }
 
+function buildInclusionProof(leafIndex: number, levels = 10) {
+    if (leafIndex < 0 || leafIndex >= inclusionTreeLeaves.length) {
+        throw new Error(`leafIndex out of range: ${leafIndex}`);
+    }
+
+    let index = leafIndex;
+    let levelNodes = inclusionTreeLeaves.slice();
+    const pathElements: string[] = [];
+    const pathIndices: number[] = [];
+
+    for (let lvl = 0; lvl < levels; lvl++) {
+        const siblingIndex = index ^ 1;
+        const sibling = siblingIndex < levelNodes.length ? levelNodes[siblingIndex] : 0n;
+        pathElements.push(sibling.toString());
+        pathIndices.push(index & 1);
+
+        const nextLevel: bigint[] = [];
+        for (let i = 0; i < levelNodes.length; i += 2) {
+            const left = levelNodes[i];
+            const right = i + 1 < levelNodes.length ? levelNodes[i + 1] : 0n;
+            nextLevel.push(poseidonHashValues(left, right));
+        }
+        levelNodes = nextLevel.length > 0 ? nextLevel : [0n];
+        index = Math.floor(index / 2);
+    }
+
+    const merkleRoot = (levelNodes[0] ?? 0n).toString();
+    return {
+        leafIndex,
+        levels,
+        merkleRoot,
+        pathElements,
+        pathIndices,
+    };
+}
+
 // ─── OID4VCI Endpoints ──────────────────────────────────────────────
 
 /**
@@ -318,7 +354,7 @@ app.post("/credential", async (req, res) => {
         }
         tokenRecord.used = true;
         claims = tokenRecord.claims;
-        subjectDid = subjectDid;
+        subjectDid = tokenRecord.subjectDid;
     }
 
     try {
@@ -539,6 +575,36 @@ app.post("/verify-proof", async (req, res) => {
     } catch (err: any) {
         console.error("[ISSUER] /verify-proof error:", err);
         res.status(500).json({ error: "verification_error", description: err.message });
+    }
+});
+
+/**
+ * POST /proof-material
+ * Returns inclusion proof material for CredentialVerification browser prover.
+ * Body: { credentialHash?: string, leafIndex?: number }
+ */
+app.post("/proof-material", (req, res) => {
+    const credentialHash = req.body?.credentialHash ? String(req.body.credentialHash) : null;
+    const leafIndexInput = Number.isInteger(req.body?.leafIndex) ? Number(req.body.leafIndex) : null;
+
+    if (credentialHash === null && leafIndexInput === null) {
+        return res.status(400).json({ error: "credentialHash or leafIndex is required" });
+    }
+
+    let leafIndex = leafIndexInput;
+    if (leafIndex === null && credentialHash !== null) {
+        leafIndex = inclusionTreeLeaves.findIndex((v) => v.toString() === credentialHash);
+    }
+
+    if (leafIndex === null || leafIndex < 0 || leafIndex >= inclusionTreeLeaves.length) {
+        return res.status(404).json({ error: "Credential not found in inclusion tree" });
+    }
+
+    try {
+        const proof = buildInclusionProof(leafIndex, 10);
+        return res.json(proof);
+    } catch (err: any) {
+        return res.status(500).json({ error: "proof_material_error", description: err.message });
     }
 });
 

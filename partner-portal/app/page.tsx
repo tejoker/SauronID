@@ -262,7 +262,7 @@ function LoginJourney({ client }: { client: Client }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           site_name: client.name,
-          requested_claims: ["first_name", "last_name", "nationality"],
+          requested_claims: ["age_over_threshold", "age_threshold"],
         }),
       });
       const reqData = await reqRes.json();
@@ -308,11 +308,18 @@ function LoginJourney({ client }: { client: Client }) {
               const retRes = await fetch(`${API}/kyc/retrieve`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ consent_token, site_name: client.name }),
+                body: JSON.stringify({
+                  consent_token,
+                  site_name: client.name,
+                  required_action: "prove_age",
+                  zkp_proof: { dev_mock: true },
+                  zkp_circuit: "AgeVerification",
+                  zkp_public_signals: ["1", "18"],
+                }),
               });
               const retData = await retRes.json();
               if (!retRes.ok) throw new Error(retData.error ?? "KYC retrieval failed");
-              setResult(retData.profile);
+              setResult(retData);
               showToast("success", `Identity Verified — ${client.name}`, "1 credit spent. User was anonymously authenticated.");
               await refreshActiveClient();
               resolve();
@@ -338,9 +345,8 @@ function LoginJourney({ client }: { client: Client }) {
         <SuccessOverlay title="Identity Verified" onClose={() => setResult(null)}>
           <div className="space-y-3 text-sm">
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <p className="text-blue-700 font-bold">{result.first_name} {result.last_name}</p>
-              <p className="text-neutral-500 text-xs mt-1">{result.email}</p>
-              <p className="text-neutral-400 text-xs">Nationality: {result.nationality}</p>
+              <p className="text-blue-700 font-bold">ZKP-only identity presentation</p>
+              <pre className="text-neutral-600 text-xs mt-2 whitespace-pre-wrap break-all">{JSON.stringify(result?.claims ?? {}, null, 2)}</pre>
             </div>
             <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 text-xs text-neutral-500">
               {client.name} spent 1 credit. The user authenticated via a Sauron consent popup — Sauron does not know which site asked.

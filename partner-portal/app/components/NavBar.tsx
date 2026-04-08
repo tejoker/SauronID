@@ -61,6 +61,14 @@ export default function NavBar() {
           >
             Bank Portal
           </Link>
+          <Link
+            href="/retail"
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              pathname === "/retail" ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100"
+            }`}
+          >
+            Retail Demo
+          </Link>
         </div>
 
         {/* Separator */}

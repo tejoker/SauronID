@@ -133,6 +133,7 @@ pub struct AdminClientRecord {
     pub name: String,
     pub public_key_hex: String,
     pub key_image_hex: String,
+    pub tokens_b: i64,
     pub client_type: String,
 }
 
@@ -142,14 +143,15 @@ pub async fn get_clients(
     let st = state.read().unwrap();
     let db = st.db.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT name, public_key_hex, key_image_hex, client_type FROM clients ORDER BY id"
+        "SELECT name, public_key_hex, key_image_hex, tokens_b, client_type FROM clients ORDER BY id"
     ).unwrap();
     let records: Vec<AdminClientRecord> = stmt.query_map([], |row| {
         Ok(AdminClientRecord {
             name:           row.get(0)?,
             public_key_hex: row.get(1)?,
             key_image_hex:  row.get(2)?,
-            client_type:    row.get(3)?,
+            tokens_b:       row.get(3)?,
+            client_type:    row.get(4)?,
         })
     }).unwrap().flatten().collect();
     Json(records)
@@ -263,6 +265,9 @@ pub struct StatsResponse {
     pub total_api_calls: i64,
     pub total_kyc_retrievals: i64,
     pub total_agent_calls: i64,
+    pub total_tokens_b_issued: i64,
+    pub total_tokens_b_spent: i64,
+    pub exchange_rate: i64,
 }
 
 pub async fn get_stats(
@@ -280,6 +285,17 @@ pub async fn get_stats(
     let total_agent_calls: i64 = db.query_row(
         "SELECT COUNT(*) FROM api_usage WHERE is_agent = 1", [], |r| r.get(0)
     ).unwrap_or(0);
+    let total_tokens_b_spent: i64 = db.query_row(
+        "SELECT COUNT(*) FROM api_usage WHERE action IN ('kyc_human','kyc_agent','zkp_login')",
+        [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+    let current_tokens_b: i64 = db.query_row(
+        "SELECT COALESCE(SUM(tokens_b), 0) FROM clients",
+        [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+    let total_tokens_b_issued = current_tokens_b + total_tokens_b_spent;
 
     Json(StatsResponse {
         total_users,
@@ -287,5 +303,8 @@ pub async fn get_stats(
         total_api_calls,
         total_kyc_retrievals,
         total_agent_calls,
+        total_tokens_b_issued,
+        total_tokens_b_spent,
+        exchange_rate: 1,
     })
 }

@@ -77,7 +77,17 @@ export default function OverviewPage() {
     });
   }, []);
 
-  if (!data && !stats) return <Spinner />;
+  if (!data && !stats && !offline) return <Spinner />;
+  if (!data && !stats && offline) {
+    return (
+      <div className="space-y-4 max-w-[900px]">
+        <h1 className="text-lg font-bold text-neutral-900">Platform Overview</h1>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
+          Backend offline. Start core API on port 3001, then refresh dashboard.
+        </div>
+      </div>
+    );
+  }
 
   const k = data?.kpis ?? {};
 

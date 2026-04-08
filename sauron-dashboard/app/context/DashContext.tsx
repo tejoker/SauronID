@@ -21,7 +21,7 @@ export interface LiveClient {
   public_key_hex:  string;
   private_key_hex: string;
   key_image_hex:   string;
-  client_type:     "FULL_KYC" | "ZKP_ONLY";
+  client_type:     "FULL_KYC" | "ZKP_ONLY" | "BANK";
   tokens_a:        number;
   tokens_b:        number;
 }

@@ -3,7 +3,6 @@
 /// Commands:
 ///   register <email> <password> <first_name> <last_name>
 ///   exchange <token_a1> [<token_a2> ...]
-///   get_kyc <email> <password> <token_b>
 ///   prove_zk <email> <password> <token_b> <site_name> [--min-age <age>] [--nationality <nat>]
 ///   add_tokens <site_name> <amount>
 ///   balance
@@ -173,80 +172,13 @@ async fn cmd_exchange(args: &[String]) {
         for (i, token_b) in body.signed_tokens_b.iter().enumerate() {
             println!("TOKEN_B[{}]={}", i, token_b);
         }
-        println!("→ Use 'get_kyc <email> <password> <token_b>' to retrieve a KYC.");
+        println!("→ Use 'prove_zk <email> <password> <token_b> <site_name>' for proof-based disclosure.");
     } else {
         let status = resp.status();
         if status.as_u16() == 409 {
             eprintln!("FAIL Double-spend Token A detected.");
         } else {
             eprintln!("FAIL Exchange failed: {} — {}", status, resp.text().await.unwrap_or_default());
-        }
-        std::process::exit(1);
-    }
-}
-
-// ─── Flux 3 : get_kyc ───────────────────────────────
-
-#[derive(Serialize)]
-struct GetKycRequest {
-    token_b: String,
-    user_signature: ring::RingSignature,
-}
-
-#[derive(Deserialize)]
-struct GetKycResponse { profile: ProfileDisplay }
-
-#[derive(Deserialize)]
-struct ProfileDisplay {
-    first_name: String,
-    last_name: String,
-    email: String,
-}
-
-async fn cmd_get_kyc(args: &[String]) {
-    if args.len() < 3 {
-        eprintln!("Usage: get_kyc <email> <password> <token_b>");
-        std::process::exit(1);
-    }
-    let (email, password, token_b) = (&args[0], &args[1], &args[2]);
-
-    let client = reqwest::Client::new();
-    let group_raw: Vec<Vec<u8>> = client.get(format!("{}/group", SERVER)).send().await.unwrap().json().await.unwrap();
-    if group_raw.is_empty() {
-        eprintln!("FAIL No users in network yet.");
-        std::process::exit(1);
-    }
-    let group: Vec<_> = group_raw.iter()
-        .filter_map(|b| {
-            let bytes: [u8; 32] = b.as_slice().try_into().ok()?;
-            CompressedRistretto::from_slice(&bytes).ok()?.decompress()
-        })
-        .collect();
-
-    let identity = derive_identity(&client, email, password).await;
-    let idx = group.iter().position(|p| p == &identity.public);
-    if idx.is_none() {
-        eprintln!("FAIL User '{}' not in group. Register first.", email);
-        std::process::exit(1);
-    }
-
-    let msg = format!("GET_KYC:{}", token_b);
-    let user_signature = ring::sign(msg.as_bytes(), &group, &identity, idx.unwrap());
-
-    let req = GetKycRequest { token_b: token_b.clone(), user_signature };
-    let resp = client.post(format!("{}/get_kyc", SERVER)).json(&req).send().await.unwrap();
-
-    if resp.status().is_success() {
-        let body: GetKycResponse = resp.json().await.unwrap();
-        println!("OK KYC retrieved anonymously!");
-        println!("  Name:    {} {}", body.profile.first_name, body.profile.last_name);
-        println!("  Email:   {}", body.profile.email);
-    } else {
-        let status = resp.status();
-        if status.as_u16() == 409 {
-            eprintln!("FAIL Token B already spent.");
-        } else {
-            eprintln!("FAIL get_kyc failed: {} — {}", status, resp.text().await.unwrap_or_default());
         }
         std::process::exit(1);
     }
@@ -416,13 +348,12 @@ async fn cmd_prove_zk(args: &[String]) {
 async fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: client <command> [args]\nCommands: register | exchange | get_kyc | prove_zk | add_tokens | balance");
+        eprintln!("Usage: client <command> [args]\nCommands: register | exchange | prove_zk | add_tokens | balance");
         std::process::exit(1);
     }
     match args[1].as_str() {
         "register"   => cmd_register(&args[2..]).await,
         "exchange"   => cmd_exchange(&args[2..]).await,
-        "get_kyc"    => cmd_get_kyc(&args[2..]).await,
         "prove_zk"   => cmd_prove_zk(&args[2..]).await,
         "add_tokens" => cmd_add_tokens(&args[2..]).await,
         "balance"    => cmd_balance().await,

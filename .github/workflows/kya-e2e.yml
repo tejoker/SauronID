@@ -1,0 +1,60 @@
+name: KYA E2E
+
+on:
+  push:
+    branches: [main, pocv1]
+  pull_request:
+
+jobs:
+  kya-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Start backend via docker-compose
+        env:
+          SAURON_ALLOW_DEV_MOCK_PROOF: "1"
+        run: |
+          docker compose up -d backend
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3001/admin/stats -H 'x-admin-key: super_secret_hackathon_key' >/dev/null; then
+              echo "backend healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "backend not healthy" >&2
+          docker compose logs backend || true
+          exit 1
+
+      - name: Run delegated KYA e2e
+        env:
+          API_URL: http://localhost:3001
+          SAURON_ADMIN_KEY: super_secret_hackathon_key
+        run: |
+          bash core/tests/e2e_kya_delegated.sh
+
+      - name: Run autonomous KYA e2e
+        env:
+          API_URL: http://localhost:3001
+          SAURON_ADMIN_KEY: super_secret_hackathon_key
+        run: |
+          bash core/tests/e2e_kya_autonomous.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs backend || true
+
+      - name: Shutdown stack
+        if: always()
+        run: docker compose down -v --remove-orphans

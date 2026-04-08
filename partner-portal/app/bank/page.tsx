@@ -271,6 +271,7 @@ interface AgentRecord {
 
 function AgentsTab(_: { client: Client }) {
   const [humanKeyImage, setHumanKeyImage] = useState("");
+  const [humanSession, setHumanSession] = useState("");
   const [agentChecksum, setAgentChecksum] = useState("");
   const [intentJson, setIntentJson] = useState('{"action":"kyc_lookup","resource":"sauron_api"}');
   const [ttl, setTtl] = useState("3600");
@@ -282,12 +283,15 @@ function AgentsTab(_: { client: Client }) {
   const register = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     setError(""); setSuccess(null);
-    if (!humanKeyImage || !agentChecksum) { setError("human_key_image and agent_checksum required"); return; }
+    if (!humanSession || !humanKeyImage || !agentChecksum) {
+      setError("x-sauron-session, human_key_image and agent_checksum required");
+      return;
+    }
     setBusy(true);
     try {
       const res = await fetch(`${API}/agent/register`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-sauron-session": humanSession },
         body: JSON.stringify({
           human_key_image: humanKeyImage,
           agent_checksum: agentChecksum,
@@ -307,19 +311,21 @@ function AgentsTab(_: { client: Client }) {
   };
 
   const loadAgents = async (ki: string) => {
-    if (!ki) return;
+    if (!ki || !humanSession) return;
     try {
-      const res = await fetch(`${API}/agent/list/${encodeURIComponent(ki)}`);
+      const res = await fetch(`${API}/agent/list/${encodeURIComponent(ki)}`, {
+        headers: { "x-sauron-session": humanSession },
+      });
       if (res.ok) setAgents(await res.json());
     } catch { /* ignore */ }
   };
 
   const revoke = async (agentId: string) => {
-    if (!humanKeyImage) return;
+    if (!humanSession || !humanKeyImage) return;
     try {
       const res = await fetch(`${API}/agent/${encodeURIComponent(agentId)}`, {
         method: "DELETE",
-        headers: { "x-human-key-image": humanKeyImage },
+        headers: { "x-sauron-session": humanSession },
       });
       if (res.ok) {
         showToast("success", "Agent revoked", agentId);
@@ -339,6 +345,12 @@ function AgentsTab(_: { client: Client }) {
       </div>
 
       <form onSubmit={register} className="space-y-4 max-w-xl">
+        <div>
+          <label className="text-xs text-neutral-500 mb-1 block">User session token (x-sauron-session)</label>
+          <textarea value={humanSession} onChange={(e) => setHumanSession(e.target.value)} rows={2}
+            placeholder="Paste session from /user/auth"
+            className="w-full bg-white border border-neutral-300 text-neutral-900 rounded-lg px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-neutral-500" />
+        </div>
         <div>
           <label className="text-xs text-neutral-500 mb-1 block">Human key_image_hex</label>
           <input value={humanKeyImage} onChange={(e) => setHumanKeyImage(e.target.value)}

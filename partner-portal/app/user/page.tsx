@@ -220,7 +220,9 @@ function AgentsTab({ session }: { session: UserSession }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/agent/list/${session.key_image}`);
+      const res = await fetch(`${API_BASE}/agent/list/${session.key_image}`, {
+        headers: authHeaders(session.session),
+      });
       const data = await res.json();
       setAgents(data.agents || []);
     } finally {
@@ -236,7 +238,7 @@ function AgentsTab({ session }: { session: UserSession }) {
     try {
       const res = await fetch(`${API_BASE}/agent/register`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders(session.session) },
         body: JSON.stringify({
           human_key_image: session.key_image,
           intent: intent.trim(),
@@ -259,7 +261,10 @@ function AgentsTab({ session }: { session: UserSession }) {
   const revoke = async (agent_id: string) => {
     setRevoking(agent_id);
     try {
-      await fetch(`${API_BASE}/agent/${agent_id}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/agent/${agent_id}`, {
+        method: "DELETE",
+        headers: authHeaders(session.session),
+      });
       await load();
     } finally {
       setRevoking(null);

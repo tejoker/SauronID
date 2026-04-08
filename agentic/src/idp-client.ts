@@ -14,6 +14,8 @@ import {
 export interface IdPClientConfig {
     /** SauronID backend URL (where /agent/register lives) */
     idpUrl: string;
+    /** Authenticated user session token from /user/auth (x-sauron-session). */
+    humanSession?: string;
     /** Human key_image_hex (the user who owns this agent) */
     humanKeyImage: string;
     /** Agent configuration */
@@ -90,10 +92,14 @@ export class AgentShimClient {
         }
 
         const popPubHex = this.popKeyPair!.thumbprint;
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (this.config.humanSession) {
+            headers["x-sauron-session"] = this.config.humanSession;
+        }
 
         const response = await fetch(`${this.config.idpUrl}/agent/register`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers,
             body: JSON.stringify({
                 human_key_image: this.config.humanKeyImage,
                 agent_checksum: this.checksum,
@@ -147,9 +153,14 @@ export class AgentShimClient {
             constraints: { delegated_from: this.checksum, scope },
         };
 
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (this.config.humanSession) {
+            headers["x-sauron-session"] = this.config.humanSession;
+        }
+
         const response = await fetch(`${this.config.idpUrl}/agent/register`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers,
             body: JSON.stringify({
                 human_key_image: this.config.humanKeyImage,
                 agent_checksum: childChecksum,

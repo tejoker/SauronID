@@ -23,6 +23,7 @@ pub fn init_schema(conn: &Connection) {
             public_key_hex  TEXT    NOT NULL,
             private_key_hex TEXT    NOT NULL,
             key_image_hex   TEXT    NOT NULL,
+            tokens_b        INTEGER NOT NULL DEFAULT 0,
             client_type     TEXT    NOT NULL CHECK(client_type IN ('FULL_KYC', 'ZKP_ONLY', 'BANK'))
         );
 
@@ -35,6 +36,22 @@ pub fn init_schema(conn: &Connection) {
             email           TEXT NOT NULL DEFAULT '',
             date_of_birth   TEXT NOT NULL DEFAULT '',
             nationality     TEXT NOT NULL DEFAULT ''
+        );
+
+        -- Optional mapping from bank customer IDs to user key images
+        CREATE TABLE IF NOT EXISTS bank_kyc_links (
+            bank_customer_id TEXT PRIMARY KEY,
+            user_key_image   TEXT NOT NULL,
+            updated_at       INTEGER NOT NULL,
+            metadata_json    TEXT NOT NULL DEFAULT '{}'
+        );
+
+        -- Bank attestation replay protection for webhook-based user registration
+        CREATE TABLE IF NOT EXISTS bank_attestation_nonces (
+            provider_id TEXT NOT NULL,
+            nonce       TEXT NOT NULL,
+            issued_at   INTEGER NOT NULL,
+            PRIMARY KEY (provider_id, nonce)
         );
 
         -- BabyJubJub ZKP credentials (cached after issuer claim)
@@ -69,6 +86,7 @@ pub fn init_schema(conn: &Connection) {
             request_id       TEXT    UNIQUE NOT NULL,
             user_key_image   TEXT    NOT NULL DEFAULT '',
             site_name        TEXT    NOT NULL,
+            requested_claims_json TEXT NOT NULL DEFAULT '[]',
             granted_at       INTEGER NOT NULL DEFAULT 0,
             consent_token    TEXT    UNIQUE,
             token_used       INTEGER NOT NULL DEFAULT 0,
@@ -83,6 +101,8 @@ pub fn init_schema(conn: &Connection) {
             human_key_image  TEXT    NOT NULL,
             agent_checksum   TEXT    NOT NULL,
             intent_json      TEXT    NOT NULL DEFAULT '{}',
+            assurance_level  TEXT    NOT NULL DEFAULT 'delegated_nonbank'
+                                      CHECK(assurance_level IN ('delegated_bank','delegated_nonbank','autonomous_web3')),
             public_key_hex   TEXT    NOT NULL DEFAULT '',
             issued_at        INTEGER NOT NULL,
             expires_at       INTEGER NOT NULL,
@@ -145,4 +165,22 @@ pub fn init_schema(conn: &Connection) {
             PRIMARY KEY (company_id, data_type)
         );
     ").expect("DB schema init failed");
+
+    // Migration-safe add for existing databases created before requested_claims_json existed.
+    let _ = conn.execute(
+        "ALTER TABLE clients ADD COLUMN tokens_b INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE consent_log ADD COLUMN requested_claims_json TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE consent_log ADD COLUMN issuing_agent_id TEXT DEFAULT NULL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agents ADD COLUMN assurance_level TEXT NOT NULL DEFAULT 'delegated_nonbank'",
+        [],
+    );
 }
