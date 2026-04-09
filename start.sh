@@ -35,9 +35,9 @@ fi
 if [ ! -f "$BINARY" ]; then
   warn "Aucun binaire trouvé — lance 'cargo build' d'abord !"
   warn "Fallback: cargo run (lent au premier démarrage)"
-  cargo run --bin sauron-core &
+  ENV="${ENV:-development}" SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" cargo run --bin sauron-core &
 else
-  "$BINARY" &
+  ENV="${ENV:-development}" SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" "$BINARY" &
 fi
 CORE_PID=$!
 PIDS+=("$CORE_PID")
@@ -138,6 +138,22 @@ PIDS+=("$MOCK_PID")
 npm run start &
 CAMARA_PID=$!
 PIDS+=("$CAMARA_PID")
+
+# ── 8. ZKP Issuer (OID4VCI + proof verification) ───────────────────────────
+log "[8/8] ZKP Issuer → :4000"
+cd "$ROOT/zkp/issuer"
+if [ ! -d "node_modules" ]; then
+  warn "Installation des dépendances npm (issuer)..."
+  npm install --silent
+fi
+if [ ! -d "dist" ]; then
+  warn "Build du service issuer..."
+  npm run build
+fi
+ISSUER_SEED="${ISSUER_SEED:-sauronid-issuer-seed-hackathon}" \
+  npm run start &
+ISSUER_PID=$!
+PIDS+=("$ISSUER_PID")
 
 # ── Résumé ───────────────────────────────────────────────────────────────────
 echo ""

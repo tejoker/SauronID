@@ -1,10 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::ristretto::CompressedRistretto;
 use rusqlite::{Connection, params};
 use sha2::{Sha256, Digest};
+use hex;
 use crate::ring;
+use crate::db::DbHandle;
 use crate::merkle::MerkleCommitmentLedger;
 use crate::solana_service::SolanaService;
 
@@ -37,7 +39,7 @@ pub fn token_value(token: &str) -> &str {
 // ─────────────────────────────────────────────────────
 
 pub struct ServerState {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: Arc<DbHandle>,
     /// Clé OPRF du serveur.
     pub k: Scalar,
     /// Groupe des clés publiques des sites partenaires.
@@ -56,20 +58,57 @@ pub struct ServerState {
     pub solana_service: Option<std::sync::Arc<SolanaService>>,
 }
 
+pub fn runtime_environment() -> String {
+    std::env::var("ENV")
+        .or_else(|_| std::env::var("SAURON_ENV"))
+        .unwrap_or_else(|_| "production".to_string())
+        .to_ascii_lowercase()
+}
+
+pub fn is_development_runtime() -> bool {
+    matches!(runtime_environment().as_str(), "development" | "dev" | "local")
+}
+
+fn derive_dev_secret(name: &str) -> Vec<u8> {
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./sauron.db".to_string());
+    let mut h = Sha256::new();
+    h.update(b"SAURON_DEV_DERIVED_SECRET|");
+    h.update(name.as_bytes());
+    h.update(b"|");
+    h.update(db_path.as_bytes());
+    h.finalize().to_vec()
+}
+
+fn load_required_secret(name: &str) -> Vec<u8> {
+    if let Ok(value) = std::env::var(name) {
+        if !value.trim().is_empty() {
+            return value.into_bytes();
+        }
+    }
+    if is_development_runtime() {
+        eprintln!("[WARN] {} not set — deriving development-only local secret.", name);
+        return derive_dev_secret(name);
+    }
+    panic!("{} must be set in non-development environments", name);
+}
+
+fn load_required_seed(name: &str) -> String {
+    if let Ok(value) = std::env::var(name) {
+        if !value.trim().is_empty() {
+            return value;
+        }
+    }
+    if is_development_runtime() {
+        eprintln!("[WARN] {} not set — deriving development-only local seed.", name);
+        return hex::encode(derive_dev_secret(name));
+    }
+    panic!("{} must be set in non-development environments", name);
+}
+
 impl ServerState {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
-        let token_secret = std::env::var("SAURON_TOKEN_SECRET")
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| {
-                eprintln!("[WARN] SAURON_TOKEN_SECRET not set — using insecure default.");
-                b"SAURON_TOKEN_SECRET_HACKATHON_2024".to_vec()
-            });
-        let jwt_secret = std::env::var("SAURON_JWT_SECRET")
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| {
-                eprintln!("[WARN] SAURON_JWT_SECRET not set — using insecure default.");
-                b"SAURON_JWT_SECRET_HACKATHON_2024".to_vec()
-            });
+    pub fn new(db: Arc<DbHandle>) -> Self {
+        let token_secret = load_required_secret("SAURON_TOKEN_SECRET");
+        let jwt_secret = load_required_secret("SAURON_JWT_SECRET");
         let issuer_url = std::env::var("SAURON_ISSUER_URL")
             .unwrap_or_else(|_| "http://localhost:4000".to_string());
 
@@ -138,10 +177,7 @@ impl ServerState {
 
         // ── Derive OPRF scalar from env seed ─────────────────────────────────
         let oprf_k = {
-            let seed = std::env::var("SAURON_OPRF_SEED").unwrap_or_else(|_| {
-                eprintln!("[WARN] SAURON_OPRF_SEED not set — using insecure default.");
-                "SAURON_OPRF_SEED_HACKATHON_2024".to_string()
-            });
+            let seed = load_required_seed("SAURON_OPRF_SEED");
             let mut h = sha2::Sha256::new();
             h.update(seed.as_bytes());
             Scalar::from_bytes_mod_order(h.finalize().into())

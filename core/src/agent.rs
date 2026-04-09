@@ -7,13 +7,11 @@
 //    - What the agent is allowed to do   (intent JSON)
 //    - The agent hasn't been tampered    (agent_checksum = SHA-256 of agent config)
 //
-//  Token format (HMAC-SHA256, base64url-encoded JSON parts):
+//  Token format (EdDSA/Ed25519, base64url-encoded JSON parts):
 //    header.payload.signature   (dot-separated, all base64url-no-padding)
 //
-//  This is a simplified implementation using HMAC-SHA256 instead of Ed25519
-//  so that no extra key-management infrastructure is needed at the Rust layer.
-//  The `agentic/src/` TypeScript library provides the full Ed25519/jose flavour
-//  for external integrations.
+//  Signing keys are derived per-agent from server secret + agent identity
+//  material, so each agent has a distinct effective signing key.
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
@@ -24,12 +22,10 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use rusqlite::params;
 use sha2::{Sha256, Digest};
-use hmac::{Hmac, Mac};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::state::ServerState;
-
-type HmacSha256 = Hmac<Sha256>;
 
 // ─── Token helpers ───────────────────────────────────────────────────────────
 
@@ -70,7 +66,25 @@ fn b64url_decode(s: &str) -> Option<Vec<u8>> {
     URL_SAFE_NO_PAD.decode(s).ok()
 }
 
-/// Forge an A-JWT signed with the server's HMAC-SHA256 jwt_secret.
+fn derive_agent_signing_key(
+    jwt_secret: &[u8],
+    agent_id: &str,
+    human_key_image: &str,
+    agent_checksum: &str,
+) -> SigningKey {
+    let mut h = Sha256::new();
+    h.update(jwt_secret);
+    h.update(b"|AJWT_ED25519|\n");
+    h.update(agent_id.as_bytes());
+    h.update(b"|");
+    h.update(human_key_image.as_bytes());
+    h.update(b"|");
+    h.update(agent_checksum.as_bytes());
+    let seed: [u8; 32] = h.finalize().into();
+    SigningKey::from_bytes(&seed)
+}
+
+/// Forge an A-JWT signed with per-agent Ed25519 key material.
 pub fn forge_ajwt(
     jwt_secret: &[u8],
     human_key_image: &str,
@@ -79,7 +93,12 @@ pub fn forge_ajwt(
     intent_json: &str,
     ttl_secs: i64,
 ) -> String {
-    let header = b64url(b"{\"alg\":\"HS256\",\"typ\":\"ajwt+jwt\"}");
+    let header_obj = serde_json::json!({
+        "alg": "EdDSA",
+        "typ": "ajwt+jwt",
+        "kid": agent_id,
+    });
+    let header = b64url(header_obj.to_string().as_bytes());
     let now = now_secs();
     let payload_obj = serde_json::json!({
         "iss": "did:sauron:idp",
@@ -93,9 +112,15 @@ pub fn forge_ajwt(
     });
     let payload = b64url(payload_obj.to_string().as_bytes());
     let signing_input = format!("{}.{}", header, payload);
-    let mut mac = HmacSha256::new_from_slice(jwt_secret).unwrap();
-    mac.update(signing_input.as_bytes());
-    let sig = b64url(&mac.finalize().into_bytes());
+
+    let signing_key = derive_agent_signing_key(
+        jwt_secret,
+        agent_id,
+        human_key_image,
+        agent_checksum,
+    );
+    let signature: Signature = signing_key.sign(signing_input.as_bytes());
+    let sig = b64url(&signature.to_bytes());
     format!("{}.{}.{}", header, payload, sig)
 }
 
@@ -106,14 +131,34 @@ pub fn verify_ajwt(
 ) -> Option<serde_json::Value> {
     let parts: Vec<&str> = token.splitn(3, '.').collect();
     if parts.len() != 3 { return None; }
-    let signing_input = format!("{}.{}", parts[0], parts[1]);
-    let mut mac = HmacSha256::new_from_slice(jwt_secret).unwrap();
-    mac.update(signing_input.as_bytes());
-    let expected_sig = b64url(&mac.finalize().into_bytes());
-    if expected_sig != parts[2] { return None; }
+
+    let header_bytes = b64url_decode(parts[0])?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes).ok()?;
+    if header.get("alg")?.as_str()? != "EdDSA" {
+        return None;
+    }
 
     let payload_bytes = b64url_decode(parts[1])?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+
+    let agent_id = payload.get("agent_id")?.as_str()?;
+    let human_key_image = payload.get("sub")?.as_str()?;
+    let agent_checksum = payload.get("agent_checksum")?.as_str()?;
+
+    let signing_key = derive_agent_signing_key(
+        jwt_secret,
+        agent_id,
+        human_key_image,
+        agent_checksum,
+    );
+    let verifying_key: VerifyingKey = signing_key.verifying_key();
+
+    let sig_bytes = b64url_decode(parts[2])?;
+    let signature = Signature::from_slice(&sig_bytes).ok()?;
+    let signing_input = format!("{}.{}", parts[0], parts[1]);
+    verifying_key
+        .verify(signing_input.as_bytes(), &signature)
+        .ok()?;
 
     // Check expiry
     let exp = payload.get("exp")?.as_i64()?;
@@ -196,21 +241,15 @@ pub struct VerifyAjwtResponse {
     pub error: Option<String>,
 }
 
-fn delegated_assurance_level(db: &rusqlite::Connection, human_key_image: &str) -> String {
-    let has_bank_link = db
-        .query_row(
-            "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
-            params![human_key_image],
-            |r| r.get::<_, i64>(0),
-        )
-        .ok()
-        .unwrap_or(0)
-        > 0;
-    if has_bank_link {
-        "delegated_bank".to_string()
-    } else {
-        "delegated_nonbank".to_string()
-    }
+fn has_bank_kyc_link(db: &rusqlite::Connection, human_key_image: &str) -> bool {
+    db.query_row(
+        "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
+        params![human_key_image],
+        |r| r.get::<_, i64>(0),
+    )
+    .ok()
+    .unwrap_or(0)
+        > 0
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -275,11 +314,20 @@ pub async fn register_agent(
         }
     }
 
-    let assurance_level = {
+    let has_bank_link = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        delegated_assurance_level(&db, &human_key_image)
+        has_bank_kyc_link(&db, &human_key_image)
     };
+
+    if !has_bank_link {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Delegated registration requires bank-verified KYC link. Use /agent/vc/issue for non-bank agents.".into(),
+        ));
+    };
+
+    let assurance_level = "delegated_bank".to_string();
 
     let ttl = payload.ttl_secs.clamp(60, 86400);
     let now = now_secs();

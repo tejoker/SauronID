@@ -4,6 +4,32 @@ on:
   push:
     branches: [main, pocv1]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      shared_iters:
+        description: "Shared suite iterations"
+        required: false
+        default: "3"
+      migration_iters:
+        description: "Migration suite iterations"
+        required: false
+        default: "3"
+      restart_iters:
+        description: "Restart suite iterations"
+        required: false
+        default: "3"
+      matrix_agent_types:
+        description: "Comma-separated agent types"
+        required: false
+        default: "openclaw,autogen,langgraph,crewai"
+      matrix_jitter_ms_max:
+        description: "Matrix jitter upper bound in ms"
+        required: false
+        default: "25"
+      matrix_fault_probe_pct:
+        description: "Matrix fault probe probability percentage"
+        required: false
+        default: "5"
 
 jobs:
   kya-e2e:
@@ -19,10 +45,8 @@ jobs:
           docker compose version
 
       - name: Start backend via docker-compose
-        env:
-          SAURON_ALLOW_DEV_MOCK_PROOF: "1"
         run: |
-          docker compose up -d backend
+          ENV=development SAURON_ISSUER_URL=http://zkp-issuer:4000 docker compose up -d backend zkp-issuer
 
       - name: Wait for backend health
         run: |
@@ -35,6 +59,19 @@ jobs:
           done
           echo "backend not healthy" >&2
           docker compose logs backend || true
+          exit 1
+
+      - name: Wait for issuer health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4000/status >/dev/null; then
+              echo "issuer healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "issuer not healthy" >&2
+          docker compose logs zkp-issuer || true
           exit 1
 
       - name: Run delegated KYA e2e
@@ -58,3 +95,45 @@ jobs:
       - name: Shutdown stack
         if: always()
         run: docker compose down -v --remove-orphans
+
+  confidence-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [kya-e2e]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install issuer dependencies
+        run: npm ci --prefix zkp/issuer
+
+      - name: Run confidence suite
+        env:
+          CONF_SHARED_ITERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.shared_iters || '3' }}
+          CONF_MIGRATION_ITERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.migration_iters || '3' }}
+          CONF_RESTART_ITERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.restart_iters || '3' }}
+          CONF_MATRIX_AGENT_TYPES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_agent_types || 'openclaw,autogen,langgraph,crewai' }}
+          CONF_MATRIX_JITTER_MS_MAX: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_jitter_ms_max || '25' }}
+          CONF_MATRIX_FAULT_PROBE_PCT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_fault_probe_pct || '5' }}
+          CONF_LOG_DIR: ${{ runner.temp }}/sauron-confidence-logs
+          CONF_FAIL_BUNDLE: ${{ runner.temp }}/sauron-confidence-failure.tar.gz
+        run: |
+          bash core/tests/run_confidence_suite.sh
+
+      - name: Upload confidence artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confidence-failure-artifacts
+          path: |
+            ${{ runner.temp }}/sauron-confidence-failure.tar.gz
+            ${{ runner.temp }}/sauron-confidence-logs
+          if-no-files-found: warn

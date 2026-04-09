@@ -13,9 +13,20 @@
  */
 
 import React, { useEffect, useState, useCallback } from "react";
-import { KYC_API } from "../context/ClientContext";
+import { API } from "../context/ClientContext";
 
 type Step = "loading" | "approve" | "submitting" | "granted" | "error";
+
+async function readApiPayload(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+  } catch {
+    // Fallback for plain-text backend errors.
+  }
+  return { detail: text };
+}
 
 export default function ConsentPage() {
   const [step, setStep] = useState<Step>("loading");
@@ -54,7 +65,7 @@ export default function ConsentPage() {
     }
 
     // Verify the request is still valid
-    fetch(`${KYC_API}/kyc/consent_info/${encodeURIComponent(rid)}`)
+    fetch(`${API}/kyc/consent_info/${encodeURIComponent(rid)}`)
       .then((r) => {
         if (!r.ok) throw new Error("Request not found or expired");
         return r.json();
@@ -85,14 +96,18 @@ export default function ConsentPage() {
     setErrorMsg("");
 
     try {
-      const res = await fetch(`${KYC_API}/kyc/consent`, {
+      const res = await fetch(`${API}/kyc/consent`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ request_id: requestId, email, password }),
       });
-      const data = await res.json();
+      const data = await readApiPayload(res);
       if (!res.ok) {
-        throw new Error(data.error || data.detail || "Consent failed");
+        throw new Error(
+          (typeof data.error === "string" && data.error) ||
+          (typeof data.detail === "string" && data.detail) ||
+          "Consent failed"
+        );
       }
 
       setStep("granted");
@@ -100,7 +115,7 @@ export default function ConsentPage() {
       // Authenticate user session so the SDK can fetch credential + generate proof locally.
       let userSession: string | null = null;
       try {
-        const authRes = await fetch(`${KYC_API}/user/auth`, {
+        const authRes = await fetch(`${API}/user/auth`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
@@ -110,7 +125,7 @@ export default function ConsentPage() {
           userSession = authData.session || null;
           if (userSession) {
             // Warm credential cache now to minimize latency in opener app.
-            await fetch(`${KYC_API}/user/credential`, {
+            await fetch(`${API}/user/credential`, {
               method: "GET",
               headers: { "x-sauron-session": userSession },
             }).catch(() => null);
@@ -125,7 +140,7 @@ export default function ConsentPage() {
         window.opener.postMessage(
           {
             type: "sauron_consent",
-            consent_token: data.consent_token,
+            consent_token: typeof data.consent_token === "string" ? data.consent_token : "",
             user_session: userSession,
             request_id: requestId,
           },
@@ -133,8 +148,9 @@ export default function ConsentPage() {
         );
       }
       setTimeout(() => window.close(), 1500);
-    } catch (e: any) {
-      setErrorMsg(e.message || "Unknown error");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      setErrorMsg(message);
       setStep("approve");
     }
   }, [email, password, requestId, openerOrigin]);

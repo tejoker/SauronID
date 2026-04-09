@@ -4,14 +4,23 @@ set -euo pipefail
 API_URL="${API_URL:-http://localhost:3001}"
 BANK_SITE="${E2E_BANK_SITE:-BNP Paribas}"
 ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Requires core started with SAURON_ALLOW_DEV_MOCK_PROOF=1 for test proof payload.
+# shellcheck source=tests/lib/zkp_fixture.sh
+source "${ROOT_DIR}/tests/lib/zkp_fixture.sh"
+ensure_zkp_fixture_bundle
+zkp_require_issuer
 
 json_get() {
   local key="$1"
   python3 -c 'import json,sys
 key=sys.argv[1]
-obj=json.loads(sys.stdin.read())
+raw=sys.stdin.read()
+try:
+  obj=json.loads(raw)
+except Exception:
+  print("")
+  sys.exit(0)
 cur=obj
 for part in key.split("."):
   if isinstance(cur, dict):
@@ -42,9 +51,11 @@ print(f"{int(time.time())}{random.randint(1000,9999)}")
 PY
 )
 RETAIL_SITE="${E2E_RETAIL_SITE:-e2e-zkp-${rand_suffix}}"
+NONBANK_SITE="${E2E_NONBANK_SITE:-e2e-full-kyc-${rand_suffix}}"
 
 ensure_client "${BANK_SITE}" "BANK"
 ensure_client "${RETAIL_SITE}" "ZKP_ONLY"
+ensure_client "${NONBANK_SITE}" "FULL_KYC"
 
 curl -sS -X POST "${API_URL}/dev/buy_tokens" \
   -H 'content-type: application/json' \
@@ -158,17 +169,7 @@ if [[ -z "$consent_token" ]]; then
   exit 1
 fi
 
-retrieve_body=$(cat <<JSON
-{
-  "consent_token": "${consent_token}",
-  "site_name": "${RETAIL_SITE}",
-  "required_action": "prove_age",
-  "zkp_proof": {"dev_mock": true},
-  "zkp_circuit": "AgeVerification",
-  "zkp_public_signals": ["1", "18"]
-}
-JSON
-)
+retrieve_body="$(zkp_build_retrieve_payload_json "${consent_token}" "${RETAIL_SITE}" "prove_age")"
 retrieve_res=$(curl -sS -X POST "${API_URL}/kyc/retrieve" \
   -H 'content-type: application/json' \
   -H "x-agent-ajwt: ${ajwt}" \
@@ -181,6 +182,40 @@ if [[ "$trust" != "True" && "$trust" != "true" ]]; then
 fi
 if [[ "$assurance_out" != "autonomous_web3" ]]; then
   echo "identity assurance mismatch: $retrieve_res" >&2
+  exit 1
+fi
+
+printf '[E2E autonomous] issue VC with non-bank KYA proof\n'
+nonbank_email="nonbank_${rand_suffix}@sauron.local"
+nonbank_password="Passw0rd!${rand_suffix}"
+
+nonbank_register_res=$(curl -sS -X POST "${API_URL}/dev/register_user" \
+  -H 'content-type: application/json' \
+  -d "{\"site_name\":\"${NONBANK_SITE}\",\"email\":\"${nonbank_email}\",\"password\":\"${nonbank_password}\",\"first_name\":\"Nina\",\"last_name\":\"Nonbank\",\"date_of_birth\":\"1992-01-01\",\"nationality\":\"FRA\"}")
+if [[ -z "$(printf '%s' "$nonbank_register_res" | json_get "public_key_hex")" ]]; then
+  echo "non-bank register_user failed: $nonbank_register_res" >&2
+  exit 1
+fi
+
+nonbank_auth_res=$(curl -sS -X POST "${API_URL}/user/auth" \
+  -H 'content-type: application/json' \
+  -d "{\"email\":\"${nonbank_email}\",\"password\":\"${nonbank_password}\"}")
+nonbank_session=$(printf '%s' "$nonbank_auth_res" | json_get "session")
+nonbank_key_image=$(printf '%s' "$nonbank_auth_res" | json_get "key_image")
+if [[ -z "$nonbank_session" || -z "$nonbank_key_image" ]]; then
+  echo "non-bank user_auth failed: $nonbank_auth_res" >&2
+  exit 1
+fi
+
+nonbank_vc_body="$(zkp_build_nonbank_vc_issue_payload_json "${nonbank_key_image}" "sha256:e2e-autonomous-nonbank-${rand_suffix}" "Autonomous non-bank test agent" '["prove_age"]')"
+nonbank_vc_res=$(curl -sS -X POST "${API_URL}/agent/vc/issue" \
+  -H 'content-type: application/json' \
+  -H "x-sauron-session: ${nonbank_session}" \
+  -d "${nonbank_vc_body}")
+nonbank_ajwt=$(printf '%s' "$nonbank_vc_res" | json_get "ajwt")
+nonbank_assurance=$(printf '%s' "$nonbank_vc_res" | json_get "assurance_level")
+if [[ -z "$nonbank_ajwt" || "$nonbank_assurance" != "autonomous_web3" ]]; then
+  echo "non-bank /agent/vc/issue failed: $nonbank_vc_res" >&2
   exit 1
 fi
 

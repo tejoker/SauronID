@@ -8,7 +8,8 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - SAURON_ALLOW_DEV_MOCK_PROOF=${SAURON_ALLOW_DEV_MOCK_PROOF:-0}
+      - ENV=${ENV:-production}
+      - SAURON_ISSUER_URL=${SAURON_ISSUER_URL:-http://zkp-issuer:4000}
     healthcheck:
       test: [ "CMD", "curl", "-sf", "http://localhost:3001/admin/stats", "-H", "x-admin-key: super_secret_hackathon_key" ]
       interval: 3s

@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-if command -v docker >/dev/null 2>&1; then SAURON_ALLOW_DEV_MOCK_PROOF=1 docker compose up --build -d; else echo "[launch_all] docker not found, switching to local stack via start.sh"; bash "$(cd "$(dirname "$0")" && pwd)/start.sh"; fi
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then ENV=development docker compose up --build -d; else echo "[launch_all] docker unavailable in this environment, switching to local stack via start.sh"; bash "$(cd "$(dirname "$0")" && pwd)/start.sh"; fi

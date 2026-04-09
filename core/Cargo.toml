@@ -17,9 +17,12 @@ reqwest = { version = "0.13.2", features = ["json"] }
 hex = "0.4.3"
 tower-http = { version = "0.6.8", features = ["cors"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
 rs_merkle = "1.4"
 hmac = "0.12"
 base64 = "0.22"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 # Ancrage Solana Devnet (publie la racine Merkle on-chain après chaque KYC)
 solana-sdk    = { version = "2", default-features = false, features = ["full"] }
 solana-client = { version = "2", default-features = false }

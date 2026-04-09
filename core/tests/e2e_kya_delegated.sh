@@ -4,14 +4,23 @@ set -euo pipefail
 API_URL="${API_URL:-http://localhost:3001}"
 BANK_SITE="${E2E_BANK_SITE:-BNP Paribas}"
 ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Requires core started with SAURON_ALLOW_DEV_MOCK_PROOF=1 for test proof payload.
+# shellcheck source=tests/lib/zkp_fixture.sh
+source "${ROOT_DIR}/tests/lib/zkp_fixture.sh"
+ensure_zkp_fixture_bundle
+zkp_require_issuer
 
 json_get() {
   local key="$1"
   python3 -c 'import json,sys
 key=sys.argv[1]
-obj=json.loads(sys.stdin.read())
+raw=sys.stdin.read()
+try:
+  obj=json.loads(raw)
+except Exception:
+  print("")
+  sys.exit(0)
 cur=obj
 for part in key.split("."):
   if isinstance(cur, dict):
@@ -110,12 +119,16 @@ if [[ -z "$ajwt" || -z "$agent_id" ]]; then
 fi
 
 echo "  assurance_level=${assurance}"
+if [[ "$assurance" != "delegated_bank" ]]; then
+  echo "expected delegated_bank assurance, got: $assurance" >&2
+  exit 1
+fi
 
 printf '[E2E delegated] policy checks\n'
 deny_policy=$(curl -sS -X POST "${API_URL}/policy/authorize" -H 'content-type: application/json' -d "{\"agent_id\":\"${agent_id}\",\"action\":\"payment_initiation\"}")
 deny_allowed=$(printf '%s' "$deny_policy" | json_get "allowed")
-if [[ "$deny_allowed" != "False" && "$deny_allowed" != "false" ]]; then
-  echo "expected delegated payment policy deny, got: $deny_policy" >&2
+if [[ "$deny_allowed" != "True" && "$deny_allowed" != "true" ]]; then
+  echo "expected delegated_bank payment policy allow, got: $deny_policy" >&2
   exit 1
 fi
 allow_policy=$(curl -sS -X POST "${API_URL}/policy/authorize" -H 'content-type: application/json' -d "{\"agent_id\":\"${agent_id}\",\"action\":\"prove_age\"}")
@@ -157,17 +170,7 @@ if [[ -z "$consent_token" ]]; then
 fi
 
 printf '[E2E delegated] retrieve with delegated binding + proof\n'
-retrieve_body=$(cat <<JSON
-{
-  "consent_token": "${consent_token}",
-  "site_name": "${RETAIL_SITE}",
-  "required_action": "prove_age",
-  "zkp_proof": {"dev_mock": true},
-  "zkp_circuit": "AgeVerification",
-  "zkp_public_signals": ["1", "18"]
-}
-JSON
-)
+retrieve_body="$(zkp_build_retrieve_payload_json "${consent_token}" "${RETAIL_SITE}" "prove_age")"
 retrieve_res=$(curl -sS -X POST "${API_URL}/kyc/retrieve" \
   -H 'content-type: application/json' \
   -H "x-agent-ajwt: ${ajwt}" \

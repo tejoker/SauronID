@@ -1,21 +1,62 @@
+use r2d2::{Pool, PooledConnection};
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 
+pub struct DbHandle {
+    pool: Pool<SqliteConnectionManager>,
+}
+
+impl DbHandle {
+    pub fn lock(&self) -> Result<PooledConnection<SqliteConnectionManager>, r2d2::Error> {
+        self.pool.get()
+    }
+}
+
 /// Opens persistent SQLite (path from DATABASE_PATH, default ./sauron.db).
-pub fn open_db() -> Connection {
+pub fn open_db() -> DbHandle {
     let path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./sauron.db".to_string());
-    let conn = Connection::open(&path).unwrap_or_else(|e| {
-        panic!("cannot open SQLite at '{}': {}", path, e)
+    let pool_size: u32 = std::env::var("SAURON_DB_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|v| v.clamp(1, 64))
+        .unwrap_or(16);
+
+    let manager = SqliteConnectionManager::file(&path).with_init(|conn| {
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA synchronous = NORMAL;
+            ",
+        )
     });
-    init_schema(&conn);
-    println!("[DB] SQLite opened at '{}'.", path);
-    conn
+
+    let pool = Pool::builder()
+        .max_size(pool_size)
+        .build(manager)
+        .unwrap_or_else(|e| {
+            panic!("cannot open SQLite pool at '{}': {}", path, e)
+        });
+
+    {
+        let conn = pool.get().unwrap_or_else(|e| {
+            panic!("cannot acquire SQLite connection for init at '{}': {}", path, e)
+        });
+        init_schema(&conn);
+    }
+
+    println!(
+        "[DB] SQLite opened at '{}' with pool_size={}.",
+        path, pool_size
+    );
+
+    DbHandle { pool }
 }
 
 pub fn init_schema(conn: &Connection) {
-    conn.execute_batch("
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
-
+    conn.execute_batch(
+        r#"
         -- Partner sites (banks + retail)
         CREATE TABLE IF NOT EXISTS clients (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,16 +123,17 @@ pub fn init_schema(conn: &Connection) {
 
         -- Consent log (GDPR-auditable)
         CREATE TABLE IF NOT EXISTS consent_log (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            request_id       TEXT    UNIQUE NOT NULL,
-            user_key_image   TEXT    NOT NULL DEFAULT '',
-            site_name        TEXT    NOT NULL,
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id         TEXT    UNIQUE NOT NULL,
+            user_key_image     TEXT    NOT NULL DEFAULT '',
+            site_name          TEXT    NOT NULL,
             requested_claims_json TEXT NOT NULL DEFAULT '[]',
-            granted_at       INTEGER NOT NULL DEFAULT 0,
-            consent_token    TEXT    UNIQUE,
-            token_used       INTEGER NOT NULL DEFAULT 0,
-            revoked          INTEGER NOT NULL DEFAULT 0,
-            issuing_agent_id TEXT    DEFAULT NULL
+            granted_at         INTEGER NOT NULL DEFAULT 0,
+            consent_expires_at INTEGER NOT NULL DEFAULT 0,
+            consent_token      TEXT    UNIQUE,
+            token_used         INTEGER NOT NULL DEFAULT 0,
+            revoked            INTEGER NOT NULL DEFAULT 0,
+            issuing_agent_id   TEXT    DEFAULT NULL
         );
 
         -- AI agents delegated by human owners
@@ -164,7 +206,14 @@ pub fn init_schema(conn: &Connection) {
             data_json   TEXT    NOT NULL,
             PRIMARY KEY (company_id, data_type)
         );
-    ").expect("DB schema init failed");
+
+        CREATE INDEX IF NOT EXISTS idx_consent_log_token ON consent_log (consent_token, token_used, revoked, consent_expires_at);
+        CREATE INDEX IF NOT EXISTS idx_consent_log_request ON consent_log (request_id, token_used, revoked);
+        CREATE INDEX IF NOT EXISTS idx_agents_human_active ON agents (human_key_image, revoked, expires_at);
+        CREATE INDEX IF NOT EXISTS idx_api_usage_client_ts ON api_usage (client_name, timestamp);
+        "#,
+    )
+    .expect("DB schema init failed");
 
     // Migration-safe add for existing databases created before requested_claims_json existed.
     let _ = conn.execute(
@@ -180,7 +229,33 @@ pub fn init_schema(conn: &Connection) {
         [],
     );
     let _ = conn.execute(
+        "ALTER TABLE consent_log ADD COLUMN consent_expires_at INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
         "ALTER TABLE agents ADD COLUMN assurance_level TEXT NOT NULL DEFAULT 'delegated_nonbank'",
         [],
     );
+
+    let run_revoke_migration = std::env::var("SAURON_REVOKE_LEGACY_DELEGATED_NONBANK")
+        .map(|v| {
+            let low = v.to_ascii_lowercase();
+            v == "1" || low == "true" || low == "yes"
+        })
+        .unwrap_or(true);
+
+    if run_revoke_migration {
+        let revoked = conn
+            .execute(
+                "UPDATE agents SET revoked = 1 WHERE assurance_level = 'delegated_nonbank' AND revoked = 0",
+                [],
+            )
+            .unwrap_or(0);
+        if revoked > 0 {
+            println!(
+                "[DB][MIGRATION] Revoked {} legacy delegated_nonbank agent(s).",
+                revoked
+            );
+        }
+    }
 }

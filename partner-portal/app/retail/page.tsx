@@ -40,7 +40,7 @@ const PRODUCTS: Product[] = [
   },
 ];
 
-const DEMO_MIN_CREDITS = 1_000_000;
+const DEMO_MIN_CREDITS = 1;
 
 type MerchantClient = {
   name: string;
@@ -61,6 +61,9 @@ type ConsentRequestResponse = {
 
 type RetrieveResponse = {
   claims?: Record<string, unknown>;
+  proof?: {
+    verified?: boolean;
+  };
   identity?: {
     is_agent?: boolean;
     trust_verified?: boolean;
@@ -69,6 +72,21 @@ type RetrieveResponse = {
 };
 
 type ActorMode = "user" | "agent";
+
+type UserProfile = {
+  first_name: string;
+  last_name: string;
+  email: string;
+  date_of_birth: string;
+  nationality: string;
+};
+
+type AgeCheckResponse = UserProfile & {
+  min_age: number;
+  is_over_threshold: boolean;
+  profile_complete: boolean;
+  missing_fields: string[];
+};
 
 export default function RetailPage() {
   const [actorMode, setActorMode] = useState<ActorMode>("user");
@@ -81,6 +99,8 @@ export default function RetailPage() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [proofClaims, setProofClaims] = useState<Record<string, unknown> | null>(null);
   const [identitySummary, setIdentitySummary] = useState<RetrieveResponse["identity"] | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [isAdult, setIsAdult] = useState<boolean | null>(null);
   const [orderId, setOrderId] = useState("");
   const [paying, setPaying] = useState(false);
 
@@ -113,8 +133,49 @@ export default function RetailPage() {
     setLoggedIn(false);
     setProofClaims(null);
     setIdentitySummary(null);
+    setProfile(null);
+    setIsAdult(null);
     setOrderId("");
     setPaying(false);
+  };
+
+  const loadProfileFromDbAgeCheck = async (consentToken: string) => {
+    if (!merchant) throw new Error("Merchant not configured");
+
+    const res = await fetch(`${API}/kyc/age_check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        consent_token: consentToken,
+        site_name: merchant.name,
+        min_age: 18,
+        required_fields: ["first_name", "last_name", "email", "date_of_birth", "nationality"],
+      }),
+    });
+    const data = (await res.json()) as Partial<AgeCheckResponse> & { error?: string; detail?: string };
+    if (!res.ok) {
+      throw new Error(data.error || data.detail || "Unable to verify age from DB");
+    }
+    if (data.profile_complete !== true) {
+      const missing = Array.isArray(data.missing_fields) ? data.missing_fields.join(", ") : "unknown fields";
+      throw new Error(`Persona missing required data: ${missing}`);
+    }
+    if (typeof data.first_name !== "string" || typeof data.last_name !== "string" || typeof data.email !== "string") {
+      throw new Error("DB persona payload invalid");
+    }
+
+    const profileData: UserProfile = {
+      first_name: data.first_name,
+      last_name: data.last_name,
+      email: data.email,
+      date_of_birth: typeof data.date_of_birth === "string" ? data.date_of_birth : "",
+      nationality: typeof data.nationality === "string" ? data.nationality : "",
+    };
+
+    setProfile(profileData);
+    setFullName(`${profileData.first_name} ${profileData.last_name}`.trim());
+    setEmail(profileData.email);
+    setIsAdult(data.is_over_threshold === true);
   };
 
   useEffect(() => {
@@ -170,7 +231,7 @@ export default function RetailPage() {
       body: JSON.stringify({ site_name: merchant.name, amount: refillAmount }),
     });
     if (!topUp.ok) {
-      throw new Error("Cannot set unlimited demo credits for merchant");
+      throw new Error("Cannot add demo credits for merchant");
     }
     await refreshMerchant();
   };
@@ -178,6 +239,10 @@ export default function RetailPage() {
   const addToCart = (p: Product) => {
     if (!loggedIn) {
       showToast("error", "Login first", "Run Sauron login simulation before shopping.");
+      return;
+    }
+    if (p.ageRestricted && isAdult !== true) {
+      showToast("error", "Age restricted", "This product is 18+ and this persona is not in 18+ eligibility.");
       return;
     }
     setCart((prev) => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
@@ -283,6 +348,13 @@ export default function RetailPage() {
     }
 
     const typed = retData as RetrieveResponse;
+    if (typed.proof?.verified !== true) {
+      throw new Error("ID proof verification failed");
+    }
+    if (typed.identity?.trust_verified !== true) {
+      throw new Error("Identity trust verification failed");
+    }
+
     setLoggedIn(true);
     setProofClaims(typed.claims || null);
     setIdentitySummary(typed.identity || null);
@@ -296,8 +368,9 @@ export default function RetailPage() {
       await ensureMerchantCredits();
       const reqData = await createConsentRequest();
       const consentData = await openConsentPopup(reqData.request_id, reqData.consent_url);
+      await loadProfileFromDbAgeCheck(consentData.consent_token);
       await retrieveWithConsent(consentData.consent_token);
-      showToast("success", "User login verified", "Sauron Chrome extension flow complete. You can now shop and pay.");
+      showToast("success", "User login verified", "Sauron flow complete. You can now shop and pay.");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
       showToast("error", "User login failed", message);
@@ -332,6 +405,7 @@ export default function RetailPage() {
         throw new Error((consentData.error as string) || (consentData.detail as string) || "Agent consent failed");
       }
 
+      await loadProfileFromDbAgeCheck(consentData.consent_token);
       await retrieveWithConsent(consentData.consent_token, agentAjwt.trim());
       showToast("success", "Agent login verified", "Agent-mediated Sauron flow complete. You can now shop and pay.");
     } catch (err: unknown) {
@@ -347,6 +421,23 @@ export default function RetailPage() {
       showToast("error", "Login required", "Run user or agent login simulation before payment.");
       return;
     }
+    if (!profile) {
+      showToast("error", "Persona required", "No DB persona loaded for this session.");
+      return;
+    }
+
+    const expectedName = `${profile.first_name} ${profile.last_name}`.trim().toLowerCase();
+    if (fullName.trim().toLowerCase() !== expectedName || email.trim().toLowerCase() !== profile.email.toLowerCase()) {
+      showToast("error", "Identity mismatch", "Checkout identity must match DB persona.");
+      return;
+    }
+
+    const hasRestricted = cartItems.some((i) => i.ageRestricted);
+    if (hasRestricted && isAdult !== true) {
+      showToast("error", "Age restricted", "Persona not in 18+ eligibility ring. Purchase blocked.");
+      return;
+    }
+
     setPaying(true);
     try {
       await new Promise((r) => setTimeout(r, 1200));
@@ -370,7 +461,7 @@ export default function RetailPage() {
           <div>
             <p className="text-xs uppercase tracking-widest text-neutral-400">Sauron Client Experience</p>
             <h1 className="text-2xl font-bold text-neutral-900">Retail Checkout Demo</h1>
-            <p className="text-sm text-neutral-500 mt-1">Merchant simulation: login with Sauron Chrome extension, choose products, pay. Then replay same journey with an agent.</p>
+            <p className="text-sm text-neutral-500 mt-1">Merchant simulation with strict DB persona checks and proof verification.</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-neutral-400">Merchant</p>
@@ -406,8 +497,8 @@ export default function RetailPage() {
           <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4 space-y-3">
             <p className="text-sm text-neutral-600">
               {actorMode === "user"
-                ? "Run login as normal Sauron user via Chrome extension window."
-                : "Run delegated login with an A-JWT agent token (no popup)."}
+                ? "Run login as normal Sauron user via extension window."
+                : "Run delegated login with A-JWT agent token."}
             </p>
 
             {actorMode === "agent" && (
@@ -426,7 +517,7 @@ export default function RetailPage() {
                 disabled={loggingIn}
                 className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold disabled:opacity-50"
               >
-                {loggingIn ? "Running login..." : actorMode === "user" ? "Login with Sauron Chrome extension" : "Login as Agent"}
+                {loggingIn ? "Running login..." : actorMode === "user" ? "Login with Sauron" : "Login as Agent"}
               </button>
               <button
                 onClick={resetJourney}
@@ -441,6 +532,11 @@ export default function RetailPage() {
                 ? `Login done. trust_verified=${identitySummary?.trust_verified ? "true" : "false"} | is_agent=${identitySummary?.is_agent ? "true" : "false"}`
                 : "Not logged in yet."}
             </div>
+            {profile && (
+              <div className="text-xs text-neutral-500">
+                Persona(DB): {profile.first_name} {profile.last_name} ({profile.email}) • DOB {profile.date_of_birth} • {isAdult ? "18+" : "under 18"}
+              </div>
+            )}
           </div>
         </section>
 
@@ -459,17 +555,17 @@ export default function RetailPage() {
                     <p className="text-xs text-neutral-500">{p.subtitle}</p>
                   </div>
                   <div className="flex items-center justify-between">
-                    <p className="font-bold">€{p.price.toFixed(2)}</p>
+                    <p className="font-bold">EUR {p.price.toFixed(2)}</p>
                     {p.ageRestricted && (
                       <span className="text-[10px] px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200">18+</span>
                     )}
                   </div>
                   <button
                     onClick={() => addToCart(p)}
-                    disabled={!loggedIn}
+                    disabled={!loggedIn || (p.ageRestricted && isAdult !== true)}
                     className="mt-auto w-full py-2 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-700 disabled:opacity-50"
                   >
-                    Add to basket
+                    {p.ageRestricted && isAdult !== true ? "18+ blocked" : "Add to basket"}
                   </button>
                 </div>
               ))}
@@ -487,7 +583,7 @@ export default function RetailPage() {
                     <div key={item.id} className="flex items-center justify-between gap-2">
                       <div>
                         <p className="text-sm font-medium">{item.name}</p>
-                        <p className="text-xs text-neutral-500">€{item.price.toFixed(2)} each</p>
+                        <p className="text-xs text-neutral-500">EUR {item.price.toFixed(2)} each</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <button className="w-6 h-6 rounded border" onClick={() => changeQty(item.id, item.qty - 1)}>-</button>
@@ -497,9 +593,9 @@ export default function RetailPage() {
                     </div>
                   ))}
                   <div className="pt-2 border-t text-sm space-y-1">
-                    <div className="flex justify-between"><span className="text-neutral-500">Subtotal</span><span>€{subtotal.toFixed(2)}</span></div>
-                    <div className="flex justify-between"><span className="text-neutral-500">Shipping</span><span>€{shipping.toFixed(2)}</span></div>
-                    <div className="flex justify-between font-bold text-base"><span>Total</span><span>€{total.toFixed(2)}</span></div>
+                    <div className="flex justify-between"><span className="text-neutral-500">Subtotal</span><span>EUR {subtotal.toFixed(2)}</span></div>
+                    <div className="flex justify-between"><span className="text-neutral-500">Shipping</span><span>EUR {shipping.toFixed(2)}</span></div>
+                    <div className="flex justify-between font-bold text-base"><span>Total</span><span>EUR {total.toFixed(2)}</span></div>
                   </div>
                   <button
                     onClick={() => setStep("checkout")}
@@ -536,9 +632,12 @@ export default function RetailPage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="space-y-3">
                   <h3 className="font-semibold">Delivery</h3>
-                  <input className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" />
-                  <input className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
+                  <input className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" readOnly={!!profile} />
+                  <input className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" readOnly={!!profile} />
                   <input className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Address" />
+                  {profile && (
+                    <p className="text-xs text-neutral-500">Name and email locked from DB persona ID.</p>
+                  )}
                 </div>
 
                 <div className="space-y-3">
@@ -554,7 +653,7 @@ export default function RetailPage() {
                     disabled={paying || !loggedIn}
                     className="w-full py-2.5 rounded-lg bg-emerald-600 text-white font-semibold text-sm disabled:opacity-50"
                   >
-                    {paying ? "Processing payment..." : `Pay €${total.toFixed(2)}`}
+                    {paying ? "Processing payment..." : `Pay EUR ${total.toFixed(2)}`}
                   </button>
                 </div>
               </div>
@@ -564,7 +663,7 @@ export default function RetailPage() {
               <div className="border border-emerald-200 bg-emerald-50 rounded-xl p-5 space-y-2">
                 <p className="text-emerald-800 font-semibold">Payment successful</p>
                 <p className="text-sm text-emerald-700">Order {orderId} confirmed. Receipt sent to {email}.</p>
-                <p className="text-xs text-emerald-700">Merchant billed: 1 Sauron credit for the login flow ({identitySummary?.is_agent ? "agent" : "user"} path).</p>
+                <p className="text-xs text-emerald-700">Merchant billed: 1 Sauron credit for login flow ({identitySummary?.is_agent ? "agent" : "user"} path).</p>
               </div>
             )}
           </section>

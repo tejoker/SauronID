@@ -43,28 +43,13 @@ pub fn authorize_action(level: AssuranceLevel, action: &str) -> PolicyDecision {
             allowed: true,
             reason: "delegated_bank allows all policy actions".to_string(),
         },
-        AssuranceLevel::DelegatedNonBank => {
-            let denied = [
-                "payment_initiation",
-                "wire_transfer",
-                "loan_origination",
-                "high_risk_payment",
-            ];
-            if denied.contains(&normalized.as_str()) {
-                PolicyDecision {
-                    allowed: false,
-                    reason: format!(
-                        "action '{}' requires delegated_bank assurance level",
-                        action
-                    ),
-                }
-            } else {
-                PolicyDecision {
-                    allowed: true,
-                    reason: "delegated_nonbank allows low-risk proof actions".to_string(),
-                }
-            }
-        }
+        AssuranceLevel::DelegatedNonBank => PolicyDecision {
+            allowed: false,
+            reason: format!(
+                "action '{}' blocked for delegated_nonbank; use delegated_bank or autonomous_web3",
+                action
+            ),
+        },
         AssuranceLevel::AutonomousWeb3 => {
             let allowed = [
                 "read_identity",

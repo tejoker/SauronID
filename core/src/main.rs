@@ -3,14 +3,26 @@ use axum::{
     routing::{get, post, delete},
     extract::{Request, State, Json, Path},
     http::{StatusCode, HeaderMap},
+    response::Response,
     Router,
     middleware,
 };
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use hmac::{Hmac, Mac};
 use rusqlite::params;
-use sauron_core::{oprf, ring, state::{ServerState, verify_token, token_value, sign_token}, admin};
+use sauron_core::{
+    admin,
+    oprf,
+    ring,
+    state::{
+        is_development_runtime,
+        sign_token,
+        token_value,
+        verify_token,
+        ServerState,
+    },
+};
 use sauron_core::{identity::{Identity, UserData}, db, agent};
 use sauron_core::policy::{self, AssuranceLevel};
 use curve25519_dalek::ristretto::CompressedRistretto;
@@ -24,9 +36,19 @@ type HmacSha256 = Hmac<Sha256>;
 #[tokio::main]
 async fn main() {
     // Initialise la base SQLite en mémoire.
-    let conn = db::open_db();
-    let db_arc = Arc::new(Mutex::new(conn));
+    let db_handle = db::open_db();
+    let db_arc = Arc::new(db_handle);
     let state = Arc::new(RwLock::new(ServerState::new(Arc::clone(&db_arc))));
+
+    let dev_routes = Router::new()
+        .route("/register_user", post(dev_register_user))
+        .route("/sites", get(dev_get_sites))
+        .route("/clients", get(dev_get_clients))
+        .route("/client/{name}", get(dev_get_client_detail))
+        .route("/client/{name}/users", get(dev_get_client_users))
+        .route("/buy_tokens", post(dev_buy_tokens))
+        .route("/zkp_login", post(dev_zkp_login))
+        .route_layer(middleware::from_fn(dev_only_middleware));
 
     let admin_routes = Router::new()
         .route("/users",             get(admin::get_users))
@@ -48,19 +70,12 @@ async fn main() {
         .route("/group",             get(handle_get_group))
         .nest("/admin", admin_routes)
         // DEV: endpoints sans crypto côté frontend
-        .route("/dev/register_user", post(dev_register_user))
-        .route("/dev/sites",         get(dev_get_sites))
-        .route("/dev/clients",       get(dev_get_clients))
-        .route("/dev/client/{name}",       get(dev_get_client_detail))
-        .route("/dev/client/{name}/users", get(dev_get_client_users))
-        .route("/dev/buy_tokens",    post(dev_buy_tokens))
+        .nest("/dev", dev_routes)
         // ZKP
         .route("/zkp/build_ring",    post(handle_build_ring))
         .route("/zkp/verify_proof",  post(handle_verify_proof))
         .route("/zkp/proof_material", post(handle_zkp_proof_material))
         .route("/zkp/client_ring",   get(handle_zkp_client_ring))
-        // DEV ZKP (frontend-friendly — crypto côté serveur)
-        .route("/dev/zkp_login",     post(dev_zkp_login))
         // A-JWT Agentic Layer
         .route("/agent/register",                        post(agent::register_agent))
         .route("/agent/verify",                          post(agent::verify_agent_token))
@@ -71,6 +86,7 @@ async fn main() {
         .route("/kyc/request",                           post(kyc_request))
         .route("/kyc/consent",                           post(kyc_consent))
         .route("/kyc/consent_info/{request_id}",         get(kyc_consent_info))
+        .route("/kyc/age_check",                         post(kyc_age_check))
         .route(
             "/kyc/retrieve",
             post(kyc_retrieve).route_layer(middleware::from_fn_with_state(
@@ -120,6 +136,31 @@ async fn main() {
     println!("--------------------------------------------------");
 
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn dev_only_middleware(
+    request: Request,
+    next: middleware::Next,
+) -> Result<Response, (StatusCode, String)> {
+    if is_development_runtime() {
+        return Ok(next.run(request).await);
+    }
+
+    let explicitly_enabled = std::env::var("SAURON_ENABLE_DEV_ENDPOINTS")
+        .map(|v| {
+            let low = v.to_ascii_lowercase();
+            v == "1" || low == "true" || low == "yes"
+        })
+        .unwrap_or(false);
+
+    if explicitly_enabled {
+        return Ok(next.run(request).await);
+    }
+
+    Err((
+        StatusCode::FORBIDDEN,
+        "dev endpoints are disabled outside development runtime".to_string(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────
@@ -685,6 +726,29 @@ async fn dev_register_user(
                      VALUES (?1, ?2, 'register', ?3)",
                     params![payload.site_name, hex_ki, ts],
                 );
+
+                // Dev parity: BANK registrations also materialize a bank_kyc_link.
+                let is_bank_client = db
+                    .query_row(
+                        "SELECT COUNT(*) FROM clients WHERE name = ?1 AND client_type = 'BANK'",
+                        params![payload.site_name],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0)
+                    > 0;
+                if is_bank_client {
+                    let bank_customer_id = format!("dev:{}:{}", payload.site_name, hex_ki);
+                    let metadata = serde_json::json!({
+                        "source": "dev_register_user",
+                        "site_name": payload.site_name,
+                    })
+                    .to_string();
+                    let _ = db.execute(
+                        "INSERT OR REPLACE INTO bank_kyc_links (bank_customer_id, user_key_image, updated_at, metadata_json)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![bank_customer_id, hex_ki, ts, metadata],
+                    );
+                }
             }
         }
 
@@ -1747,9 +1811,9 @@ async fn kyc_consent(
         let rows = db
             .execute(
                 "UPDATE consent_log
-                 SET user_key_image = ?1, granted_at = ?2, consent_token = ?3
-                 WHERE request_id = ?4 AND consent_token IS NULL AND revoked = 0 AND token_used = 0",
-                params![hex_ki, ts, consent_token, payload.request_id],
+                 SET user_key_image = ?1, granted_at = ?2, consent_expires_at = ?3, consent_token = ?4
+                 WHERE request_id = ?5 AND consent_token IS NULL AND revoked = 0 AND token_used = 0",
+                params![hex_ki, ts, expires_at, consent_token, payload.request_id],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if rows == 0 {
@@ -1788,29 +1852,139 @@ struct KycRetrieveBody {
     required_action: Option<String>,
 }
 
+fn default_min_age_18() -> u8 { 18 }
+
+#[derive(Deserialize)]
+struct KycAgeCheckBody {
+    consent_token: String,
+    site_name: String,
+    #[serde(default = "default_min_age_18")]
+    min_age: u8,
+    #[serde(default)]
+    required_fields: Vec<String>,
+}
+
+async fn kyc_age_check(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<KycAgeCheckBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if payload.consent_token.trim().is_empty() || payload.site_name.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "consent_token and site_name are required".into()));
+    }
+
+    let (user_ki, stored_site, token_used, revoked, consent_expires_at): (String, String, i64, i64, i64) = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT user_key_image, site_name, token_used, revoked, consent_expires_at FROM consent_log WHERE consent_token = ?1",
+            params![payload.consent_token],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .map_err(|_| (StatusCode::NOT_FOUND, "Consent token not found".into()))?
+    };
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+
+    if revoked != 0 {
+        return Err((StatusCode::UNAUTHORIZED, "Consent token revoked".into()));
+    }
+    if token_used != 0 {
+        return Err((StatusCode::CONFLICT, "Consent token already used".into()));
+    }
+    if consent_expires_at > 0 && now > consent_expires_at {
+        return Err((StatusCode::UNAUTHORIZED, "Consent token expired".into()));
+    }
+    if stored_site != payload.site_name {
+        return Err((StatusCode::UNAUTHORIZED, "Consent token does not belong to this site".into()));
+    }
+
+    let profile: UserData = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.query_row(
+            "SELECT first_name, last_name, email, date_of_birth, nationality FROM users WHERE key_image_hex = ?1",
+            params![user_ki],
+            |row| Ok(UserData {
+                first_name: row.get(0)?,
+                last_name: row.get(1)?,
+                email: row.get(2)?,
+                date_of_birth: row.get(3)?,
+                nationality: row.get(4)?,
+            }),
+        )
+        .map_err(|_| (StatusCode::NOT_FOUND, "User profile not found".into()))?
+    };
+
+    let is_over_threshold = user_passes_filters(&profile, Some(payload.min_age), None);
+
+    let mut missing_fields: Vec<String> = Vec::new();
+    for field in &payload.required_fields {
+        let value = match field.as_str() {
+            "first_name" => profile.first_name.as_str(),
+            "last_name" => profile.last_name.as_str(),
+            "email" => profile.email.as_str(),
+            "date_of_birth" => profile.date_of_birth.as_str(),
+            "nationality" => profile.nationality.as_str(),
+            _ => {
+                missing_fields.push(field.clone());
+                continue;
+            }
+        };
+        if value.trim().is_empty() {
+            missing_fields.push(field.clone());
+        }
+    }
+    let profile_complete = missing_fields.is_empty();
+
+    Ok(Json(serde_json::json!({
+        "site_name": payload.site_name,
+        "min_age": payload.min_age,
+        "is_over_threshold": is_over_threshold,
+        "profile_complete": profile_complete,
+        "missing_fields": missing_fields,
+        "first_name": profile.first_name,
+        "last_name": profile.last_name,
+        "email": profile.email,
+        "date_of_birth": profile.date_of_birth,
+        "nationality": profile.nationality,
+    })))
+}
+
 async fn kyc_retrieve(
     agent_binding: Option<axum::extract::Extension<DelegatedAgentBinding>>,
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(payload): Json<KycRetrieveBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let (user_ki, stored_site, token_used, issuing_agent_id, requested_claims_json) = {
+    let (user_ki, stored_site, token_used, revoked, consent_expires_at, issuing_agent_id, requested_claims_json) = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
         db.query_row(
-            "SELECT user_key_image, site_name, token_used, issuing_agent_id, requested_claims_json FROM consent_log WHERE consent_token = ?1",
+            "SELECT user_key_image, site_name, token_used, revoked, consent_expires_at, issuing_agent_id, requested_claims_json FROM consent_log WHERE consent_token = ?1",
             params![payload.consent_token],
             |r| Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, String>(4)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
             )),
         ).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid or expired consent token".into()))?
     };
 
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+
+    if revoked != 0 {
+        return Err((StatusCode::UNAUTHORIZED, "Consent token revoked".into()));
+    }
+
     if token_used != 0 {
         return Err((StatusCode::CONFLICT, "Consent token already used".into()));
+    }
+
+    if consent_expires_at > 0 && now > consent_expires_at {
+        return Err((StatusCode::UNAUTHORIZED, "Consent token expired".into()));
     }
 
     if stored_site != payload.site_name {
@@ -1844,42 +2018,38 @@ async fn kyc_retrieve(
         .unwrap_or_else(|| "CredentialVerification".to_string());
 
     let issuer_url = state.read().unwrap().issuer_url.clone();
-    let allow_dev_mock = std::env::var("SAURON_ALLOW_DEV_MOCK_PROOF")
-        .map(|v| {
-            let low = v.to_ascii_lowercase();
-            v == "1" || low == "true" || low == "yes"
-        })
+    let requested_dev_mock = proof
+        .get("dev_mock")
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let proof_verified = if allow_dev_mock
-        && proof
-            .get("dev_mock")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+    if requested_dev_mock {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "dev_mock proofs are disabled".into(),
+        ));
+    }
+
+    let verify_body = serde_json::json!({
+        "circuit": circuit,
+        "proof": proof,
+        "public_signals": public_signals,
+        "publicSignals": public_signals
+    });
+    let proof_verified = match reqwest::Client::new()
+        .post(format!("{issuer_url}/verify-proof"))
+        .json(&verify_body)
+        .send()
+        .await
     {
-        true
-    } else {
-        let verify_body = serde_json::json!({
-            "circuit": circuit,
-            "proof": proof,
-            "public_signals": public_signals,
-            "publicSignals": public_signals
-        });
-        match reqwest::Client::new()
-            .post(format!("{issuer_url}/verify-proof"))
-            .json(&verify_body)
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => {
-                let resp: serde_json::Value = r.json().await.unwrap_or_default();
-                resp.get("verified")
-                    .or_else(|| resp.get("valid"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            }
-            _ => false,
+        Ok(r) if r.status().is_success() => {
+            let resp: serde_json::Value = r.json().await.unwrap_or_default();
+            resp.get("verified")
+                .or_else(|| resp.get("valid"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
         }
+        _ => false,
     };
 
     if !proof_verified {
@@ -2090,6 +2260,18 @@ fn build_zkp_assertions(
     circuit: &str,
     public_signals: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
+    fn parse_bool_signal(v: Option<&String>) -> Option<bool> {
+        v.and_then(|s| s.parse::<u8>().ok()).and_then(|n| match n {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        })
+    }
+
+    fn parse_u64_signal(v: Option<&String>) -> Option<u64> {
+        v.and_then(|s| s.parse::<u64>().ok())
+    }
+
     let mut assertions = serde_json::Map::new();
     assertions.insert("proof_verified".to_string(), serde_json::Value::Bool(true));
     assertions.insert("circuit".to_string(), serde_json::Value::String(circuit.to_string()));
@@ -2097,28 +2279,27 @@ fn build_zkp_assertions(
     match circuit {
         "AgeVerification" => {
             let (age_ok, threshold) = if public_signals.len() >= 5 {
-                // Real Groth16 output layout: [ageThreshold, currentDate, issuerAx, issuerAy, valid]
-                let age_ok = public_signals
-                    .last()
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let threshold = public_signals
-                    .first()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0);
-                (age_ok, threshold)
+                // Accept both layouts:
+                //  - outputs-last:  [ageThreshold, currentDate, issuerAx, issuerAy, valid]
+                //  - outputs-first: [valid, ageThreshold, currentDate, issuerAx, issuerAy]
+                let first_bool = parse_bool_signal(public_signals.first());
+                let last_bool = parse_bool_signal(public_signals.last());
+
+                if first_bool.is_some() && last_bool.is_none() {
+                    (
+                        first_bool.unwrap_or(false),
+                        parse_u64_signal(public_signals.get(1)).unwrap_or(0),
+                    )
+                } else {
+                    (
+                        last_bool.unwrap_or(false),
+                        parse_u64_signal(public_signals.first()).unwrap_or(0),
+                    )
+                }
             } else {
                 // Backward-compatible mock layout: [age_ok, threshold]
-                let age_ok = public_signals
-                    .first()
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let threshold = public_signals
-                    .get(1)
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0);
+                let age_ok = parse_bool_signal(public_signals.first()).unwrap_or(false);
+                let threshold = parse_u64_signal(public_signals.get(1)).unwrap_or(0);
                 (age_ok, threshold)
             };
             assertions.insert("age_over_threshold".to_string(), serde_json::Value::Bool(age_ok));
@@ -2129,46 +2310,37 @@ fn build_zkp_assertions(
         }
         "CredentialVerification" => {
             let (age_ok, nationality_ok, credential_ok, threshold) = if public_signals.len() >= 9 {
-                // Real Groth16 output layout:
-                // [currentDate, ageThreshold, requiredNationality, merkleRoot, issuerAx, issuerAy, ageVerified, nationalityMatched, credentialValid]
-                let n = public_signals.len();
-                let age_ok = public_signals
-                    .get(n - 3)
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let nationality_ok = public_signals
-                    .get(n - 2)
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let credential_ok = public_signals
-                    .get(n - 1)
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let threshold = public_signals
-                    .get(1)
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0);
-                (age_ok, nationality_ok, credential_ok, threshold)
+                // Accept both layouts:
+                //  - outputs-last:
+                //    [currentDate, ageThreshold, requiredNationality, merkleRoot, issuerAx, issuerAy, ageVerified, nationalityMatched, credentialValid]
+                //  - outputs-first:
+                //    [ageVerified, nationalityMatched, credentialValid, currentDate, ageThreshold, requiredNationality, merkleRoot, issuerAx, issuerAy]
+                let first_three_binary = public_signals
+                    .iter()
+                    .take(3)
+                    .all(|v| parse_bool_signal(Some(v)).is_some());
+
+                if first_three_binary {
+                    (
+                        parse_bool_signal(public_signals.first()).unwrap_or(false),
+                        parse_bool_signal(public_signals.get(1)).unwrap_or(false),
+                        parse_bool_signal(public_signals.get(2)).unwrap_or(false),
+                        parse_u64_signal(public_signals.get(4)).unwrap_or(0),
+                    )
+                } else {
+                    let n = public_signals.len();
+                    (
+                        parse_bool_signal(public_signals.get(n - 3)).unwrap_or(false),
+                        parse_bool_signal(public_signals.get(n - 2)).unwrap_or(false),
+                        parse_bool_signal(public_signals.get(n - 1)).unwrap_or(false),
+                        parse_u64_signal(public_signals.get(1)).unwrap_or(0),
+                    )
+                }
             } else {
                 // Backward-compatible mock layout: [age_ok, nationality_ok, credential_ok]
-                let age_ok = public_signals
-                    .first()
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let nationality_ok = public_signals
-                    .get(1)
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
-                let credential_ok = public_signals
-                    .get(2)
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1;
+                let age_ok = parse_bool_signal(public_signals.first()).unwrap_or(false);
+                let nationality_ok = parse_bool_signal(public_signals.get(1)).unwrap_or(false);
+                let credential_ok = parse_bool_signal(public_signals.get(2)).unwrap_or(false);
                 (age_ok, nationality_ok, credential_ok, 0)
             };
             assertions.insert("age_over_threshold".to_string(), serde_json::Value::Bool(age_ok));
@@ -2770,6 +2942,13 @@ async fn agent_kyc_consent(
         assurance
     };
 
+    if assurance_level == "delegated_nonbank" {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "delegated_nonbank agents are disabled; use bank-linked delegated registration or /agent/vc/issue".into(),
+        ));
+    }
+
     // 3. Verify consent request exists + is for this site + not yet claimed
     let stored_site: String = {
         let st = state.read().unwrap();
@@ -2803,8 +2982,8 @@ async fn agent_kyc_consent(
         let rows = {
             let db = st.db.lock().unwrap();
             db.execute(
-                "UPDATE consent_log SET consent_token = ?1, user_key_image = ?2, granted_at = ?3, issuing_agent_id = ?4 WHERE request_id = ?5 AND consent_token IS NULL",
-                params![consent_token, human_key_image, now, agent_id, payload.request_id],
+                "UPDATE consent_log SET consent_token = ?1, user_key_image = ?2, granted_at = ?3, consent_expires_at = ?4, issuing_agent_id = ?5 WHERE request_id = ?6 AND consent_token IS NULL",
+                params![consent_token, human_key_image, now, expires_at, agent_id, payload.request_id],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         };
@@ -2862,6 +3041,15 @@ struct AgentVcIssueBody {
     /// Lifetime hours (default 24, max 720).
     #[serde(default = "default_vc_ttl")]
     ttl_hours: i64,
+    /// Optional Groth16 ZKP proof for non-bank KYA.
+    #[serde(default)]
+    zkp_proof: Option<serde_json::Value>,
+    /// Circuit name for non-bank proof (defaults to CredentialVerification).
+    #[serde(default)]
+    zkp_circuit: Option<String>,
+    /// Public signals for non-bank proof.
+    #[serde(default)]
+    zkp_public_signals: Option<Vec<String>>,
 }
 
 fn default_vc_ttl() -> i64 { 24 }
@@ -2882,8 +3070,8 @@ async fn agent_vc_issue(
         return Err((StatusCode::UNAUTHORIZED, "human_key_image payload does not match authenticated session".into()));
     }
 
-    // 1. Verify authenticated human exists and is present in user ring.
-    {
+    // 1. Verify authenticated human exists and resolve trust source.
+    let (human_in_user_ring, has_bank_link) = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
         let human_pub_hex: String = db
@@ -2895,9 +3083,18 @@ async fn agent_vc_issue(
             .map_err(|_| {
                 (
                     StatusCode::NOT_FOUND,
-                    "Human user not found — must be registered via bank KYC first".into(),
+                    "Human user not found — must be registered in trusted user directory first".into(),
                 )
             })?;
+
+        let has_bank_link: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
+                params![human_key_image],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
 
         let bytes = hex::decode(&human_pub_hex)
             .map_err(|_| (StatusCode::UNAUTHORIZED, "Human user public key encoding invalid".into()))?;
@@ -2907,12 +3104,84 @@ async fn agent_vc_issue(
         let pt = CompressedRistretto(arr)
             .decompress()
             .ok_or((StatusCode::UNAUTHORIZED, "Human user public key point invalid".into()))?;
-        if !st.user_group.members.contains(&pt) {
+
+        (st.user_group.members.contains(&pt), has_bank_link)
+    };
+
+    let mut non_bank_kya_assertions: Option<serde_json::Map<String, serde_json::Value>> = None;
+    let root_of_trust: String;
+
+    if has_bank_link && human_in_user_ring {
+        root_of_trust = "did:sauron:idp:bank_kyc".to_string();
+    } else {
+        let proof = payload
+            .zkp_proof
+            .clone()
+            .ok_or((StatusCode::BAD_REQUEST, "zkp_proof is required for non-bank KYA issuance".into()))?;
+        let public_signals = payload
+            .zkp_public_signals
+            .clone()
+            .ok_or((StatusCode::BAD_REQUEST, "zkp_public_signals are required for non-bank KYA issuance".into()))?;
+        if public_signals.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "zkp_public_signals must not be empty".into()));
+        }
+        let circuit = payload
+            .zkp_circuit
+            .clone()
+            .unwrap_or_else(|| "CredentialVerification".to_string());
+
+        let requested_dev_mock = proof
+            .get("dev_mock")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if requested_dev_mock {
             return Err((
-                StatusCode::UNAUTHORIZED,
-                "Human user is not in trusted user ring".into(),
+                StatusCode::BAD_REQUEST,
+                "dev_mock proofs are disabled".into(),
             ));
         }
+
+        let issuer_url = state.read().unwrap().issuer_url.clone();
+        let verify_body = serde_json::json!({
+            "circuit": circuit,
+            "proof": proof,
+            "public_signals": public_signals,
+            "publicSignals": public_signals,
+        });
+        let proof_verified = match reqwest::Client::new()
+            .post(format!("{issuer_url}/verify-proof"))
+            .json(&verify_body)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                let resp: serde_json::Value = r.json().await.unwrap_or_default();
+                resp.get("verified")
+                    .or_else(|| resp.get("valid"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            }
+            _ => false,
+        };
+
+        if !proof_verified {
+            return Err((StatusCode::UNAUTHORIZED, "Non-bank KYA proof verification failed".into()));
+        }
+
+        let assertions = build_zkp_assertions(&circuit, &public_signals);
+        let credential_valid = assertions
+            .get("credential_valid")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !credential_valid {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Non-bank KYA requires credential_valid=1 in CredentialVerification proof".into(),
+            ));
+        }
+
+        non_bank_kya_assertions = Some(assertions);
+        root_of_trust = "did:sauron:idp:non_bank_zkp".to_string();
     }
 
     // 2. Uniqueness check — each human may issue at most 10 active VCs
@@ -2964,8 +3233,8 @@ async fn agent_vc_issue(
             "humanOwner": format!("did:sauron:user:{}", &human_key_image[..16]),
             "description": payload.description,
             "scope": payload.scope,
-            // Trust derives from human's bank-verified KYC — no separate liveness needed
-            "rootOfTrust": "did:sauron:idp"
+            "rootOfTrust": root_of_trust,
+            "kyaEvidence": non_bank_kya_assertions,
         },
     });
 
@@ -3052,6 +3321,10 @@ async fn agent_vc_issue(
         "vc_hash": vc_hash,
         "ajwt": ajwt,
         "expires_at": expires_at,
-        "trust_chain": "SauronID self-sovereign (bank KYC as root of trust)",
+        "trust_chain": if has_bank_link && human_in_user_ring {
+            "SauronID self-sovereign (bank-linked human trust root)"
+        } else {
+            "SauronID self-sovereign (non-bank CredentialVerification proof root)"
+        },
     })))
 }
