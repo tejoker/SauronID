@@ -6,8 +6,10 @@
  *   2. PoP key generation
  *   3. A-JWT forging and verification
  *   4. Delegation chain (parent → child agent)
- *   5. Workflow tracking with violation detection
- *   6. AgentShimClient full lifecycle
+ *   5. Delegation scope denial (negative)
+ *   6. Verifier policy (audience, jti replay)
+ *   7. Workflow tracking with violation detection
+ *   (AgentShimClient live path: npm run test:integration)
  */
 
 import {
@@ -23,9 +25,11 @@ import {
     createDelegationToken,
     validateDelegationChain,
     initializeIdPKeys,
+    JtiReplayGuard,
+    buildStrictPaymentIntent,
+    assertStrictPaymentIntent,
     WorkflowTracker,
     buildWorkflow,
-    AgentShimClient,
 } from "../src/index";
 
 let passed = 0;
@@ -69,20 +73,16 @@ async function testChecksum() {
     assert(checksum1.length === 64, "Checksum is 64-char hex (SHA-256)");
     assert(/^[0-9a-f]+$/.test(checksum1), "Checksum is valid hex");
 
-    // Same config → same checksum (deterministic)
     const checksum2 = computeChecksum(config);
     assert(checksum1 === checksum2, "Same config produces same checksum");
 
-    // Modified config → different checksum
     const modifiedConfig = { ...config, systemPrompt: "You are a malicious agent." };
     const checksum3 = computeChecksum(modifiedConfig);
     assert(checksum1 !== checksum3, "Modified prompt changes checksum");
 
-    // Verify
     assert(verifyChecksum(config, checksum1) === true, "verifyChecksum returns true for matching");
     assert(verifyChecksum(modifiedConfig, checksum1) === false, "verifyChecksum returns false for mismatch");
 
-    // Component checksums
     const components = computeComponentChecksums(config);
     assert(components.full === checksum1, "Component full checksum matches");
     assert(components.prompt.length === 64, "Prompt component is valid hash");
@@ -99,7 +99,6 @@ async function testPopKeys() {
     assert(keyPair.publicJwk.crv === "Ed25519", "Public JWK uses Ed25519");
     assert(keyPair.thumbprint.length > 0, "JWK thumbprint is non-empty");
 
-    // Sign and verify a PoP challenge
     const challenge = "sauronid-pop-challenge-" + Date.now();
     const jws = await signPopChallenge(challenge, keyPair);
     assert(typeof jws === "string", "PoP challenge produces a JWS string");
@@ -109,7 +108,6 @@ async function testPopKeys() {
     assert(verified.valid === true, "PoP challenge signature is valid");
     assert(verified.payload === challenge, "Decoded payload matches challenge");
 
-    // Different key should fail
     const otherKeyPair = await generatePopKeyPair();
     const failedVerify = await verifyPopChallenge(jws, otherKeyPair.publicKey);
     assert(failedVerify.valid === false, "PoP challenge fails with wrong key");
@@ -118,7 +116,7 @@ async function testPopKeys() {
 async function testAJWT() {
     console.log("\n═══ Test 3: A-JWT Forge & Verify ═══");
 
-    const { privateKey, publicKey } = initializeIdPKeys();
+    const { publicKey } = initializeIdPKeys("e2e-deterministic-idp-seed");
     const popKeyPair = await generatePopKeyPair();
     const agentChecksum = computeChecksum({
         systemPrompt: "Travel agent",
@@ -126,12 +124,12 @@ async function testAJWT() {
         llmConfig: { model: "gpt-4", temperature: 0.7, maxTokens: 2048 },
     });
 
-    // Forge an A-JWT
     const token = await forgeAgentToken({
         subjectDid: "did:sauron:user:alice",
         audience: "https://api.airline.com",
         intent: {
             action: "buy_ticket",
+            scope: ["buy_ticket", "process_payment", "search_flights"],
             maxAmount: 500,
             currency: "EUR",
             resource: "flight:CDG-JFK",
@@ -146,8 +144,10 @@ async function testAJWT() {
     assert(typeof token === "string", "A-JWT is a string");
     assert(token.split(".").length === 3, "A-JWT has 3 JWS parts");
 
-    // Verify the A-JWT
-    const payload = await verifyAgentToken(token);
+    const payload = await verifyAgentToken(token, publicKey, {
+        issuer: "did:sauron:idp",
+        audience: "https://api.airline.com",
+    });
     assert(payload.sub === "did:sauron:user:alice", "Subject matches");
     assert(payload.intent.action === "buy_ticket", "Intent action matches");
     assert(payload.intent.maxAmount === 500, "Intent maxAmount matches");
@@ -169,7 +169,6 @@ async function testDelegation(parentToken: string) {
         llmConfig: { model: "gpt-4", temperature: 0, maxTokens: 1024 },
     });
 
-    // Create delegation token
     const childToken = await createDelegationToken(
         parentToken,
         childChecksum,
@@ -180,8 +179,11 @@ async function testDelegation(parentToken: string) {
 
     assert(typeof childToken === "string", "Delegation token is a string");
 
-    // Verify the delegated token
-    const childPayload = await verifyAgentToken(childToken);
+    const { publicKey } = initializeIdPKeys("e2e-deterministic-idp-seed");
+    const childPayload = await verifyAgentToken(childToken, publicKey, {
+        issuer: "did:sauron:idp",
+        audience: "https://api.airline.com",
+    });
     assert(childPayload.agent_checksum === childChecksum, "Child checksum matches");
     assert(childPayload.cnf.jkt === childPopKeyPair.thumbprint, "Child PoP binding matches");
     assert(childPayload.delegation_chain.length === 1, "Delegation chain has 1 link");
@@ -190,14 +192,145 @@ async function testDelegation(parentToken: string) {
         "Delegation scope includes process_payment"
     );
 
-    // Validate the chain
-    const chainValidation = validateDelegationChain(childPayload.delegation_chain);
+    const chainValidation = validateDelegationChain(childPayload.delegation_chain, {
+        rootAllowedScopes: ["buy_ticket", "process_payment", "search_flights"],
+    });
     assert(chainValidation.valid === true, "Delegation chain is valid");
     assert(chainValidation.errors.length === 0, "No chain validation errors");
 }
 
+async function testDelegationDenied() {
+    console.log("\n═══ Test 5: Delegation scope denial ═══");
+
+    initializeIdPKeys("e2e-delegation-deny-seed");
+    const popKeyPair = await generatePopKeyPair();
+    const checksum = computeChecksum({
+        systemPrompt: "Scoped agent",
+        tools: [],
+        llmConfig: { model: "gpt-4", temperature: 0, maxTokens: 1024 },
+    });
+
+    const parentToken = await forgeAgentToken({
+        subjectDid: "did:sauron:user:carol",
+        audience: "https://api.example.com",
+        intent: { action: "prove_age", scope: ["prove_age"] },
+        agentChecksum: checksum,
+        popKeyPair,
+        ttlSeconds: 300,
+    });
+
+    const childPop = await generatePopKeyPair();
+    const childChecksum = computeChecksum({
+        systemPrompt: "Bad child",
+        tools: [],
+        llmConfig: { model: "gpt-4", temperature: 0, maxTokens: 512 },
+    });
+
+    let threw = false;
+    try {
+        await createDelegationToken(parentToken, childChecksum, childPop, ["admin_reset"], "bad");
+    } catch {
+        threw = true;
+    }
+    assert(threw, "Out-of-scope delegation throws");
+
+    await verifyAgentToken(parentToken, undefined, {
+        issuer: "did:sauron:idp",
+        audience: "https://api.example.com",
+    });
+}
+
+async function testVerifyPolicy() {
+    console.log("\n═══ Test 6: Verifier policy (audience + jti replay) ═══");
+
+    initializeIdPKeys("e2e-policy-seed");
+    const popKeyPair = await generatePopKeyPair();
+    const agentChecksum = computeChecksum({
+        systemPrompt: "Policy agent",
+        tools: [],
+        llmConfig: { model: "gpt-4", temperature: 0, maxTokens: 1024 },
+    });
+
+    const token = await forgeAgentToken({
+        subjectDid: "did:sauron:user:dave",
+        audience: "https://trusted.example",
+        intent: { action: "read", scope: ["read"] },
+        agentChecksum,
+        popKeyPair,
+        ttlSeconds: 120,
+    });
+
+    let wrongAud = false;
+    try {
+        await verifyAgentToken(token, undefined, {
+            issuer: "did:sauron:idp",
+            audience: "https://evil.example",
+        });
+    } catch {
+        wrongAud = true;
+    }
+    assert(wrongAud, "Wrong audience is rejected");
+
+    const guard = new JtiReplayGuard();
+    await verifyAgentToken(token, undefined, {
+        issuer: "did:sauron:idp",
+        audience: "https://trusted.example",
+        jtiReplayGuard: guard,
+    });
+
+    let replayCaught = false;
+    try {
+        await verifyAgentToken(token, undefined, {
+            issuer: "did:sauron:idp",
+            audience: "https://trusted.example",
+            jtiReplayGuard: guard,
+        });
+    } catch {
+        replayCaught = true;
+    }
+    assert(replayCaught, "JTI replay is rejected");
+}
+
+async function testStrictPaymentIntentHelpers() {
+    console.log("\n═══ Test 7: Strict payment intent helpers ═══");
+
+    const intent = buildStrictPaymentIntent({
+        maxAmount: 12.34,
+        currency: "eur",
+        merchantAllowlist: ["merchant_a", "merchant_b"],
+        resource: "cart:123",
+    });
+    assert(intent.action === "payment_initiation", "Payment intent action is normalized");
+    assert(intent.currency === "EUR", "Payment intent currency is normalized to uppercase");
+    assert(intent.scope?.includes("payment_initiation") === true, "Payment intent has payment_initiation scope");
+
+    let ok = true;
+    try {
+        assertStrictPaymentIntent(intent, { amountMinor: 1200, currency: "EUR", merchantId: "merchant_a" });
+    } catch {
+        ok = false;
+    }
+    assert(ok, "Valid strict payment request passes");
+
+    let deniedAmount = false;
+    try {
+        assertStrictPaymentIntent(intent, { amountMinor: 1300, currency: "EUR", merchantId: "merchant_a" });
+    } catch {
+        deniedAmount = true;
+    }
+    assert(deniedAmount, "Over-limit amount is rejected");
+
+    let deniedMerchant = false;
+    try {
+        assertStrictPaymentIntent(intent, { amountMinor: 1000, currency: "EUR", merchantId: "merchant_x" });
+    } catch {
+        deniedMerchant = true;
+    }
+    assert(deniedMerchant, "merchant_allowlist is enforced");
+}
+
 async function testWorkflowTracker() {
-    console.log("\n═══ Test 5: Workflow Tracker ═══");
+    console.log("\n═══ Test 8: Workflow Tracker ═══");
 
     const workflow = buildWorkflow(
         "booking-flow",
@@ -216,83 +349,26 @@ async function testWorkflowTracker() {
     assert(state0.currentStep === "search", "Starts at search step");
     assert(state0.stepsCompleted === 0, "No steps completed initially");
 
-    // Valid transition: search → select
     const step1 = tracker.recordStep("select");
     assert(step1 === true, "search → select is allowed");
 
-    // Check isAllowed
     assert(tracker.isAllowed("payment") === true, "select → payment is allowed");
     assert(tracker.isAllowed("search") === false, "select → search is NOT allowed");
 
-    // Invalid transition: select → confirm (should be payment first)
     const step2 = tracker.recordStep("confirm");
     assert(step2 === false, "select → confirm is rejected (sequence violation)");
     assert(tracker.getViolations().length === 1, "One violation recorded");
     assert(tracker.getViolations()[0].type === "sequence_violation", "Violation type is sequence_violation");
 
-    // Valid: select → payment → confirm
     tracker.recordStep("payment");
     tracker.recordStep("confirm");
     const finalState = tracker.getState();
     assert(finalState.isComplete === true, "Workflow is complete");
 
-    // Check telemetry
     const events = tracker.flushTelemetry();
     assert(events.length > 0, "Telemetry events were emitted");
     assert(events.some((e) => e.type === "violation"), "Violation event in telemetry");
     assert(events.some((e) => e.type === "workflow_completed"), "Completion event in telemetry");
-}
-
-async function testShimClient() {
-    console.log("\n═══ Test 6: AgentShimClient Lifecycle ═══");
-
-    initializeIdPKeys();
-
-    const client = new AgentShimClient({
-        idpUrl: "http://localhost:4000",
-        subjectDid: "did:sauron:user:bob",
-        agentConfig: {
-            systemPrompt: "You are a shopping assistant.",
-            tools: [{ name: "search_products", description: "Search", parameters: {} }],
-            llmConfig: { model: "gpt-4", temperature: 0.5, maxTokens: 2048 },
-        },
-        audience: "https://shop.example.com",
-    });
-
-    // Initialize
-    const init = await client.initialize();
-    assert(init.checksum.length === 64, "Checksum computed on init");
-    assert(init.popThumbprint.length > 0, "PoP thumbprint generated");
-
-    // Request token
-    const token = await client.requestToken({
-        action: "search_and_buy",
-        maxAmount: 100,
-        currency: "USD",
-    });
-    assert(typeof token === "string", "Token acquired");
-    assert(client.isTokenValid(), "Token is valid");
-
-    // Verify integrity
-    const integrity = client.verifyIntegrity();
-    assert(integrity.intact === true, "Agent integrity is intact");
-
-    // Delegate to child
-    const delegation = await client.delegateToAgent(
-        {
-            systemPrompt: "Payment processor",
-            tools: [],
-            llmConfig: { model: "gpt-4", temperature: 0, maxTokens: 512 },
-        },
-        ["process_payment"]
-    );
-    assert(delegation.childChecksum.length === 64, "Child checksum computed");
-    assert(typeof delegation.token === "string", "Child token created");
-
-    // Get state
-    const state = client.getState();
-    assert(state.initialized === true, "Client is initialized");
-    assert(state.hasToken === true, "Client has a token");
 }
 
 async function main() {
@@ -305,8 +381,10 @@ async function main() {
         await testPopKeys();
         const { token } = await testAJWT();
         await testDelegation(token);
+        await testDelegationDenied();
+        await testVerifyPolicy();
+        await testStrictPaymentIntentHelpers();
         await testWorkflowTracker();
-        await testShimClient();
 
         console.log("\n══════════════════════════════════════════════════");
         console.log(`  Results: ${passed} passed, ${failed} failed`);

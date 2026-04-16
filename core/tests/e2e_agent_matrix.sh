@@ -4,7 +4,7 @@ set -euo pipefail
 API_URL="${API_URL:-http://localhost:3001}"
 BANK_SITE="${E2E_BANK_SITE:-BNP Paribas}"
 ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}"
-AGENT_TYPES="${AGENT_TYPES:-openclaw,crewai,langgraph,autogen}"
+AGENT_TYPES="${AGENT_TYPES:-claude,openai,gemini,qwen,mistral,openclaw,crewai,langgraph,autogen}"
 MATRIX_JITTER_MS_MAX="${MATRIX_JITTER_MS_MAX:-0}"
 MATRIX_FAULT_PROBE_PCT="${MATRIX_FAULT_PROBE_PCT:-0}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

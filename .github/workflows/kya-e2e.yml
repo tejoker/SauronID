@@ -21,7 +21,7 @@ on:
       matrix_agent_types:
         description: "Comma-separated agent types"
         required: false
-        default: "openclaw,autogen,langgraph,crewai"
+        default: "claude,openai,gemini,qwen,mistral,openclaw,autogen,langgraph,crewai"
       matrix_jitter_ms_max:
         description: "Matrix jitter upper bound in ms"
         required: false
@@ -88,6 +88,46 @@ jobs:
         run: |
           bash core/tests/e2e_kya_autonomous.sh
 
+      - name: Run A-JWT jti replay e2e
+        env:
+          API_URL: http://localhost:3001
+          SAURON_ADMIN_KEY: super_secret_hackathon_key
+        run: |
+          bash core/tests/e2e_ajwt_jti_replay.sh
+
+      - name: Run strict agent payment authorization e2e
+        env:
+          API_URL: http://localhost:3001
+          SAURON_ADMIN_KEY: super_secret_hackathon_key
+        run: |
+          bash core/tests/e2e_agent_payment_authorize.sh
+
+      - name: Setup Node for agentic
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: agentic/package-lock.json
+
+      - name: Agentic unit tests + live shim integration
+        working-directory: agentic
+        env:
+          SAURON_CORE_URL: http://localhost:3001
+          SAURON_ADMIN_KEY: super_secret_hackathon_key
+        run: |
+          npm ci
+          npm test
+          npm run test:integration
+
+      - name: KYA red-team (scripted invariants)
+        working-directory: kya-redteam
+        env:
+          SAURON_CORE_URL: http://localhost:3001
+          SAURON_ADMIN_KEY: super_secret_hackathon_key
+        run: |
+          npm ci
+          npm run redteam
+
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs backend || true
@@ -120,7 +160,7 @@ jobs:
           CONF_SHARED_ITERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.shared_iters || '3' }}
           CONF_MIGRATION_ITERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.migration_iters || '3' }}
           CONF_RESTART_ITERS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.restart_iters || '3' }}
-          CONF_MATRIX_AGENT_TYPES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_agent_types || 'openclaw,autogen,langgraph,crewai' }}
+          CONF_MATRIX_AGENT_TYPES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_agent_types || 'claude,openai,gemini,qwen,mistral,openclaw,autogen,langgraph,crewai' }}
           CONF_MATRIX_JITTER_MS_MAX: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_jitter_ms_max || '25' }}
           CONF_MATRIX_FAULT_PROBE_PCT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.matrix_fault_probe_pct || '5' }}
           CONF_LOG_DIR: ${{ runner.temp }}/sauron-confidence-logs

@@ -1,6 +1,6 @@
-# SauronID - hackeurope-24
+# SauronID
 
-SauronID is a privacy-first identity verification platform for login and onboarding flows.
+SauronID is a privacy-first identity verification platform for login and onboarding flows. This repository is the **product codebase** (services, libraries, and UIs), not a throwaway demo: you deploy and operate it like any other backend stack—secrets via environment or a secret manager, TLS at the edge, and data stores chosen for your SLOs.
 
 The project combines:
 - Privacy-preserving credentials and ZK proofs
@@ -26,6 +26,60 @@ Main code areas:
 - Revocation contracts: contracts/revocation
 - Subgraph: subgraph
 - Fraud/anomaly engine: anomaly-engine
+
+## Platform topology (unified stack)
+
+`docker compose up --build` brings up a **single coordinated runtime**: Rust core (identity + agents + ZKP hooks), Python KYC, ZKP issuer, CAMARA mock operator, partner portal, dashboard, analytics API, anomaly engine, and a local Hardhat node for revocation contracts. Services talk over the compose network (`backend:3001`, `kyc:8000`, etc.). The Graph subgraph under `subgraph/` is versioned here but deployed/indexed on your graph node pipeline unless you add it to Compose.
+
+**Core storage:** the default binary uses embedded **SQLite** (simple ops and CI). For **production-like** runtimes (`ENV` / `SAURON_ENV` not `development`/`dev`/`local`), startup requires `SAURON_ACCEPT_SINGLE_NODE_SQLITE=1` so operators explicitly acknowledge single-node limits until a replicated data tier is wired in.
+
+**Operator secrets:** set `SAURON_ADMIN_KEY` and/or comma-separated `SAURON_ADMIN_KEYS` (each **≥ 32 bytes** in production). Optional: `SAURON_ADMIN_READ_ONLY_KEYS` (GET/HEAD only), `SAURON_ADMIN_JWT_HS256_SECRET` plus JWTs with `scp` (`admin:read`, `admin:write`, `admin:full`/`admin:super`). Issuer redundancy: `SAURON_ISSUER_URLS` (comma-separated bases) with failover on `verify-proof`. Compliance defaults: jurisdiction **audit** and sanctions/PEP **audit** in production-like envs unless env overrides.
+
+## Agent endpoints: signature vs PoP vs JTI
+
+| Path | Validates A-JWT signature + agent row | PoP (challenge + JWS) | Server JTI |
+|------|--------------------------------------|------------------------|------------|
+| `POST /agent/verify` | Yes | **Required** if the agent was registered with `pop_public_key_b64u` | Optional: `consume_jti: true` |
+| `POST /agent/kyc/consent` | Yes | Same rule as above | Consumed after successful consent |
+| `POST /agent/payment/authorize` | Yes | **Always required** (endpoint rejects non-PoP agents) | **Always consumed** on success |
+
+So “check the handler” meant: **PoP is not optional for agents that registered PoP material**—both verify and consent enforce it. Agents **without** PoP keys only need a valid A-JWT and DB checks.
+
+For pre-Stripe hardening, `POST /agent/payment/authorize` also enforces:
+- `payment_initiation` policy allowlist
+- intent `scope` includes `payment_initiation`
+- intent `maxAmount` and `currency` bounds
+- optional `constraints.merchant_allowlist`
+- single-use A-JWT (`jti` replay blocked)
+
+## KYA policy matrix (configuration advice)
+
+Allow-lists for assurance levels (`delegated_bank`, `autonomous_web3`, …) live in `core/src/policy.rs` with `KYA_POLICY_MATRIX_VERSION` surfaced on policy responses. **Recommendation:** keep the matrix **versioned in Git** for audits and reproducible deploys. When you need per-tenant or frequent changes, externalize the same data (e.g. JSON loaded at startup, or DB-backed rules) behind that version string, add an admin reload path, and test with your CI matrix—avoid wildcards in authorization paths.
+
+## Agentic tests
+
+- `npm test` (in `agentic/`): cryptographic and client-logic checks (no HTTP).
+- `npm run test:integration`: **live** `AgentShimClient` against a running core (`SAURON_CORE_URL`, `SAURON_ADMIN_KEY`). CI runs this after `docker compose` in the KYA E2E workflow.
+
+## KYA red-team (`kya-redteam/`)
+
+- **`npm run redteam`**: scripted invariant checks (JTI replay, policy matrix for delegated vs autonomous, delegation scope denial, PoP required on `/agent/verify`, invalid A-JWT). Uses the same env vars as agentic integration. CI runs this in the KYA E2E job.
+- **`npm run redteam:llm`**: optional OpenAI tool-calling loop (`OPENAI_API_KEY`, `REDTEAM_MODEL`, `REDTEAM_LLM_TURNS`). Exits 0 immediately if `OPENAI_API_KEY` is unset.
+- Soak: `REDTEAM_ITERATIONS=5 npm run redteam` repeats the full suite.
+
+## Agent model/framework compatibility
+
+Authorization logic is model-agnostic (claims + PoP + policy), not vendor-specific. The confidence matrix suite now runs across labels including `claude`, `openai`, `gemini`, `qwen`, `mistral`, `openclaw`, `autogen`, `langgraph`, and `crewai`.
+
+### Hugging Face fetch + smoke test
+
+To fetch a Hugging Face model repo and run the model-agnostic contract test flow:
+
+```bash
+bash core/tests/hf_fetch_and_matrix_test.sh Qwen/Qwen2.5-0.5B-Instruct
+```
+
+The script downloads the model snapshot (via `huggingface_hub`) and then runs `core/tests/e2e_agent_matrix.sh` against your running core.
 
 ## Card-First Login Flow (No ID Upload At Login)
 

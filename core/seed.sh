@@ -7,7 +7,7 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 
 SERVER="${SAURON_URL:-http://localhost:3001}"
-ADMIN_KEY="super_secret_hackathon_key"
+ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Look for data dir: first sibling (local dev), then /app/data (Docker)

@@ -10,7 +10,7 @@ source "${ROOT_DIR}/tests/lib/zkp_fixture.sh"
 SHARED_ITERS="${CONF_SHARED_ITERS:-6}"
 MIGRATION_ITERS="${CONF_MIGRATION_ITERS:-6}"
 RESTART_ITERS="${CONF_RESTART_ITERS:-6}"
-MATRIX_AGENT_TYPES="${CONF_MATRIX_AGENT_TYPES:-openclaw,autogen,langgraph,crewai}"
+MATRIX_AGENT_TYPES="${CONF_MATRIX_AGENT_TYPES:-claude,openai,gemini,qwen,mistral,openclaw,autogen,langgraph,crewai}"
 MATRIX_JITTER_MS_MAX="${CONF_MATRIX_JITTER_MS_MAX:-0}"
 MATRIX_FAULT_PROBE_PCT="${CONF_MATRIX_FAULT_PROBE_PCT:-0}"
 LOG_DIR="${CONF_LOG_DIR:-/tmp/sauron-confidence-logs-$$}"
@@ -91,7 +91,12 @@ for i in $(seq 1 "$SHARED_ITERS"); do
   cleanup_db="$db"
   rm -f "$db" "$db-wal" "$db-shm"
 
-  ENV=development SAURON_ISSUER_URL="${ISSUER_URL}" DATABASE_PATH="$db" PORT="$port" ./target/debug/sauron-core >"$log" 2>&1 &
+  ENV=development \
+  SAURON_ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}" \
+  SAURON_ISSUER_URL="${ISSUER_URL}" \
+  DATABASE_PATH="$db" \
+  PORT="$port" \
+  ./target/debug/sauron-core >"$log" 2>&1 &
   pid=$!
   cleanup_pid="$pid"
 
@@ -111,6 +116,7 @@ for i in $(seq 1 "$SHARED_ITERS"); do
 
   API_URL="http://127.0.0.1:${port}" E2E_ISSUER_URL="${ISSUER_URL}" tests/e2e_kya_delegated.sh >"${LOG_DIR}/shared-${i}.delegated.log"
   API_URL="http://127.0.0.1:${port}" E2E_ISSUER_URL="${ISSUER_URL}" tests/e2e_kya_autonomous.sh >"${LOG_DIR}/shared-${i}.autonomous.log"
+  API_URL="http://127.0.0.1:${port}" E2E_ISSUER_URL="${ISSUER_URL}" tests/e2e_agent_payment_authorize.sh >"${LOG_DIR}/shared-${i}.payment-authorize.log"
   API_URL="http://127.0.0.1:${port}" \
   E2E_ISSUER_URL="${ISSUER_URL}" \
   AGENT_TYPES="$MATRIX_AGENT_TYPES" \

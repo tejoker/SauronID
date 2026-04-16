@@ -211,6 +211,57 @@ pub fn init_schema(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_consent_log_request ON consent_log (request_id, token_used, revoked);
         CREATE INDEX IF NOT EXISTS idx_agents_human_active ON agents (human_key_image, revoked, expires_at);
         CREATE INDEX IF NOT EXISTS idx_api_usage_client_ts ON api_usage (client_name, timestamp);
+
+        -- A-JWT jti replay protection (server authoritative)
+        CREATE TABLE IF NOT EXISTS ajwt_used_jtis (
+            jti     TEXT PRIMARY KEY NOT NULL,
+            exp     INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ajwt_used_jtis_exp ON ajwt_used_jtis(exp);
+
+        -- One-time PoP challenges for /agent/pop/challenge
+        CREATE TABLE IF NOT EXISTS agent_pop_challenges (
+            id          TEXT PRIMARY KEY NOT NULL,
+            agent_id    TEXT NOT NULL,
+            challenge   TEXT NOT NULL,
+            exp         INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_pop_challenges_exp ON agent_pop_challenges(exp);
+
+        -- Strict, pre-Stripe payment authorization artifacts (single-use auth envelope).
+        CREATE TABLE IF NOT EXISTS agent_payment_authorizations (
+            auth_id        TEXT PRIMARY KEY NOT NULL,
+            agent_id       TEXT NOT NULL,
+            jti            TEXT NOT NULL UNIQUE,
+            amount_minor   INTEGER NOT NULL,
+            currency       TEXT NOT NULL,
+            merchant_id    TEXT NOT NULL DEFAULT '',
+            payment_ref    TEXT NOT NULL,
+            created_at     INTEGER NOT NULL,
+            expires_at     INTEGER NOT NULL,
+            consumed       INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_agent ON agent_payment_authorizations(agent_id, expires_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_payment_ref ON agent_payment_authorizations(payment_ref);
+
+        -- Opaque rate-limit buckets (SHA256-derived keys); sliding windows by window_id = floor(epoch/window).
+        CREATE TABLE IF NOT EXISTS risk_rate_counters (
+            bucket      TEXT NOT NULL,
+            window_id   INTEGER NOT NULL,
+            cnt         INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (bucket, window_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_risk_rate_counters_window ON risk_rate_counters(window_id);
+
+        -- Compliance screening overlays (sanctions / PEP / coarse risk tier) — server-side only.
+        CREATE TABLE IF NOT EXISTS user_compliance_screening (
+            key_image_hex   TEXT PRIMARY KEY NOT NULL,
+            sanctions_tier  TEXT NOT NULL DEFAULT 'unknown',
+            pep_flag        INTEGER NOT NULL DEFAULT 0,
+            risk_tier       TEXT NOT NULL DEFAULT 'unknown',
+            list_version    TEXT NOT NULL DEFAULT '',
+            updated_at      INTEGER NOT NULL DEFAULT 0
+        );
         "#,
     )
     .expect("DB schema init failed");
@@ -236,6 +287,22 @@ pub fn init_schema(conn: &Connection) {
         "ALTER TABLE agents ADD COLUMN assurance_level TEXT NOT NULL DEFAULT 'delegated_nonbank'",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE agents ADD COLUMN parent_agent_id TEXT DEFAULT NULL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agents ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agents ADD COLUMN pop_jkt TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agents ADD COLUMN pop_public_key_b64u TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     let run_revoke_migration = std::env::var("SAURON_REVOKE_LEGACY_DELEGATED_NONBANK")
         .map(|v| {
@@ -258,4 +325,12 @@ pub fn init_schema(conn: &Connection) {
             );
         }
     }
+
+    let _ = conn.execute(
+        "INSERT INTO user_compliance_screening (key_image_hex, sanctions_tier, pep_flag, risk_tier, list_version, updated_at)
+         SELECT u.key_image_hex, 'unknown', 0, 'unknown', '', 0 FROM users u
+         LEFT JOIN user_compliance_screening s ON s.key_image_hex = u.key_image_hex
+         WHERE s.key_image_hex IS NULL",
+        [],
+    );
 }

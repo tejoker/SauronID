@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sauronid.io/schemas/ajwt-core-v1.json",
+  "title": "SauronID A-JWT (core / wire)",
+  "description": "Claims issued by sauron-core forge_ajwt. The intent field is always a JSON string embedding the agent intent object.",
+  "type": "object",
+  "required": [
+    "iss",
+    "sub",
+    "agent_id",
+    "agent_checksum",
+    "intent",
+    "iat",
+    "exp",
+    "jti"
+  ],
+  "properties": {
+    "iss": { "const": "did:sauron:idp" },
+    "sub": { "type": "string", "description": "Human key_image_hex" },
+    "agent_id": { "type": "string" },
+    "agent_checksum": { "type": "string" },
+    "intent": { "type": "string", "description": "Stringified JSON intent" },
+    "iat": { "type": "integer" },
+    "exp": { "type": "integer" },
+    "jti": { "type": "string" },
+    "cnf": {
+      "type": "object",
+      "properties": { "jkt": { "type": "string" } },
+      "required": ["jkt"]
+    },
+    "workflow_id": { "type": "string" },
+    "delegation_chain": {
+      "type": "array",
+      "description": "Optional; aligns with @sauronid/agentic DelegationLink[]"
+    }
+  }
+}

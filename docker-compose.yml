@@ -1,3 +1,5 @@
+# SauronID unified local stack: core + KYC + ZKP issuer + UIs + CAMARA mock + analytics + anomaly + EVM node.
+# Subgraph: see subgraph/ — deploy/index alongside this stack in your environment.
 services:
   # ── Rust backend (Sauron Core) ──────────────────────────────────────────────
   backend:
@@ -8,10 +10,13 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - ENV=${ENV:-production}
+      - ENV=${ENV:-development}
+      - SAURON_ACCEPT_SINGLE_NODE_SQLITE=${SAURON_ACCEPT_SINGLE_NODE_SQLITE:-1}
       - SAURON_ISSUER_URL=${SAURON_ISSUER_URL:-http://zkp-issuer:4000}
+      # Development default only; production requires >=32-byte keys (see admin::init_admin_auth).
+      - SAURON_ADMIN_KEY=${SAURON_ADMIN_KEY:-super_secret_hackathon_key}
     healthcheck:
-      test: [ "CMD", "curl", "-sf", "http://localhost:3001/admin/stats", "-H", "x-admin-key: super_secret_hackathon_key" ]
+      test: [ "CMD-SHELL", "curl -sf http://localhost:3001/admin/stats -H \"x-admin-key: $$SAURON_ADMIN_KEY\" || exit 1" ]
       interval: 3s
       timeout: 5s
       retries: 15
@@ -27,6 +32,7 @@ services:
     environment:
       - SAURON_URL=http://backend:3001
       - SEED_USERS=200
+      - SAURON_ADMIN_KEY=${SAURON_ADMIN_KEY:-super_secret_hackathon_key}
     volumes:
       - ./data:/app/data:ro
     entrypoint: [ "bash", "seed.sh" ]
@@ -127,6 +133,9 @@ services:
       - "8010:8010"
     environment:
       - PORT=8010
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Hardhat Local EVM Node (port 8545) ───────────────────────────────

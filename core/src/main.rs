@@ -24,7 +24,11 @@ use sauron_core::{
     },
 };
 use sauron_core::{identity::{Identity, UserData}, db, agent};
+use sauron_core::compliance;
+use sauron_core::compliance_screening;
+use sauron_core::issuer_runtime::IssuerVerifyError;
 use sauron_core::policy::{self, AssuranceLevel};
+use sauron_core::risk;
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::RistrettoPoint;
 use sha2::{Sha256, Sha512, Digest};
@@ -33,12 +37,32 @@ use tower_http::cors::CorsLayer;
 
 type HmacSha256 = Hmac<Sha256>;
 
+fn assert_production_sqlite_acknowledged() {
+    if sauron_core::runtime_mode::is_development_runtime() {
+        return;
+    }
+    let ok = std::env::var("SAURON_ACCEPT_SINGLE_NODE_SQLITE")
+        .map(|v| {
+            let low = v.to_ascii_lowercase();
+            v == "1" || low == "true" || low == "yes"
+        })
+        .unwrap_or(false);
+    if !ok {
+        panic!(
+            "[FATAL] SQLite is single-node (no cross-region HA). Set SAURON_ACCEPT_SINGLE_NODE_SQLITE=1 to acknowledge this deployment, or replace the data tier before claiming global production readiness."
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialise la base SQLite en mémoire.
     let db_handle = db::open_db();
     let db_arc = Arc::new(db_handle);
     let state = Arc::new(RwLock::new(ServerState::new(Arc::clone(&db_arc))));
+    admin::init_admin_auth()
+        .unwrap_or_else(|e| panic!("[FATAL] admin authentication misconfigured: {e}"));
+    assert_production_sqlite_acknowledged();
 
     let dev_routes = Router::new()
         .route("/register_user", post(dev_register_user))
@@ -79,6 +103,8 @@ async fn main() {
         // A-JWT Agentic Layer
         .route("/agent/register",                        post(agent::register_agent))
         .route("/agent/verify",                          post(agent::verify_agent_token))
+        .route("/agent/pop/challenge",                   post(agent::agent_pop_challenge))
+        .route("/agent/payment/authorize",               post(agent_payment_authorize))
         .route("/policy/authorize",                      post(policy_authorize))
         .route("/agent/list/{human_key_image}",          get(agent::list_agents))
         .route("/agent/{agent_id}",                      get(agent::get_agent).delete(agent::revoke_agent))
@@ -407,6 +433,9 @@ async fn bank_register_user(
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+        let _ = compliance_screening::upsert_bank_cleared_row(&db, &payload.key_image_hex, now)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
         if let Some(bank_customer_id) = payload
             .bank_customer_id
             .as_ref()
@@ -494,6 +523,11 @@ async fn handle_register(
              VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![hex_ki, hex_pk, p.first_name, p.last_name, p.email, p.date_of_birth, p.nationality],
         ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let _ = compliance_screening::upsert_default_row(&db, &hex_ki, ts);
     }
 
     // Mettre à jour le groupe en mémoire + insérer le commitment Merkle.
@@ -669,6 +703,12 @@ async fn dev_register_user(
                 payload.first_name, payload.last_name, payload.email,
                 payload.date_of_birth, payload.nationality],
         ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let _ = compliance_screening::upsert_default_row(&db, &hex_ki, ts)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
     // 3. Mettre à jour le groupe en mémoire + Merkle.
@@ -788,6 +828,7 @@ async fn dev_register_user(
     // Une erreur du service issuer n'empêche pas l'enregistrement.
     {
         let issuer_url = state.read().unwrap().issuer_url.clone();
+        let issuer_rt = state.read().unwrap().issuer_runtime.clone();
         let subject_did = format!("did:sauron:user:{}", &hex_ki[..16]);
         let dob = payload.date_of_birth.clone();
         let nat = payload.nationality.clone();
@@ -803,8 +844,9 @@ async fn dev_register_user(
                     "expiry_date": "2030-12-31",
                 }
             });
-            match reqwest::Client::new()
-                .post(&format!("{}/register-credential", issuer_url))
+            match issuer_rt
+                .client
+                .post(format!("{issuer_url}/register-credential"))
                 .json(&body)
                 .send()
                 .await
@@ -851,7 +893,7 @@ async fn dev_get_sites() -> Json<Vec<serde_json::Value>> {
 
 // ─────────────────────────────────────────────────────
 //  GET /dev/clients — Retourne tous les sites avec clés publiques + privées
-//  (hackathon only — permet au frontend de simuler les ring sigs côté client)
+//  (development-only — enables frontends to simulate ring signatures locally; disable in hardened deployments)
 // ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -1197,12 +1239,15 @@ async fn handle_zkp_proof_material(
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(payload): Json<ZkpProofMaterialRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let issuer_url = state.read().unwrap().issuer_url.clone();
+    let (issuer_url, client) = {
+        let st = state.read().unwrap();
+        (st.issuer_url.clone(), st.issuer_runtime.client.clone())
+    };
     let body = serde_json::json!({
         "credentialHash": payload.credential_hash,
         "leafIndex": payload.leaf_index,
     });
-    let response = reqwest::Client::new()
+    let response = client
         .post(format!("{issuer_url}/proof-material"))
         .json(&body)
         .send()
@@ -2000,6 +2045,36 @@ async fn kyc_retrieve(
         }
     }
 
+    // Risk + compliance (DB-backed nationality only; never trust client-supplied jurisdiction).
+    let jurisdiction_decision: compliance::JurisdictionDecision = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        risk::check_and_increment(
+            &db,
+            &risk::bucket_kyc_retrieve(&payload.site_name, &user_ki),
+            now,
+            risk::limit_kyc_retrieve(),
+        )
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        let nationality: String = db
+            .query_row(
+                "SELECT IFNULL(nationality, '') FROM users WHERE key_image_hex = ?1",
+                params![user_ki],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        compliance::enforce_jurisdiction(&st.compliance, &nationality)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?
+    };
+
+    let screening_row = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        st.screening
+            .enforce_for_user(&db, &user_ki)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?
+    };
+
     // ZKP-only identity disclosure is mandatory.
     let proof = payload
         .zkp_proof
@@ -2017,7 +2092,10 @@ async fn kyc_retrieve(
         .clone()
         .unwrap_or_else(|| "CredentialVerification".to_string());
 
-    let issuer_url = state.read().unwrap().issuer_url.clone();
+    let (issuer_urls, issuer_rt) = {
+        let st = state.read().unwrap();
+        (st.issuer_urls.clone(), st.issuer_runtime.clone())
+    };
     let requested_dev_mock = proof
         .get("dev_mock")
         .and_then(|v| v.as_bool())
@@ -2036,20 +2114,35 @@ async fn kyc_retrieve(
         "public_signals": public_signals,
         "publicSignals": public_signals
     });
-    let proof_verified = match reqwest::Client::new()
-        .post(format!("{issuer_url}/verify-proof"))
-        .json(&verify_body)
-        .send()
+    let proof_verified = match issuer_rt
+        .verify_proof_failover(&issuer_urls, &verify_body)
         .await
     {
-        Ok(r) if r.status().is_success() => {
-            let resp: serde_json::Value = r.json().await.unwrap_or_default();
-            resp.get("verified")
-                .or_else(|| resp.get("valid"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+        Ok(v) => v,
+        Err(IssuerVerifyError::CircuitOpen) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ZKP issuer verify-proof temporarily unavailable (circuit open)".into(),
+            ));
         }
-        _ => false,
+        Err(IssuerVerifyError::Transport(e)) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("ZKP issuer unreachable: {e}"),
+            ));
+        }
+        Err(IssuerVerifyError::JsonParse) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "ZKP issuer returned unreadable JSON for verify-proof".into(),
+            ));
+        }
+        Err(IssuerVerifyError::Upstream(status)) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("ZKP issuer verify-proof returned HTTP {status}"),
+            ));
+        }
     };
 
     if !proof_verified {
@@ -2224,6 +2317,7 @@ async fn kyc_retrieve(
             "allowed": true,
             "reason": decision.reason,
             "assurance_level": assurance_str,
+            "policy_version": policy::KYA_POLICY_MATRIX_VERSION,
         }))
     } else {
         None
@@ -2231,6 +2325,21 @@ async fn kyc_retrieve(
 
     println!("[CONSENT] KYC retrieved by site {} | is_agent={} user_ring={} agent_ring={}",
         payload.site_name, is_agent, human_in_user_ring, agent_in_agent_ring);
+
+    let issuer_controls = {
+        let st = state.read().unwrap();
+        st.issuer_runtime.circuit_snapshots_json(&st.issuer_urls)
+    };
+    let screening_api = {
+        let st = state.read().unwrap();
+        st.screening.for_agent_api(&screening_row)
+    };
+    let controls = serde_json::json!({
+        "compliance": jurisdiction_decision.for_agent_api(),
+        "screening": screening_api,
+        "issuer": issuer_controls,
+        "risk": { "window_secs": risk::window_secs() },
+    });
 
     let resp = serde_json::json!({
         "disclosure_mode": "zkp_only",
@@ -2250,7 +2359,8 @@ async fn kyc_retrieve(
             "agent_in_agent_ring": if is_agent { Some(agent_in_agent_ring) } else { None },
             "trust_verified": trust_verified,
             "policy": action_policy,
-        }
+        },
+        "controls": controls,
     });
 
     Ok(Json(resp))
@@ -2480,6 +2590,339 @@ async fn policy_authorize(
         "assurance_level": assurance_level,
         "allowed": decision.allowed,
         "reason": decision.reason,
+        "policy_version": policy::KYA_POLICY_MATRIX_VERSION,
+    })))
+}
+
+#[derive(Deserialize)]
+struct AgentPaymentAuthorizeBody {
+    /// Agent token minted by /agent/register or /agent/vc/issue.
+    ajwt: String,
+    /// Requested charge amount in minor units (e.g. cents).
+    amount_minor: i64,
+    /// ISO-4217 3-letter currency code.
+    currency: String,
+    /// Merchant-side idempotency/payment reference.
+    payment_ref: String,
+    /// Optional merchant account / destination identifier.
+    #[serde(default)]
+    merchant_id: String,
+    /// Mandatory for payment authorization (PoP).
+    #[serde(default)]
+    pop_challenge_id: String,
+    /// Mandatory for payment authorization (PoP).
+    #[serde(default)]
+    pop_jws: String,
+}
+
+fn parse_ajwt_intent_claim(claims: &serde_json::Value) -> Result<serde_json::Value, (StatusCode, String)> {
+    match claims.get("intent") {
+        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(s)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "A-JWT intent is not valid JSON".into())),
+        Some(v @ serde_json::Value::Object(_)) => Ok(v.clone()),
+        _ => Err((StatusCode::UNAUTHORIZED, "A-JWT missing intent claim".into())),
+    }
+}
+
+fn payment_scopes_from_intent(intent: &serde_json::Value) -> Vec<String> {
+    if let Some(arr) = intent.get("scope").and_then(|v| v.as_array()) {
+        return arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.trim().to_ascii_lowercase()))
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(arr) = intent
+        .get("constraints")
+        .and_then(|v| v.get("scope"))
+        .and_then(|v| v.as_array())
+    {
+        return arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.trim().to_ascii_lowercase()))
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(action) = intent.get("action").and_then(|v| v.as_str()) {
+        let normalized = action.trim().to_ascii_lowercase();
+        if !normalized.is_empty() {
+            return vec![normalized];
+        }
+    }
+    Vec::new()
+}
+
+fn enforce_strict_payment_intent(
+    intent: &serde_json::Value,
+    amount_minor: i64,
+    request_currency: &str,
+    request_merchant_id: &str,
+) -> Result<(), (StatusCode, String)> {
+    let scopes = payment_scopes_from_intent(intent);
+    if !scopes.iter().any(|s| s == "payment_initiation") {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Intent scope must explicitly include payment_initiation".into(),
+        ));
+    }
+
+    let max_amount_major = intent
+        .get("maxAmount")
+        .and_then(|v| v.as_f64())
+        .ok_or((StatusCode::FORBIDDEN, "Intent must define numeric maxAmount for payments".into()))?;
+    if !(max_amount_major.is_finite() && max_amount_major > 0.0) {
+        return Err((StatusCode::FORBIDDEN, "Intent maxAmount must be > 0".into()));
+    }
+    let max_minor = (max_amount_major * 100.0).round() as i64;
+    if amount_minor > max_minor {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "Requested amount {} exceeds intent maxAmount {} {} ({} minor units)",
+                amount_minor, max_amount_major, request_currency, max_minor
+            ),
+        ));
+    }
+
+    let intent_currency = intent
+        .get("currency")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_uppercase())
+        .ok_or((StatusCode::FORBIDDEN, "Intent must define currency for payments".into()))?;
+    if intent_currency != request_currency {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "Requested currency {} does not match intent currency {}",
+                request_currency, intent_currency
+            ),
+        ));
+    }
+
+    let merchant_allowlist = intent
+        .get("constraints")
+        .and_then(|v| v.get("merchant_allowlist"))
+        .and_then(|v| v.as_array());
+    if let Some(allowlist) = merchant_allowlist {
+        if request_merchant_id.is_empty() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "merchant_id is required by intent constraints.merchant_allowlist".into(),
+            ));
+        }
+        let allowed = allowlist.iter().any(|m| {
+            m.as_str()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s == request_merchant_id)
+                .unwrap_or(false)
+        });
+        if !allowed {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("merchant_id '{}' is not allowed by intent", request_merchant_id),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn agent_payment_authorize(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<AgentPaymentAuthorizeBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if payload.ajwt.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "ajwt is required".into()));
+    }
+    if payload.amount_minor <= 0 {
+        return Err((StatusCode::BAD_REQUEST, "amount_minor must be > 0".into()));
+    }
+    if payload.payment_ref.trim().is_empty() || payload.payment_ref.len() > 128 {
+        return Err((StatusCode::BAD_REQUEST, "payment_ref is required (1..128 chars)".into()));
+    }
+    let currency = payload.currency.trim().to_ascii_uppercase();
+    if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err((StatusCode::BAD_REQUEST, "currency must be a 3-letter ISO uppercase code".into()));
+    }
+
+    let jwt_secret = state.read().unwrap().jwt_secret.clone();
+    let claims = agent::verify_ajwt(&jwt_secret, &payload.ajwt)
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired A-JWT".into()))?;
+
+    let human_key_image = claims
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing sub".into()))?
+        .to_string();
+    let agent_id = claims
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing agent_id".into()))?
+        .to_string();
+    let jti = claims
+        .get("jti")
+        .and_then(|v| v.as_str())
+        .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing jti".into()))?
+        .to_string();
+    let exp = claims
+        .get("exp")
+        .and_then(|v| v.as_i64())
+        .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing exp".into()))?;
+
+    let intent = parse_ajwt_intent_claim(&claims)?;
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let payment_jurisdiction = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        risk::check_and_increment(
+            &db,
+            &risk::bucket_payment_authorize(&agent_id),
+            now,
+            risk::limit_payment_authorize(),
+        )
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        let nationality: String = db
+            .query_row(
+                "SELECT IFNULL(nationality, '') FROM users WHERE key_image_hex = ?1",
+                params![human_key_image],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        compliance::enforce_jurisdiction(&st.compliance, &nationality)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?
+    };
+
+    let payment_screening_row = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        st.screening
+            .enforce_for_user(&db, &human_key_image)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?
+    };
+
+    let assurance_level = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let (revoked, expires_at, db_human, assurance, pop_pk_b64u): (i64, i64, String, String, String) = db
+            .query_row(
+                "SELECT revoked, expires_at, human_key_image, assurance_level, IFNULL(pop_public_key_b64u, '') FROM agents WHERE agent_id = ?1",
+                params![agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".into()))?;
+        if revoked != 0 {
+            return Err((StatusCode::UNAUTHORIZED, "Agent has been revoked".into()));
+        }
+        if expires_at < now {
+            return Err((StatusCode::UNAUTHORIZED, "Agent has expired".into()));
+        }
+        if db_human != human_key_image {
+            return Err((StatusCode::UNAUTHORIZED, "Agent owner mismatch".into()));
+        }
+        if pop_pk_b64u.is_empty() {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Payment authorization requires PoP-enabled agent registration".into(),
+            ));
+        }
+        if payload.pop_challenge_id.is_empty() || payload.pop_jws.is_empty() {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Payment authorization requires pop_challenge_id and pop_jws from /agent/pop/challenge".into(),
+            ));
+        }
+        let challenge_plain = sauron_core::ajwt_support::take_pop_challenge(
+            &db,
+            &payload.pop_challenge_id,
+            &agent_id,
+        )
+        .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+        sauron_core::ajwt_support::verify_ed25519_pop_jws(
+            &challenge_plain,
+            &payload.pop_jws,
+            &pop_pk_b64u,
+        )
+        .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+        assurance
+    };
+
+    let decision = policy::authorize_action(
+        AssuranceLevel::from_db(&assurance_level),
+        "payment_initiation",
+    );
+    if !decision.allowed {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("Policy denied payment_initiation: {}", decision.reason),
+        ));
+    }
+
+    enforce_strict_payment_intent(
+        &intent,
+        payload.amount_minor,
+        &currency,
+        payload.merchant_id.trim(),
+    )?;
+
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        sauron_core::ajwt_support::consume_ajwt_jti(&db, &jti, exp)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+    }
+
+    let auth_id = format!("payauth_{}", sauron_core::ajwt_support::random_hex_32());
+    let expires_at = std::cmp::min(exp, now + 300);
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO agent_payment_authorizations
+             (auth_id, agent_id, jti, amount_minor, currency, merchant_id, payment_ref, created_at, expires_at, consumed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+            params![
+                auth_id,
+                agent_id,
+                jti,
+                payload.amount_minor,
+                currency,
+                payload.merchant_id.trim(),
+                payload.payment_ref.trim(),
+                now,
+                expires_at,
+            ],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+    }
+
+    let issuer_snap = {
+        let st = state.read().unwrap();
+        st.issuer_runtime.circuit_snapshots_json(&st.issuer_urls)
+    };
+    let screening_api = {
+        let st = state.read().unwrap();
+        st.screening.for_agent_api(&payment_screening_row)
+    };
+
+    Ok(Json(serde_json::json!({
+        "authorized": true,
+        "authorization_id": auth_id,
+        "agent_id": claims.get("agent_id").and_then(|v| v.as_str()).unwrap_or_default(),
+        "amount_minor": payload.amount_minor,
+        "currency": currency,
+        "merchant_id": payload.merchant_id.trim(),
+        "payment_ref": payload.payment_ref.trim(),
+        "assurance_level": assurance_level,
+        "policy_version": policy::KYA_POLICY_MATRIX_VERSION,
+        "expires_at": expires_at,
+        "controls": {
+            "compliance": payment_jurisdiction.for_agent_api(),
+            "screening": screening_api,
+            "issuer": issuer_snap,
+            "risk": { "window_secs": risk::window_secs() },
+        },
     })))
 }
 
@@ -2834,14 +3277,17 @@ async fn user_get_credential(
     }
 
     // Claim from issuer
-    let issuer_url = state.read().unwrap().issuer_url.clone();
+    let (issuer_url, client) = {
+        let st = state.read().unwrap();
+        (st.issuer_url.clone(), st.issuer_runtime.client.clone())
+    };
     let body = serde_json::json!({
         "grant_type": "urn:ietf:params:oauth:grant-type:pre-authorized_code",
         "pre-authorized_code": pre_auth_code,
         "subject_did": subject_did,
     });
 
-    let resp = reqwest::Client::new()
+    let resp = client
         .post(format!("{issuer_url}/credential"))
         .json(&body)
         .send()
@@ -2888,6 +3334,12 @@ struct AgentKycConsentBody {
     site_name: String,
     /// Consent request ID (from /kyc/request).
     request_id: String,
+    /// From `POST /agent/pop/challenge` when the agent has PoP keys registered.
+    #[serde(default)]
+    pop_challenge_id: String,
+    /// Compact JWS signing the challenge plaintext (Ed25519).
+    #[serde(default)]
+    pop_jws: String,
 }
 
 async fn agent_kyc_consent(
@@ -2906,15 +3358,65 @@ async fn agent_kyc_consent(
         .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing agent_id".into()))?
         .to_string();
 
-    // 2. Verify agent status + mandatory delegated-ring membership
+    let consent_guard_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        risk::check_and_increment(
+            &db,
+            &risk::bucket_agent_kyc_consent(&payload.site_name, &human_key_image),
+            consent_guard_ts,
+            risk::limit_agent_kyc_consent(),
+        )
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        let nationality: String = db
+            .query_row(
+                "SELECT IFNULL(nationality, '') FROM users WHERE key_image_hex = ?1",
+                params![human_key_image],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        compliance::enforce_jurisdiction(&st.compliance, &nationality)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+        st.screening
+            .enforce_for_user(&db, &human_key_image)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+    }
+
+    // 2. Verify agent status + mandatory delegated-ring membership + KYA policy
     let assurance_level = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        let (revoked, expires_at, db_human, agent_pub_hex, assurance): (i64, i64, String, String, String) = db.query_row(
-            "SELECT revoked, expires_at, human_key_image, public_key_hex, assurance_level FROM agents WHERE agent_id = ?1",
-            params![agent_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        ).unwrap_or((1, 0, String::new(), String::new(), "delegated_nonbank".to_string()));
+        let (revoked, expires_at, db_human, agent_pub_hex, assurance, pop_pk_b64u): (
+            i64,
+            i64,
+            String,
+            String,
+            String,
+            String,
+        ) = db
+            .query_row(
+                "SELECT revoked, expires_at, human_key_image, public_key_hex, assurance_level, IFNULL(pop_public_key_b64u, '') FROM agents WHERE agent_id = ?1",
+                params![agent_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap_or((
+                1,
+                0,
+                String::new(),
+                String::new(),
+                "delegated_nonbank".to_string(),
+                String::new(),
+            ));
         if revoked != 0 {
             return Err((StatusCode::UNAUTHORIZED, "Agent has been revoked".into()));
         }
@@ -2939,14 +3441,55 @@ async fn agent_kyc_consent(
         if !st.agent_group.members.contains(&pt) {
             return Err((StatusCode::UNAUTHORIZED, "Agent not in delegated ring".into()));
         }
+
+        if !pop_pk_b64u.is_empty() {
+            if payload.pop_challenge_id.is_empty() || payload.pop_jws.is_empty() {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "Agent requires PoP: provide pop_challenge_id and pop_jws from /agent/pop/challenge"
+                        .into(),
+                ));
+            }
+            let challenge_plain = sauron_core::ajwt_support::take_pop_challenge(
+                &db,
+                &payload.pop_challenge_id,
+                &agent_id,
+            )
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+            sauron_core::ajwt_support::verify_ed25519_pop_jws(
+                &challenge_plain,
+                &payload.pop_jws,
+                &pop_pk_b64u,
+            )
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+        }
+
         assurance
     };
 
-    if assurance_level == "delegated_nonbank" {
+    let level = policy::AssuranceLevel::from_db(&assurance_level);
+    if !policy::can_agent_issue_kyc_consent(level) {
         return Err((
             StatusCode::FORBIDDEN,
-            "delegated_nonbank agents are disabled; use bank-linked delegated registration or /agent/vc/issue".into(),
+            "delegated_nonbank agents cannot issue KYC consent; use bank-linked delegated registration or /agent/vc/issue"
+                .into(),
         ));
+    }
+
+    // 3b. Server-side JTI consumption (one consent per A-JWT)
+    {
+        let jti = claims
+            .get("jti")
+            .and_then(|v| v.as_str())
+            .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing jti".into()))?;
+        let exp = claims
+            .get("exp")
+            .and_then(|v| v.as_i64())
+            .ok_or((StatusCode::UNAUTHORIZED, "A-JWT missing exp".into()))?;
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        sauron_core::ajwt_support::consume_ajwt_jti(&db, jti, exp)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
     }
 
     // 3. Verify consent request exists + is for this site + not yet claimed
@@ -3108,6 +3651,31 @@ async fn agent_vc_issue(
         (st.user_group.members.contains(&pt), has_bank_link)
     };
 
+    let vc_issue_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        risk::check_and_increment(
+            &db,
+            &risk::bucket_agent_vc_issue(&human_key_image),
+            vc_issue_ts,
+            risk::limit_agent_vc_issue(),
+        )
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        let nationality: String = db
+            .query_row(
+                "SELECT IFNULL(nationality, '') FROM users WHERE key_image_hex = ?1",
+                params![human_key_image],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        compliance::enforce_jurisdiction(&st.compliance, &nationality)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+        st.screening
+            .enforce_for_user(&db, &human_key_image)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+    }
+
     let mut non_bank_kya_assertions: Option<serde_json::Map<String, serde_json::Value>> = None;
     let root_of_trust: String;
 
@@ -3141,27 +3709,45 @@ async fn agent_vc_issue(
             ));
         }
 
-        let issuer_url = state.read().unwrap().issuer_url.clone();
+        let (issuer_urls, issuer_rt) = {
+            let st = state.read().unwrap();
+            (st.issuer_urls.clone(), st.issuer_runtime.clone())
+        };
         let verify_body = serde_json::json!({
             "circuit": circuit,
             "proof": proof,
             "public_signals": public_signals,
             "publicSignals": public_signals,
         });
-        let proof_verified = match reqwest::Client::new()
-            .post(format!("{issuer_url}/verify-proof"))
-            .json(&verify_body)
-            .send()
+        let proof_verified = match issuer_rt
+            .verify_proof_failover(&issuer_urls, &verify_body)
             .await
         {
-            Ok(r) if r.status().is_success() => {
-                let resp: serde_json::Value = r.json().await.unwrap_or_default();
-                resp.get("verified")
-                    .or_else(|| resp.get("valid"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
+            Ok(v) => v,
+            Err(IssuerVerifyError::CircuitOpen) => {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ZKP issuer verify-proof temporarily unavailable (circuit open)".into(),
+                ));
             }
-            _ => false,
+            Err(IssuerVerifyError::Transport(e)) => {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("ZKP issuer unreachable: {e}"),
+                ));
+            }
+            Err(IssuerVerifyError::JsonParse) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    "ZKP issuer returned unreadable JSON for verify-proof".into(),
+                ));
+            }
+            Err(IssuerVerifyError::Upstream(status)) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!("ZKP issuer verify-proof returned HTTP {status}"),
+                ));
+            }
         };
 
         if !proof_verified {
@@ -3254,8 +3840,8 @@ async fn agent_vc_issue(
         // Register in agents table (so A-JWT flow works normally)
         db.execute(
             "INSERT OR REPLACE INTO agents
-             (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, issued_at, expires_at, revoked)
-             VALUES (?1,?2,?3,?4,'autonomous_web3','',?5,?6,0)",
+             (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u)
+             VALUES (?1,?2,?3,?4,'autonomous_web3','',?5,?6,0,NULL,0,'','')",
             params![
                 agent_id,
                 human_key_image,
@@ -3304,6 +3890,7 @@ async fn agent_vc_issue(
         &payload.agent_checksum,
         &serde_json::json!({ "description": payload.description, "scope": payload.scope }).to_string(),
         ttl_secs,
+        None,
     );
 
     {

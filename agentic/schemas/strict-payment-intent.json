@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sauronid.io/schemas/strict-payment-intent-v1.json",
+  "title": "SauronID Strict Payment Intent",
+  "description": "Model-agnostic payment contract to be embedded in A-JWT intent. Designed for pre-Stripe authorization checks.",
+  "type": "object",
+  "required": ["action", "scope", "maxAmount", "currency"],
+  "properties": {
+    "action": { "const": "payment_initiation" },
+    "scope": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "contains": { "const": "payment_initiation" }
+    },
+    "maxAmount": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "resource": { "type": "string" },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "merchant_allowlist": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

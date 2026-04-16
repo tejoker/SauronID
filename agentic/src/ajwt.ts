@@ -19,7 +19,11 @@
 
 import * as crypto from "crypto";
 import * as jose from "jose";
+import { etc, getPublicKey } from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha512";
 import { v4 as uuidv4 } from "uuid";
+
+etc.sha512Sync = (...m: Uint8Array[]) => sha512(etc.concatBytes(...m));
 import { PopKeyPair, verifyPopChallenge } from "./pop-keys";
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -37,10 +41,29 @@ export interface AgentIntent {
     maxAmount?: number;
     /** Currency code */
     currency?: string;
+    /** Machine-readable scopes the parent allows (used for delegation narrowing) */
+    scope?: string[];
     /** Additional constraints */
     constraints?: Record<string, unknown>;
     /** Intent expiry (ISO 8601) */
     expiresAt?: string;
+}
+
+export interface StrictPaymentIntentInput {
+    /** Upper bound in major units (e.g. 12.34 EUR). */
+    maxAmount: number;
+    /** 3-letter ISO currency (will be normalized to uppercase). */
+    currency: string;
+    /** Optional allowlist of merchant ids accepted by this intent. */
+    merchantAllowlist?: string[];
+    /** Optional resource marker (cart/order id). */
+    resource?: string;
+}
+
+export interface StrictPaymentRequest {
+    amountMinor: number;
+    currency: string;
+    merchantId?: string;
 }
 
 /**
@@ -110,35 +133,178 @@ export interface ForgeConfig {
     agentVersion?: string;
 }
 
+/** Optional verification policy for library-issued A-JWTs (jose path). */
+export interface VerifyAgentTokenOptions {
+    /** Expected `iss` claim */
+    issuer?: string;
+    /** Expected `aud` claim */
+    audience?: string | string[];
+    /** Clock skew tolerance (e.g. 30 or "30s") — see jose */
+    clockTolerance?: number | string;
+    /** Max age since `iat` (e.g. 300 or "5m") — see jose */
+    maxTokenAge?: number | string;
+    /** If set, rejects reused `jti` values (callers should scope this per deployment). */
+    jtiReplayGuard?: JtiReplayGuard;
+}
+
+export interface ValidateDelegationChainOptions {
+    maxDepth?: number;
+    /** If set, link[0].scope must be a subset of these scopes */
+    rootAllowedScopes?: string[];
+}
+
+/** In-memory JTI store for replay protection (use Redis/etc. in production). */
+export class JtiReplayGuard {
+    private readonly seen = new Set<string>();
+
+    /** @returns true if jti is fresh and was recorded; false if replay */
+    checkFresh(jti: string): boolean {
+        if (this.seen.has(jti)) {
+            return false;
+        }
+        this.seen.add(jti);
+        return true;
+    }
+
+    clear(): void {
+        this.seen.clear();
+    }
+}
+
 // ─── Signing key management ─────────────────────────────────────────
 
 let idpPrivateKey: crypto.KeyObject | null = null;
 let idpPublicKey: crypto.KeyObject | null = null;
 
 /**
+ * Derive the set of scopes a parent token allows for delegation checks.
+ * Prefer `intent.scope`; else `constraints.delegated_scope`; else `[intent.action]`.
+ */
+export function effectiveScopesForIntent(intent: AgentIntent): string[] {
+    if (intent.scope && intent.scope.length > 0) {
+        return [...intent.scope];
+    }
+    const del = intent.constraints?.delegated_scope;
+    if (Array.isArray(del) && del.every((x) => typeof x === "string")) {
+        return [...(del as string[])];
+    }
+    if (intent.action) {
+        return [intent.action];
+    }
+    return [];
+}
+
+/**
+ * Build a normalized payment intent that core can enforce strictly.
+ */
+export function buildStrictPaymentIntent(input: StrictPaymentIntentInput): AgentIntent {
+    if (!Number.isFinite(input.maxAmount) || input.maxAmount <= 0) {
+        throw new Error("maxAmount must be a finite number > 0");
+    }
+    const currency = input.currency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) {
+        throw new Error("currency must be a 3-letter ISO uppercase code");
+    }
+    const constraints: Record<string, unknown> = {};
+    if (input.merchantAllowlist && input.merchantAllowlist.length > 0) {
+        const cleaned = input.merchantAllowlist
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+        if (cleaned.length === 0) {
+            throw new Error("merchantAllowlist cannot be empty strings only");
+        }
+        constraints.merchant_allowlist = cleaned;
+    }
+    return {
+        action: "payment_initiation",
+        scope: ["payment_initiation"],
+        maxAmount: input.maxAmount,
+        currency,
+        resource: input.resource,
+        constraints: Object.keys(constraints).length > 0 ? constraints : undefined,
+    };
+}
+
+/**
+ * Client-side guard mirroring strict server checks for payment preflight.
+ */
+export function assertStrictPaymentIntent(intent: AgentIntent, req: StrictPaymentRequest): void {
+    const scopes = effectiveScopesForIntent(intent).map((s) => s.trim().toLowerCase());
+    if (!scopes.includes("payment_initiation")) {
+        throw new Error('Intent must include scope "payment_initiation"');
+    }
+    if (!Number.isFinite(req.amountMinor) || req.amountMinor <= 0) {
+        throw new Error("amountMinor must be a positive number");
+    }
+    if (!Number.isFinite(intent.maxAmount) || (intent.maxAmount ?? 0) <= 0) {
+        throw new Error("Intent maxAmount must be set for strict payment checks");
+    }
+    const maxMinor = Math.round((intent.maxAmount as number) * 100);
+    if (req.amountMinor > maxMinor) {
+        throw new Error(`Requested amount exceeds intent maxAmount (${maxMinor} minor units)`);
+    }
+    const reqCurrency = req.currency.trim().toUpperCase();
+    const intentCurrency = (intent.currency || "").trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(reqCurrency)) {
+        throw new Error("Request currency must be a 3-letter ISO uppercase code");
+    }
+    if (!/^[A-Z]{3}$/.test(intentCurrency)) {
+        throw new Error("Intent currency must be a 3-letter ISO uppercase code");
+    }
+    if (reqCurrency !== intentCurrency) {
+        throw new Error(`Request currency ${reqCurrency} does not match intent currency ${intentCurrency}`);
+    }
+    const allowlistRaw = intent.constraints?.["merchant_allowlist"];
+    if (Array.isArray(allowlistRaw) && allowlistRaw.length > 0) {
+        const merchant = (req.merchantId || "").trim();
+        if (!merchant) {
+            throw new Error("merchantId is required by intent merchant_allowlist");
+        }
+        const allowed = allowlistRaw.some((v) => typeof v === "string" && v.trim() === merchant);
+        if (!allowed) {
+            throw new Error(`merchantId "${merchant}" is not in intent merchant_allowlist`);
+        }
+    }
+}
+
+/**
+ * Ensures every entry in `narrowedScope` is allowed by the parent intent.
+ */
+export function assertNarrowedDelegation(parentIntent: AgentIntent, narrowedScope: string[]): void {
+    const allowed = new Set(effectiveScopesForIntent(parentIntent));
+    if (allowed.size === 0) {
+        throw new Error(
+            "Delegation denied: parent intent defines no delegable scopes (set intent.scope or intent.action)"
+        );
+    }
+    for (const s of narrowedScope) {
+        if (!allowed.has(s)) {
+            throw new Error(`Delegation denied: scope "${s}" is not allowed by parent intent`);
+        }
+    }
+}
+
+/**
  * Initialize the IdP signing keys (Ed25519).
- * In production, these would be loaded from a secure HSM.
+ * With `seed`, the keypair is deterministic (tests / dev only).
  */
 export function initializeIdPKeys(seed?: string): {
     privateKey: crypto.KeyObject;
     publicKey: crypto.KeyObject;
 } {
     if (seed) {
-        // Deterministic key from seed (for testing)
-        const seedBytes = crypto.createHash("sha256").update(seed).digest();
-        const kp = crypto.generateKeyPairSync("ed25519", {
-            privateKeyEncoding: { type: "pkcs8", format: "der" },
-            publicKeyEncoding: { type: "spki", format: "der" },
-        });
-        idpPrivateKey = crypto.createPrivateKey({
-            key: kp.privateKey as unknown as Buffer,
-            format: "der",
-            type: "pkcs8",
-        });
+        const seedBytes = new Uint8Array(crypto.createHash("sha256").update(seed).digest());
+        const pub = getPublicKey(seedBytes);
+        const privateJwk = {
+            kty: "OKP",
+            crv: "Ed25519",
+            d: Buffer.from(seedBytes).toString("base64url"),
+            x: Buffer.from(pub).toString("base64url"),
+        };
+        idpPrivateKey = crypto.createPrivateKey({ key: privateJwk, format: "jwk" });
         idpPublicKey = crypto.createPublicKey({
-            key: kp.publicKey as unknown as Buffer,
-            format: "der",
-            type: "spki",
+            key: { kty: "OKP", crv: "Ed25519", x: privateJwk.x },
+            format: "jwk",
         });
     } else {
         const kp = crypto.generateKeyPairSync("ed25519");
@@ -146,21 +312,11 @@ export function initializeIdPKeys(seed?: string): {
         idpPublicKey = kp.publicKey;
     }
 
-    return { privateKey: idpPrivateKey, publicKey: idpPublicKey };
+    return { privateKey: idpPrivateKey!, publicKey: idpPublicKey! };
 }
 
 /**
  * Forge an Agentic JWT (A-JWT).
- *
- * Creates a signed JWT with agent-specific claims that bind:
- *   - The human's authorization (intent)
- *   - The agent's identity (checksum)
- *   - The agent's session (PoP key)
- *   - The delegation history (chain)
- *
- * @param config  Forging configuration
- * @param signingKey  Ed25519 private key for signing (default: IdP key)
- * @returns Compact JWS (the A-JWT string)
  */
 export async function forgeAgentToken(
     config: ForgeConfig,
@@ -175,7 +331,6 @@ export async function forgeAgentToken(
     const ttl = config.ttlSeconds || 300;
 
     const payload: AJWTPayload = {
-        // Standard claims
         iss: "did:sauron:idp",
         sub: config.subjectDid,
         aud: config.audience,
@@ -183,14 +338,12 @@ export async function forgeAgentToken(
         iat: now,
         jti: uuidv4(),
 
-        // A-JWT claims
         intent: config.intent,
         agent_checksum: config.agentChecksum,
         workflow_id: config.workflowId || uuidv4(),
         delegation_chain: config.delegationChain || [],
         cnf: { jkt: config.popKeyPair.thumbprint },
 
-        // Agent metadata
         agent_name: config.agentName,
         agent_version: config.agentVersion,
     };
@@ -202,36 +355,50 @@ export async function forgeAgentToken(
     return jwt;
 }
 
+function normalizeDelegationChainOptions(
+    maxDepthOrOptions?: number | ValidateDelegationChainOptions
+): ValidateDelegationChainOptions {
+    if (typeof maxDepthOrOptions === "number") {
+        return { maxDepth: maxDepthOrOptions };
+    }
+    return maxDepthOrOptions ?? {};
+}
+
 /**
  * Verify an A-JWT and decode its claims.
  *
- * Validates:
- *   1. Signature integrity (EdDSA)
- *   2. Token expiration
- *   3. Required A-JWT claims are present
- *
- * Does NOT verify the PoP binding — that requires a separate challenge.
- *
- * @param token      The compact JWS A-JWT string
- * @param publicKey  The IdP's public key (default: cached)
- * @returns          Decoded A-JWT payload
+ * Does NOT verify the PoP binding — use `verifyAgentSession` for that.
  */
 export async function verifyAgentToken(
     token: string,
-    publicKey?: crypto.KeyObject
+    publicKey?: crypto.KeyObject,
+    options?: VerifyAgentTokenOptions
 ): Promise<AJWTPayload> {
     const key = publicKey || idpPublicKey;
     if (!key) {
         throw new Error("No public key available. Call initializeIdPKeys() first.");
     }
 
-    const { payload } = await jose.jwtVerify(token, key, {
+    const verifyParams: jose.JWTVerifyOptions = {
         typ: "ajwt+jwt",
-    });
+    };
+    if (options?.issuer !== undefined) {
+        verifyParams.issuer = options.issuer;
+    }
+    if (options?.audience !== undefined) {
+        verifyParams.audience = options.audience;
+    }
+    if (options?.clockTolerance !== undefined) {
+        verifyParams.clockTolerance = options.clockTolerance;
+    }
+    if (options?.maxTokenAge !== undefined) {
+        verifyParams.maxTokenAge = options.maxTokenAge;
+    }
+
+    const { payload } = await jose.jwtVerify(token, key, verifyParams);
 
     const ajwtPayload = payload as unknown as AJWTPayload;
 
-    // Validate A-JWT-specific claims
     if (!ajwtPayload.intent) {
         throw new Error("Missing required A-JWT claim: intent");
     }
@@ -242,38 +409,33 @@ export async function verifyAgentToken(
         throw new Error("Missing required A-JWT claim: cnf.jkt (PoP binding)");
     }
 
+    if (options?.jtiReplayGuard && ajwtPayload.jti) {
+        if (!options.jtiReplayGuard.checkFresh(ajwtPayload.jti)) {
+            throw new Error("A-JWT jti replay detected");
+        }
+    }
+
     return ajwtPayload;
 }
 
 /**
  * Verify an entire agent session, binding the A-JWT to a Proof-of-Possession challenge.
- * This guarantees the agent presenting the token actually holds the private key
- * corresponding to the thumbnail bound in the token's `cnf` claim.
- *
- * @param token           The A-JWT string
- * @param challenge       The plaintext challenge that was expected to be signed
- * @param popSignature    The JWS signature over the challenge
- * @param agentPublicKey  The agent's public Ed25519 key (to verify PoP)
- * @param idpPublicKey    Optional IdP key to verify the A-JWT
- * @returns               The decoded A-JWT payload if the session validates
  */
 export async function verifyAgentSession(
     token: string,
     challenge: string,
     popSignature: string,
     agentPublicKey: crypto.KeyObject,
-    idpPublicKey?: crypto.KeyObject
+    idpPublicKey?: crypto.KeyObject,
+    verifyOptions?: VerifyAgentTokenOptions
 ): Promise<AJWTPayload> {
-    // 1. Verify the A-JWT integrity and expiry
-    const ajwtPayload = await verifyAgentToken(token, idpPublicKey);
+    const ajwtPayload = await verifyAgentToken(token, idpPublicKey, verifyOptions);
 
-    // 2. Verify the PoP Signature
     const popResult = await verifyPopChallenge(popSignature, agentPublicKey);
     if (!popResult.valid || popResult.payload !== challenge) {
         throw new Error("Proof-of-Possession challenge verification failed or challenge mismatch.");
     }
 
-    // 3. Verify the key thumbprint matches the token's `cnf.jkt` claim
     const publicJwk = agentPublicKey.export({ format: "jwk" }) as jose.JWK;
     const thumbprintInput = JSON.stringify({
         crv: publicJwk.crv,
@@ -294,32 +456,19 @@ export async function verifyAgentSession(
 
 /**
  * Create a delegation token for a child agent.
- *
- * When an agent needs to delegate a sub-task to another agent,
- * it creates a new A-JWT with:
- *   - The same human subject
- *   - A narrowed intent scope
- *   - An extended delegation chain
- *   - The child agent's checksum and PoP key binding
- *
- * @param parentToken      The parent agent's A-JWT
- * @param childChecksum    The child agent's computed checksum
- * @param childPopKeyPair  The child agent's PoP key pair
- * @param narrowedScope    Scope narrowing for the delegation
- * @param childAgentName   Optional child agent name
- * @returns                New A-JWT for the child agent
  */
 export async function createDelegationToken(
     parentToken: string,
     childChecksum: string,
     childPopKeyPair: PopKeyPair,
     narrowedScope: string[],
-    childAgentName?: string
+    childAgentName?: string,
+    verifyParentOptions?: VerifyAgentTokenOptions
 ): Promise<string> {
-    // Verify and decode the parent token
-    const parentPayload = await verifyAgentToken(parentToken);
+    const parentPayload = await verifyAgentToken(parentToken, undefined, verifyParentOptions);
 
-    // Build the new delegation link
+    assertNarrowedDelegation(parentPayload.intent, narrowedScope);
+
     const newLink: DelegationLink = {
         actor: parentPayload.agent_checksum,
         delegate: childChecksum,
@@ -328,10 +477,8 @@ export async function createDelegationToken(
         delegatedAt: new Date().toISOString(),
     };
 
-    // Extend the delegation chain
     const chain = [...parentPayload.delegation_chain, newLink];
 
-    // Forge a new A-JWT for the child
     return forgeAgentToken({
         subjectDid: parentPayload.sub,
         audience: parentPayload.aud,
@@ -351,19 +498,19 @@ export async function createDelegationToken(
     });
 }
 
+function isSubsetScope(child: string[], parent: Set<string>): boolean {
+    return child.every((s) => parent.has(s));
+}
+
 /**
  * Validate that a delegation chain is well-formed.
- *
- * Checks:
- *   - Each link's actor matches the previous delegate
- *   - No circular delegations
- *   - Scope is monotonically narrowing
- *   - Chain depth does not exceed maximum
  */
 export function validateDelegationChain(
     chain: DelegationLink[],
-    maxDepth: number = 5
+    maxDepthOrOptions?: number | ValidateDelegationChainOptions
 ): { valid: boolean; errors: string[] } {
+    const opts = normalizeDelegationChainOptions(maxDepthOrOptions);
+    const maxDepth = opts.maxDepth ?? 5;
     const errors: string[] = [];
 
     if (chain.length > maxDepth) {
@@ -374,16 +521,32 @@ export function validateDelegationChain(
     for (let i = 0; i < chain.length; i++) {
         const link = chain[i];
 
-        // Check for circular delegation
         if (seenChecksums.has(link.delegateChecksum)) {
             errors.push(`Circular delegation detected at depth ${i}`);
         }
         seenChecksums.add(link.delegateChecksum);
 
-        // Check chain continuity: link[i].delegate should match link[i+1].actor
         if (i > 0 && chain[i - 1].delegateChecksum !== link.actor) {
             errors.push(
                 `Broken chain at depth ${i}: expected actor ${chain[i - 1].delegateChecksum}, got ${link.actor}`
+            );
+        }
+    }
+
+    if (opts.rootAllowedScopes && chain.length > 0) {
+        const root = new Set(opts.rootAllowedScopes);
+        for (const s of chain[0].scope) {
+            if (!root.has(s)) {
+                errors.push(`Root scope violation: "${s}" not in rootAllowedScopes`);
+            }
+        }
+    }
+
+    for (let i = 1; i < chain.length; i++) {
+        const parentScopes = new Set(chain[i - 1].scope);
+        if (!isSubsetScope(chain[i].scope, parentScopes)) {
+            errors.push(
+                `Scope not monotonically narrowed at depth ${i}: child scope must be subset of parent link scope`
             );
         }
     }

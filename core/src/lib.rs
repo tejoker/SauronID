@@ -1,4 +1,5 @@
 pub mod db;
+pub mod runtime_mode;
 pub mod oprf;
 pub mod identity;
 pub mod ring;
@@ -8,4 +9,9 @@ pub mod sites;
 pub mod merkle;
 pub mod solana_service;
 pub mod agent;
+pub mod ajwt_support;
 pub mod policy;
+pub mod compliance;
+pub mod compliance_screening;
+pub mod risk;
+pub mod issuer_runtime;

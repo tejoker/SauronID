@@ -1,36 +1,230 @@
 use axum::{
-    extract::{State, Request, Path},
-    http::StatusCode,
+    extract::{Path, Request, State},
+    http::{header::AUTHORIZATION, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Json},
 };
-use std::sync::{Arc, RwLock};
-use serde::{Deserialize, Serialize};
-use rusqlite::params;
 use curve25519_dalek::ristretto::CompressedRistretto;
-use crate::state::ServerState;
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock, RwLock};
+use subtle::ConstantTimeEq;
+
 use crate::identity::Identity;
+use crate::risk;
+use crate::runtime_mode::is_development_runtime;
 use crate::sites::ClientType;
+use crate::state::ServerState;
 
 // ─────────────────────────────────────────────────────
-//  Middleware d'authentification admin
+//  Admin authentication (multi-key rotation + optional HS256 JWT)
 // ─────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct AdminAuthConfig {
+    /// Full-access static keys (`x-admin-key`).
+    pub full_write_keys: Vec<Vec<u8>>,
+    /// Read-only static keys — **GET/HEAD only**.
+    pub read_only_keys: Vec<Vec<u8>>,
+    /// When set, `Authorization: Bearer <jwt>` is accepted. JWT must include `scp`
+    /// with `admin:read` (GET/HEAD), `admin:write` or `admin:full` (mutating), or `admin:super` / `*`.
+    pub jwt_hs256_secret: Option<Vec<u8>>,
+}
+
+static ADMIN_AUTH: OnceLock<AdminAuthConfig> = OnceLock::new();
+
+/// Call once at process startup after env is loaded.
+pub fn init_admin_auth() -> Result<(), String> {
+    let cfg = build_admin_auth_config()?;
+    ADMIN_AUTH
+        .set(cfg)
+        .map_err(|_| "admin auth: init_admin_auth called twice".to_string())
+}
+
+fn admin_cfg() -> &'static AdminAuthConfig {
+    ADMIN_AUTH.get().expect("admin auth not initialized (call init_admin_auth at startup)")
+}
+
+fn build_admin_auth_config() -> Result<AdminAuthConfig, String> {
+    let mut full_write_keys: Vec<Vec<u8>> = Vec::new();
+    if let Ok(k) = std::env::var("SAURON_ADMIN_KEY") {
+        let t = k.trim();
+        if !t.is_empty() {
+            full_write_keys.push(t.as_bytes().to_vec());
+        }
+    }
+    if let Ok(list) = std::env::var("SAURON_ADMIN_KEYS") {
+        for part in list.split(',') {
+            let t = part.trim();
+            if !t.is_empty() {
+                full_write_keys.push(t.as_bytes().to_vec());
+            }
+        }
+    }
+    if full_write_keys.is_empty() {
+        if let Some(b) = crate::state::development_fallback_admin_key_material() {
+            eprintln!(
+                "[WARN] SAURON_ADMIN_KEY / SAURON_ADMIN_KEYS unset — using derived **development** admin key."
+            );
+            full_write_keys.push(b);
+        }
+    }
+
+    let mut read_only_keys: Vec<Vec<u8>> = Vec::new();
+    if let Ok(list) = std::env::var("SAURON_ADMIN_READ_ONLY_KEYS") {
+        for part in list.split(',') {
+            let t = part.trim();
+            if !t.is_empty() {
+                read_only_keys.push(t.as_bytes().to_vec());
+            }
+        }
+    }
+
+    let jwt_hs256_secret = std::env::var("SAURON_ADMIN_JWT_HS256_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.into_bytes());
+
+    if !is_development_runtime() {
+        if full_write_keys.is_empty() {
+            return Err(
+                "production requires SAURON_ADMIN_KEY and/or SAURON_ADMIN_KEYS (non-empty)".into(),
+            );
+        }
+        for k in &full_write_keys {
+            if k.len() < 32 {
+                return Err("production: each full admin key must be >= 32 bytes".into());
+            }
+        }
+        for k in &read_only_keys {
+            if k.len() < 32 {
+                return Err("production: each read-only admin key must be >= 32 bytes".into());
+            }
+        }
+        if let Some(ref j) = jwt_hs256_secret {
+            if j.len() < 32 {
+                return Err("production: SAURON_ADMIN_JWT_HS256_SECRET must be >= 32 bytes".into());
+            }
+        }
+    } else if full_write_keys.is_empty() && read_only_keys.is_empty() {
+        return Err("development admin auth misconfigured (no keys)".into());
+    }
+
+    Ok(AdminAuthConfig {
+        full_write_keys,
+        read_only_keys,
+        jwt_hs256_secret,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminJwtClaims {
+    #[serde(default)]
+    scp: Vec<String>,
+    /// Handled by `jsonwebtoken` expiry validation.
+    #[allow(dead_code)]
+    exp: i64,
+}
+
+fn verify_admin_jwt(token: &str, secret: &[u8]) -> Option<Vec<String>> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    let data = decode::<AdminJwtClaims>(
+        token,
+        &DecodingKey::from_secret(secret),
+        &validation,
+    )
+    .ok()?;
+    Some(data.claims.scp)
+}
+
+fn jwt_auth_ok(scopes: &[String], method: &Method) -> bool {
+    let scopes_l: Vec<String> = scopes.iter().map(|s| s.to_ascii_lowercase()).collect();
+    if scopes_l
+        .iter()
+        .any(|s| s == "admin:super" || s == "*" || s == "admin:full")
+    {
+        return true;
+    }
+    let read_ok = method == Method::GET || method == Method::HEAD;
+    if read_ok {
+        scopes_l
+            .iter()
+            .any(|s| s == "admin:read" || s == "admin:write")
+    } else {
+        scopes_l.iter().any(|s| s == "admin:write")
+    }
+}
+
+fn key_matches_any(candidate: &[u8], keys: &[Vec<u8>]) -> bool {
+    keys.iter().any(|k| {
+        if k.len() != candidate.len() {
+            return false;
+        }
+        k.as_slice().ct_eq(candidate).into()
+    })
+}
+
+fn extract_bearer_token(request: &Request) -> Option<String> {
+    let h = request.headers().get(AUTHORIZATION)?.to_str().ok()?.trim();
+    let rest = h
+        .strip_prefix("Bearer ")
+        .or_else(|| h.strip_prefix("bearer "))?
+        .trim();
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+fn extract_x_admin_key_bytes(request: &Request) -> Vec<u8> {
+    request
+        .headers()
+        .get("x-admin-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .as_bytes()
+        .to_vec()
+}
 
 pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let key = request
-        .headers()
-        .get("x-admin-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let expected = std::env::var("SAURON_ADMIN_KEY")
-        .unwrap_or_else(|_| "super_secret_hackathon_key".to_string());
-    if key != expected.as_str() {
+    let cfg = admin_cfg();
+    let method = request.method().clone();
+
+    if let Some(token) = extract_bearer_token(&request) {
+        if let Some(ref sec) = cfg.jwt_hs256_secret {
+            if let Some(scopes) = verify_admin_jwt(&token, sec) {
+                if jwt_auth_ok(&scopes, &method) {
+                    return Ok(next.run(request).await);
+                }
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    let key_bytes = extract_x_admin_key_bytes(&request);
+    if key_bytes.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    Ok(next.run(request).await)
+
+    if key_matches_any(&key_bytes, &cfg.full_write_keys) {
+        return Ok(next.run(request).await);
+    }
+    if key_matches_any(&key_bytes, &cfg.read_only_keys) {
+        if method == Method::GET || method == Method::HEAD {
+            return Ok(next.run(request).await);
+        }
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 // ─────────────────────────────────────────────────────
@@ -268,6 +462,8 @@ pub struct StatsResponse {
     pub total_tokens_b_issued: i64,
     pub total_tokens_b_spent: i64,
     pub exchange_rate: i64,
+    /// Operator-facing snapshot (no end-user PII): compliance, screening, issuer circuits, risk window.
+    pub controls: serde_json::Value,
 }
 
 pub async fn get_stats(
@@ -297,6 +493,13 @@ pub async fn get_stats(
     ).unwrap_or(0);
     let total_tokens_b_issued = current_tokens_b + total_tokens_b_spent;
 
+    let controls = serde_json::json!({
+        "compliance": st.compliance.admin_snapshot(),
+        "screening": st.screening.admin_snapshot(),
+        "issuer": st.issuer_runtime.circuit_snapshots_json(&st.issuer_urls),
+        "risk": { "window_secs": risk::window_secs() },
+    });
+
     Json(StatsResponse {
         total_users,
         total_clients,
@@ -306,5 +509,6 @@ pub async fn get_stats(
         total_tokens_b_issued,
         total_tokens_b_spent,
         exchange_rate: 1,
+        controls,
     })
 }

@@ -3,37 +3,75 @@
  * for agent token acquisition, delegation, and revocation.
  */
 
-import * as crypto from "crypto";
 import { AgentConfig, computeChecksum } from "./checksum";
-import { PopKeyPair, generatePopKeyPair, signPopChallenge } from "./pop-keys";
+import { PopKeyPair, generatePopKeyPair } from "./pop-keys";
 import {
     AgentIntent,
     AJWTPayload,
+    assertNarrowedDelegation,
 } from "./ajwt";
 
+/** 32-byte compressed Ristretto point as 64 hex chars (Sauron core `/agent/register`). */
+const RISTRETTO_PK_HEX_LEN = 64;
+
+function assertRistrettoPublicKeyHex(label: string, hexStr: string): void {
+    if (!/^[0-9a-fA-F]{64}$/.test(hexStr)) {
+        throw new Error(
+            `${label} must be ${RISTRETTO_PK_HEX_LEN} hex characters (32-byte compressed Ristretto), got length ${hexStr.length}`
+        );
+    }
+}
+
+function parseJwtPayloadJson(token: string): Record<string, unknown> {
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+        throw new Error("Invalid compact JWT");
+    }
+    const json = Buffer.from(parts[1], "base64url").toString("utf8");
+    return JSON.parse(json) as Record<string, unknown>;
+}
+
+function coerceIntent(raw: unknown): AgentIntent {
+    if (raw == null) {
+        return { action: "" };
+    }
+    if (typeof raw === "string") {
+        try {
+            return JSON.parse(raw) as AgentIntent;
+        } catch {
+            return { action: raw };
+        }
+    }
+    return raw as AgentIntent;
+}
+
 export interface IdPClientConfig {
-    /** SauronID backend URL (where /agent/register lives) */
+    /** SauronID backend base URL (e.g. https://api.example.com) */
     idpUrl: string;
-    /** Authenticated user session token from /user/auth (x-sauron-session). */
+    /** Authenticated user session from `/user/auth` (sent as `x-sauron-session`). */
     humanSession?: string;
-    /** Human key_image_hex (the user who owns this agent) */
+    /** Human `key_image_hex` (must match session when session is used). */
     humanKeyImage: string;
-    /** Agent configuration */
+    /** Agent behavioral config (checksum source). */
     agentConfig: AgentConfig;
-    /** Target audience for tokens (kept for compatibility) */
-    audience?: string | string[];
+    /**
+     * 64 hex chars — compressed Ristretto public key for ring binding on `POST /agent/register`.
+     * This is NOT the Ed25519 PoP thumbprint; use the same format as Sauron core expects.
+     */
+    publicKeyHex: string;
+    /** Optional: explicit parent for delegated child registration (else uses last `agent_id` from `requestToken`). */
+    parentAgentId?: string;
+    /** Optional: Ed25519 raw public key base64url — enables PoP on consent when core enforces it. */
+    popPublicKeyB64u?: string;
+    /** Optional: matches `cnf.jkt` in core-issued A-JWT when using PoP. */
+    popJkt?: string;
+    workflowId?: string;
+    /** JSON string for `delegation_chain` claim (core mirrors into A-JWT). */
+    delegationChainJson?: string;
 }
 
 /**
- * SauronID Agent ShimClient — The client-side library that integrates
- * directly into the agent's execution process.
- *
- * Responsibilities:
- *   1. Continuous checksum computation (tamper detection)
- *   2. PoP key lifecycle management
- *   3. A-JWT acquisition from the IdP
- *   4. Delegation to child agents
- *   5. Token refresh and revocation
+ * SauronID Agent ShimClient — integrates into the agent process for token acquisition.
  */
 export class AgentShimClient {
     private config: IdPClientConfig;
@@ -42,16 +80,15 @@ export class AgentShimClient {
     private currentToken: string | null = null;
     private tokenPayload: AJWTPayload | null = null;
     private initialized: boolean = false;
+    /** Last `agent_id` from core `POST /agent/register` (used as `parent_agent_id` for delegation). */
+    private lastAgentId: string | null = null;
 
     constructor(config: IdPClientConfig) {
+        assertRistrettoPublicKeyHex("publicKeyHex", config.publicKeyHex);
         this.config = config;
         this.checksum = computeChecksum(config.agentConfig);
     }
 
-    /**
-     * Initialize the shim: generate PoP keys, compute checksum.
-     * Must be called before any token operations.
-     */
     async initialize(): Promise<{
         checksum: string;
         popThumbprint: string;
@@ -67,46 +104,51 @@ export class AgentShimClient {
     }
 
     /**
-     * Request an A-JWT from the SauronID server.
-     *
-     * Calls POST /agent/register on the Rust backend — the server signs
-     * the token with HMAC-SHA256 so it can be verified via POST /agent/verify.
-     *
-     * @param intent  What the agent is authorized to do (stored as intent_json)
-     * @param ttlSeconds Token lifetime (default 3600s)
-     * @returns The A-JWT string (HMAC-SHA256, verifiable by the SauronID server)
+     * Request an A-JWT from the SauronID server (`POST /agent/register`).
      */
-    async requestToken(
-        intent: AgentIntent,
-        ttlSeconds: number = 3600
-    ): Promise<string> {
+    async requestToken(intent: AgentIntent, ttlSeconds: number = 3600): Promise<string> {
         this.ensureInitialized();
 
-        // Integrity check
         const currentChecksum = computeChecksum(this.config.agentConfig);
         if (currentChecksum !== this.checksum) {
             throw new Error(
                 `Agent integrity violation! Checksum changed: ${this.checksum} → ${currentChecksum}. ` +
-                "The agent's configuration has been tampered with."
+                    "The agent's configuration has been tampered with."
             );
         }
 
-        const popPubHex = this.popKeyPair!.thumbprint;
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (this.config.humanSession) {
             headers["x-sauron-session"] = this.config.humanSession;
         }
 
+        const registerBody: Record<string, unknown> = {
+            human_key_image: this.config.humanKeyImage,
+            agent_checksum: this.checksum,
+            intent_json: JSON.stringify(intent),
+            public_key_hex: this.config.publicKeyHex,
+            ttl_secs: ttlSeconds,
+        };
+        if (this.config.parentAgentId) {
+            registerBody.parent_agent_id = this.config.parentAgentId;
+        }
+        if (this.config.popJkt) {
+            registerBody.pop_jkt = this.config.popJkt;
+        }
+        if (this.config.popPublicKeyB64u) {
+            registerBody.pop_public_key_b64u = this.config.popPublicKeyB64u;
+        }
+        if (this.config.workflowId) {
+            registerBody.workflow_id = this.config.workflowId;
+        }
+        if (this.config.delegationChainJson) {
+            registerBody.delegation_chain_json = this.config.delegationChainJson;
+        }
+
         const response = await fetch(`${this.config.idpUrl}/agent/register`, {
             method: "POST",
             headers,
-            body: JSON.stringify({
-                human_key_image: this.config.humanKeyImage,
-                agent_checksum: this.checksum,
-                intent_json: JSON.stringify(intent),
-                public_key_hex: popPubHex,
-                ttl_secs: ttlSeconds,
-            }),
+            body: JSON.stringify(registerBody),
         });
 
         if (!response.ok) {
@@ -114,27 +156,33 @@ export class AgentShimClient {
             throw new Error(`A-JWT request failed (${response.status}): ${err}`);
         }
 
-        const data = await response.json();
+        const data = (await response.json()) as { ajwt: string; agent_id?: string };
         this.currentToken = data.ajwt;
-        // Parse minimal payload for expiry tracking
+        if (data.agent_id) {
+            this.lastAgentId = data.agent_id;
+        }
         try {
-            const parts = data.ajwt.split(".");
-            const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
-            this.tokenPayload = { ...payload, intent } as AJWTPayload;
-        } catch { /* ignore parse errors */ }
+            const raw = parseJwtPayloadJson(data.ajwt);
+            const merged: AJWTPayload = {
+                ...(raw as unknown as AJWTPayload),
+                intent,
+            };
+            this.tokenPayload = merged;
+        } catch {
+            /* ignore parse errors */
+        }
 
         return data.ajwt;
     }
 
     /**
-     * Delegate a sub-task to a child agent.
-     *
-     * Registers a new agent on the SauronID server with narrowed scope.
-     * The child gets its own A-JWT signed by the server.
+     * Register a child agent with narrowed scope (`POST /agent/register`).
+     * Requires a distinct Ristretto public key per active agent (Sauron core enforces uniqueness).
      */
     async delegateToAgent(
         childConfig: AgentConfig,
-        scope: string[]
+        scope: string[],
+        opts: { childPublicKeyHex: string }
     ): Promise<{
         token: string;
         childChecksum: string;
@@ -144,6 +192,12 @@ export class AgentShimClient {
         if (!this.currentToken) {
             throw new Error("No current token. Call requestToken() first.");
         }
+
+        assertRistrettoPublicKeyHex("childPublicKeyHex", opts.childPublicKeyHex);
+
+        const parentRaw = parseJwtPayloadJson(this.currentToken);
+        const parentIntent = coerceIntent(parentRaw.intent);
+        assertNarrowedDelegation(parentIntent, scope);
 
         const childChecksum = computeChecksum(childConfig);
         const childPopKeyPair = await generatePopKeyPair();
@@ -158,30 +212,32 @@ export class AgentShimClient {
             headers["x-sauron-session"] = this.config.humanSession;
         }
 
+        const parentId = this.config.parentAgentId ?? this.lastAgentId;
+        const delegateBody: Record<string, unknown> = {
+            human_key_image: this.config.humanKeyImage,
+            agent_checksum: childChecksum,
+            intent_json: JSON.stringify(intent),
+            public_key_hex: opts.childPublicKeyHex,
+            ttl_secs: 3600,
+        };
+        if (parentId) {
+            delegateBody.parent_agent_id = parentId;
+        }
+
         const response = await fetch(`${this.config.idpUrl}/agent/register`, {
             method: "POST",
             headers,
-            body: JSON.stringify({
-                human_key_image: this.config.humanKeyImage,
-                agent_checksum: childChecksum,
-                intent_json: JSON.stringify(intent),
-                public_key_hex: childPopKeyPair.thumbprint,
-                ttl_secs: 3600,
-            }),
+            body: JSON.stringify(delegateBody),
         });
 
         if (!response.ok) {
             throw new Error(`Delegation failed: ${await response.text()}`);
         }
-        const data = await response.json();
+        const data = (await response.json()) as { ajwt: string; agent_id?: string };
 
         return { token: data.ajwt, childChecksum, childPopKeyPair };
     }
 
-    /**
-     * Verify integrity: recompute checksum and check it matches.
-     * Should be called periodically during agent execution.
-     */
     verifyIntegrity(): { intact: boolean; currentChecksum: string; expectedChecksum: string } {
         const currentChecksum = computeChecksum(this.config.agentConfig);
         return {
@@ -191,9 +247,6 @@ export class AgentShimClient {
         };
     }
 
-    /**
-     * Get the current agent state.
-     */
     getState(): {
         initialized: boolean;
         checksum: string;
@@ -205,21 +258,15 @@ export class AgentShimClient {
             initialized: this.initialized,
             checksum: this.checksum,
             hasToken: this.currentToken !== null,
-            tokenExpiry: this.tokenPayload?.exp || null,
-            popThumbprint: this.popKeyPair?.thumbprint || null,
+            tokenExpiry: this.tokenPayload?.exp ?? null,
+            popThumbprint: this.popKeyPair?.thumbprint ?? null,
         };
     }
 
-    /**
-     * Get the current A-JWT token.
-     */
     getToken(): string | null {
         return this.currentToken;
     }
 
-    /**
-     * Check if the current token is still valid.
-     */
     isTokenValid(): boolean {
         if (!this.tokenPayload) return false;
         return this.tokenPayload.exp > Math.floor(Date.now() / 1000);

@@ -35,9 +35,15 @@ fi
 if [ ! -f "$BINARY" ]; then
   warn "Aucun binaire trouvé — lance 'cargo build' d'abord !"
   warn "Fallback: cargo run (lent au premier démarrage)"
-  ENV="${ENV:-development}" SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" cargo run --bin sauron-core &
+  ENV="${ENV:-development}" \
+  SAURON_ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}" \
+  SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" \
+  cargo run --bin sauron-core &
 else
-  ENV="${ENV:-development}" SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" "$BINARY" &
+  ENV="${ENV:-development}" \
+  SAURON_ADMIN_KEY="${SAURON_ADMIN_KEY:-super_secret_hackathon_key}" \
+  SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" \
+  "$BINARY" &
 fi
 CORE_PID=$!
 PIDS+=("$CORE_PID")

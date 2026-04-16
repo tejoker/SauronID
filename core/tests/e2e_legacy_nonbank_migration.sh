@@ -36,6 +36,7 @@ start_server() {
   local binary="$1"
   local revoke_flag="$2"
   ENV=development \
+  SAURON_ADMIN_KEY="${ADMIN_KEY}" \
   SAURON_REVOKE_LEGACY_DELEGATED_NONBANK="${revoke_flag}" \
   DATABASE_PATH="${DB_PATH}" \
   PORT="${PORT}" \

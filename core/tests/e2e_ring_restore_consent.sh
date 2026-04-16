@@ -63,7 +63,12 @@ ensure_binary() {
 
 start_server() {
   local binary="$1"
-  ENV=development SAURON_ISSUER_URL="${E2E_ISSUER_URL}" DATABASE_PATH="${DB_PATH}" PORT="${PORT}" "${binary}" >"${LOG_PATH}" 2>&1 &
+  ENV=development \
+  SAURON_ADMIN_KEY="${ADMIN_KEY}" \
+  SAURON_ISSUER_URL="${E2E_ISSUER_URL}" \
+  DATABASE_PATH="${DB_PATH}" \
+  PORT="${PORT}" \
+  "${binary}" >"${LOG_PATH}" 2>&1 &
   SERVER_PID="$!"
   for _ in $(seq 1 90); do
     if curl -sf "${API_URL}/admin/stats" -H "x-admin-key: ${ADMIN_KEY}" >/dev/null 2>&1; then

@@ -17,13 +17,23 @@ export {
 export {
     forgeAgentToken,
     verifyAgentToken,
+    verifyAgentSession,
     createDelegationToken,
     validateDelegationChain,
     initializeIdPKeys,
+    effectiveScopesForIntent,
+    assertNarrowedDelegation,
+    buildStrictPaymentIntent,
+    assertStrictPaymentIntent,
     AgentIntent,
+    StrictPaymentIntentInput,
+    StrictPaymentRequest,
     AJWTPayload,
     DelegationLink,
     ForgeConfig,
+    VerifyAgentTokenOptions,
+    ValidateDelegationChainOptions,
+    JtiReplayGuard,
 } from "./ajwt";
 
 export {

@@ -2,19 +2,38 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::ristretto::CompressedRistretto;
+use hmac::{Hmac, Mac};
 use rusqlite::{Connection, params};
 use sha2::{Sha256, Digest};
+use subtle::ConstantTimeEq;
 use hex;
-use crate::ring;
+use crate::compliance::ComplianceConfig;
+use crate::compliance_screening::ScreeningPolicy;
 use crate::db::DbHandle;
+use crate::issuer_runtime::IssuerRuntime;
 use crate::merkle::MerkleCommitmentLedger;
+use crate::ring;
 use crate::solana_service::SolanaService;
 
+pub use crate::runtime_mode::{is_development_runtime, runtime_environment};
+
+type HmacSha256 = Hmac<Sha256>;
+
 // ─────────────────────────────────────────────────────
-//  Helpers tokens (blind signature HMAC-SHA256)
+//  Device / consent tokens — standard HMAC-SHA256 ("token_id:hextag")
 // ─────────────────────────────────────────────────────
 
 pub fn sign_token(secret: &[u8], domain: &str, blind_value: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC key length");
+    mac.update(domain.as_bytes());
+    mac.update(b":");
+    mac.update(blind_value.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    format!("{}:{}", blind_value, hex::encode(tag))
+}
+
+/// Legacy pre-HMAC format (SHA256 chain). Kept for `verify_token` compatibility with existing rows.
+fn sign_token_legacy_sha256(secret: &[u8], domain: &str, blind_value: &str) -> String {
     let mut h = Sha256::new();
     h.update(secret);
     h.update(b":");
@@ -26,8 +45,15 @@ pub fn sign_token(secret: &[u8], domain: &str, blind_value: &str) -> String {
 
 pub fn verify_token(secret: &[u8], domain: &str, token: &str) -> bool {
     let parts: Vec<&str> = token.splitn(2, ':').collect();
-    if parts.len() != 2 { return false; }
-    sign_token(secret, domain, parts[0]) == parts[1]
+    if parts.len() != 2 {
+        return false;
+    }
+    let expected_hmac = sign_token(secret, domain, parts[0]);
+    if expected_hmac.as_bytes().ct_eq(token.as_bytes()).into() {
+        return true;
+    }
+    let expected_legacy = sign_token_legacy_sha256(secret, domain, parts[0]);
+    expected_legacy.as_bytes().ct_eq(parts[1].as_bytes()).into()
 }
 
 pub fn token_value(token: &str) -> &str {
@@ -52,21 +78,18 @@ pub struct ServerState {
     pub token_secret: Vec<u8>,
     /// Clé secrète pour signer les A-JWT agents.
     pub jwt_secret: Vec<u8>,
-    /// URL du service issuer ZKP (BabyJubJub/Groth16).
+    /// Primary ZKP issuer base URL (first of `issuer_urls`).
     pub issuer_url: String,
+    /// Ordered ZKP issuer base URLs (failover for `verify-proof`).
+    pub issuer_urls: Vec<String>,
+    /// Shared HTTP client + per-host circuit breakers for issuer `verify-proof`.
+    pub issuer_runtime: std::sync::Arc<IssuerRuntime>,
+    /// Operator-controlled compliance (jurisdiction allowlist, etc.).
+    pub compliance: ComplianceConfig,
+    /// Sanctions / PEP / risk-tier overlays.
+    pub screening: ScreeningPolicy,
     pub merkle_ledger: MerkleCommitmentLedger,
     pub solana_service: Option<std::sync::Arc<SolanaService>>,
-}
-
-pub fn runtime_environment() -> String {
-    std::env::var("ENV")
-        .or_else(|_| std::env::var("SAURON_ENV"))
-        .unwrap_or_else(|_| "production".to_string())
-        .to_ascii_lowercase()
-}
-
-pub fn is_development_runtime() -> bool {
-    matches!(runtime_environment().as_str(), "development" | "dev" | "local")
 }
 
 fn derive_dev_secret(name: &str) -> Vec<u8> {
@@ -79,13 +102,21 @@ fn derive_dev_secret(name: &str) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
+/// Deterministic admin key material for **development** when `SAURON_ADMIN_KEY` is unset.
+pub fn development_fallback_admin_key_material() -> Option<Vec<u8>> {
+    if !crate::runtime_mode::is_development_runtime() {
+        return None;
+    }
+    Some(derive_dev_secret("SAURON_ADMIN_KEY"))
+}
+
 fn load_required_secret(name: &str) -> Vec<u8> {
     if let Ok(value) = std::env::var(name) {
         if !value.trim().is_empty() {
             return value.into_bytes();
         }
     }
-    if is_development_runtime() {
+    if crate::runtime_mode::is_development_runtime() {
         eprintln!("[WARN] {} not set — deriving development-only local secret.", name);
         return derive_dev_secret(name);
     }
@@ -98,26 +129,52 @@ fn load_required_seed(name: &str) -> String {
             return value;
         }
     }
-    if is_development_runtime() {
+    if crate::runtime_mode::is_development_runtime() {
         eprintln!("[WARN] {} not set — deriving development-only local seed.", name);
         return hex::encode(derive_dev_secret(name));
     }
     panic!("{} must be set in non-development environments", name);
 }
 
+fn issuer_urls_from_env() -> Vec<String> {
+    let multi = std::env::var("SAURON_ISSUER_URLS").ok().map(|s| {
+        s.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+    });
+    if let Some(v) = multi {
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    vec![std::env::var("SAURON_ISSUER_URL").unwrap_or_else(|_| "http://localhost:4000".to_string())]
+}
+
 impl ServerState {
     pub fn new(db: Arc<DbHandle>) -> Self {
         let token_secret = load_required_secret("SAURON_TOKEN_SECRET");
         let jwt_secret = load_required_secret("SAURON_JWT_SECRET");
-        let issuer_url = std::env::var("SAURON_ISSUER_URL")
-            .unwrap_or_else(|_| "http://localhost:4000".to_string());
+        let issuer_urls = issuer_urls_from_env();
+        if issuer_urls.is_empty() {
+            panic!("[FATAL] no ZKP issuer URLs (set SAURON_ISSUER_URL or SAURON_ISSUER_URLS)");
+        }
+        let issuer_url = issuer_urls[0].clone();
+
+        let issuer_runtime = std::sync::Arc::new(
+            IssuerRuntime::from_env()
+                .unwrap_or_else(|e| panic!("[FATAL] cannot build issuer HTTP client: {e}")),
+        );
+        let compliance = ComplianceConfig::from_env();
+        let screening = ScreeningPolicy::from_env();
 
         // ── Restore ring groups from DB ──────────────────────────────────────
-        // Collect hex strings first (drops the lock), then decode.
         fn load_pubkeys(conn: &Connection, sql: &str) -> Vec<String> {
-            conn.prepare(sql).ok()
+            conn.prepare(sql)
+                .ok()
                 .and_then(|mut stmt| {
-                    stmt.query_map([], |row| row.get::<_, String>(0)).ok()
+                    stmt.query_map([], |row| row.get::<_, String>(0))
+                        .ok()
                         .map(|rows| rows.flatten().collect::<Vec<_>>())
                 })
                 .unwrap_or_default()
@@ -146,12 +203,16 @@ impl ServerState {
             )
         };
 
-        let user_group   = hexes_to_group(user_hexes);
+        let user_group = hexes_to_group(user_hexes);
         let client_group = hexes_to_group(client_hexes);
-        let agent_group  = hexes_to_group(agent_hexes);
+        let agent_group = hexes_to_group(agent_hexes);
 
-        eprintln!("[STARTUP] Restored {} users, {} clients, {} agents from DB.",
-            user_group.members.len(), client_group.members.len(), agent_group.members.len());
+        eprintln!(
+            "[STARTUP] Restored {} users, {} clients, {} agents from DB.",
+            user_group.members.len(),
+            client_group.members.len(),
+            agent_group.members.len()
+        );
 
         // ── Restore Merkle ledger from DB ─────────────────────────────────────
         let merkle_ledger = {
@@ -166,11 +227,10 @@ impl ServerState {
                 })
                 .unwrap_or_default();
             let n = leaves.len();
-            let ledger = MerkleCommitmentLedger::from_db_leaves(leaves)
-                .unwrap_or_else(|e| {
-                    eprintln!("[WARN] Merkle restore failed: {e}");
-                    MerkleCommitmentLedger::new()
-                });
+            let ledger = MerkleCommitmentLedger::from_db_leaves(leaves).unwrap_or_else(|e| {
+                eprintln!("[WARN] Merkle restore failed: {e}");
+                MerkleCommitmentLedger::new()
+            });
             eprintln!("[STARTUP] Restored Merkle ledger with {n} leaves.");
             ledger
         };
@@ -192,6 +252,10 @@ impl ServerState {
             token_secret,
             jwt_secret,
             issuer_url,
+            issuer_urls,
+            issuer_runtime,
+            compliance,
+            screening,
             merkle_ledger,
             solana_service: SolanaService::from_env().map(std::sync::Arc::new),
         }
