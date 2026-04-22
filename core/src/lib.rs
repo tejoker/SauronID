@@ -15,3 +15,4 @@ pub mod compliance;
 pub mod compliance_screening;
 pub mod risk;
 pub mod issuer_runtime;
+pub mod payment_smt;

@@ -244,6 +244,14 @@ pub fn init_schema(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_agent ON agent_payment_authorizations(agent_id, expires_at);
         CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_payment_ref ON agent_payment_authorizations(payment_ref);
 
+        -- Payment SMT leaves: key = SHA256(agent_id|window_start), value = 0 (no payment) or 1 (consumed).
+        -- Root is recomputed in-memory at startup from these rows.
+        CREATE TABLE IF NOT EXISTS payment_smt_leaves (
+            key_hex     TEXT    PRIMARY KEY NOT NULL,
+            value       INTEGER NOT NULL DEFAULT 0,
+            updated_at  INTEGER NOT NULL
+        );
+
         -- Opaque rate-limit buckets (SHA256-derived keys); sliding windows by window_id = floor(epoch/window).
         CREATE TABLE IF NOT EXISTS risk_rate_counters (
             bucket      TEXT NOT NULL,

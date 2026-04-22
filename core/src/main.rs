@@ -70,6 +70,9 @@ async fn main() {
         .route("/agent/verify",                          post(agent::verify_agent_token))
         .route("/agent/pop/challenge",                   post(agent::agent_pop_challenge))
         .route("/agent/payment/authorize",               post(agent_payment_authorize))
+        .route("/agent/payment/nonexistence/material",   post(payment_nonexistence_material))
+        .route("/agent/payment/nonexistence/verify",     post(payment_nonexistence_verify))
+        .route("/merchant/payment/consume",              post(merchant_payment_consume))
         .route("/policy/authorize",                      post(policy_authorize))
         .route("/agent/list/{human_key_image}",          get(agent::list_agents))
         .route("/agent/{agent_id}",                      get(agent::get_agent).delete(agent::revoke_agent))
@@ -1950,6 +1953,246 @@ async fn agent_payment_authorize(
             "issuer": issuer_snap,
             "risk": { "window_secs": risk::window_secs() },
         },
+    })))
+}
+
+// ─────────────────────────────────────────────────────
+//  Merchant: consume a payment authorization + update SMT
+// ─────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct MerchantPaymentConsumeBody {
+    authorization_id: String,
+    merchant_id: String,
+}
+
+/// POST /merchant/payment/consume
+///
+/// Merchant marks an authorization as consumed. On success, the payment SMT is
+/// updated (key = SHA256(agent_id|window_start), value = 1) so that subsequent
+/// non-payment proofs for the same window will correctly fail.
+async fn merchant_payment_consume(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<MerchantPaymentConsumeBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if payload.authorization_id.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "authorization_id required".into()));
+    }
+    if payload.merchant_id.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "merchant_id required".into()));
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let now_i64 = now as i64;
+
+    let (agent_id, amount_minor, currency) = {
+        let st = state.read().unwrap();
+        let db = st.db.lock().unwrap();
+        let row: (String, i64, String, String, i64, i64) = db
+            .query_row(
+                "SELECT agent_id, amount_minor, currency, merchant_id, expires_at, consumed
+                 FROM agent_payment_authorizations
+                 WHERE auth_id = ?1",
+                params![payload.authorization_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .map_err(|_| (StatusCode::NOT_FOUND, "Authorization not found".into()))?;
+        let (agent_id, amount_minor, currency, db_merchant, expires_at, consumed) = row;
+        if db_merchant != payload.merchant_id.trim() {
+            return Err((StatusCode::FORBIDDEN, "merchant_id mismatch".into()));
+        }
+        if expires_at < now_i64 {
+            return Err((StatusCode::GONE, "Authorization expired".into()));
+        }
+        if consumed != 0 {
+            return Err((StatusCode::CONFLICT, "Authorization already consumed".into()));
+        }
+        db.execute(
+            "UPDATE agent_payment_authorizations SET consumed = 1 WHERE auth_id = ?1",
+            params![payload.authorization_id],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+        (agent_id, amount_minor, currency)
+    };
+
+    // Update payment SMT: set key(agent_id, current window) = 1.
+    let win_start = sauron_core::payment_smt::window_start(now);
+    let key_hex = sauron_core::payment_smt::payment_smt_key(&agent_id, win_start);
+    {
+        let st = state.read().unwrap();
+        let mut smt = st.payment_smt.lock().unwrap();
+        smt.set_leaf(&st.db, &key_hex, 1);
+        // Invalidate cached root so stale proofs can't be generated until issuer recomputes.
+        smt.root = "pending".to_string();
+    }
+
+    Ok(Json(serde_json::json!({
+        "consumed": true,
+        "authorization_id": payload.authorization_id,
+        "agent_id": agent_id,
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "window_start": win_start,
+        "smt_key_hex": key_hex,
+        "note": "SMT leaf set to 1 — non-payment proofs for this agent in this window will now fail.",
+    })))
+}
+
+// ─────────────────────────────────────────────────────
+//  Proof of Non-Payment endpoints
+// ─────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct PaymentNonexistenceMaterialBody {
+    agent_id: String,
+    /// Unix timestamp inside the window to prove (defaults to now).
+    #[serde(default)]
+    timestamp: Option<u64>,
+}
+
+/// POST /agent/payment/nonexistence/material
+///
+/// Returns the SMT path material needed for a client to generate a ZKP showing
+/// that the agent has no consumed payment in the current 30-day window.
+async fn payment_nonexistence_material(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<PaymentNonexistenceMaterialBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if payload.agent_id.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "agent_id required".into()));
+    }
+
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let ts = payload.timestamp.unwrap_or(now_unix);
+    let win_start = sauron_core::payment_smt::window_start(ts);
+    let key_hex = sauron_core::payment_smt::payment_smt_key(&payload.agent_id, win_start);
+
+    let (path_request, current_root, is_non_member) = {
+        let st = state.read().unwrap();
+        let smt = st.payment_smt.lock().unwrap();
+        let is_nm = smt.is_non_member(&key_hex);
+        let req = smt.build_path_request(&key_hex);
+        let root = smt.root.clone();
+        (req, root, is_nm)
+    };
+
+    // Delegate Poseidon path computation to the issuer service.
+    let issuer_url = {
+        let st = state.read().unwrap();
+        st.issuer_url.clone()
+    };
+    let client = reqwest::Client::new();
+    let issuer_resp = client
+        .post(format!("{}/payment-smt/path", issuer_url))
+        .json(&path_request)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer unreachable: {e}")))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer bad JSON: {e}")))?;
+
+    Ok(Json(serde_json::json!({
+        "agent_id": payload.agent_id,
+        "window_start": win_start,
+        "key_hex": key_hex,
+        "is_non_member": is_non_member,
+        "smt_levels": sauron_core::payment_smt::SMT_LEVELS,
+        "current_root": current_root,
+        "path": issuer_resp.get("path").cloned().unwrap_or(serde_json::Value::Null),
+        "public_inputs": {
+            "root": issuer_resp.get("root").and_then(|v| v.as_str()).unwrap_or(&current_root),
+            "key_hex": key_hex,
+            "window_start": win_start,
+            "agent_id": payload.agent_id,
+        },
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct PaymentNonexistenceVerifyBody {
+    agent_id: String,
+    window_start: u64,
+    /// Groth16 proof object from the client.
+    proof: serde_json::Value,
+    /// Public signals emitted by the circuit.
+    public_signals: Vec<String>,
+}
+
+/// POST /agent/payment/nonexistence/verify
+///
+/// Verifies a client-generated ZKP proving non-payment in a 30-day window.
+/// Delegates Groth16 verification to the issuer service.
+async fn payment_nonexistence_verify(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Json(payload): Json<PaymentNonexistenceVerifyBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if payload.agent_id.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "agent_id required".into()));
+    }
+
+    let key_hex = sauron_core::payment_smt::payment_smt_key(
+        &payload.agent_id,
+        payload.window_start,
+    );
+
+    let current_root = {
+        let st = state.read().unwrap();
+        let smt = st.payment_smt.lock().unwrap();
+        smt.root.clone()
+    };
+
+    // Forward proof to issuer for Groth16 verification.
+    let issuer_url = {
+        let st = state.read().unwrap();
+        st.issuer_url.clone()
+    };
+    let verify_body = serde_json::json!({
+        "circuit": "PaymentNonMembershipSMT",
+        "proof": payload.proof,
+        "publicSignals": payload.public_signals,
+        "expectedRoot": current_root,
+        "expectedKeyHex": key_hex,
+    });
+    let client = reqwest::Client::new();
+    let issuer_resp = client
+        .post(format!("{}/verify-proof", issuer_url))
+        .json(&verify_body)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer unreachable: {e}")))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer bad JSON: {e}")))?;
+
+    let verified = issuer_resp
+        .get("verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !verified {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "ZKP verification failed: {}",
+                issuer_resp
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+            ),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({
+        "verified": true,
+        "agent_id": payload.agent_id,
+        "window_start": payload.window_start,
+        "key_hex": key_hex,
+        "root_checked": current_root,
+        "smt_levels": sauron_core::payment_smt::SMT_LEVELS,
     })))
 }
 

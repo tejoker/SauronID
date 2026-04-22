@@ -12,6 +12,7 @@ use crate::compliance_screening::ScreeningPolicy;
 use crate::db::DbHandle;
 use crate::issuer_runtime::IssuerRuntime;
 use crate::merkle::MerkleCommitmentLedger;
+use crate::payment_smt::PaymentSmt;
 use crate::ring;
 use crate::solana_service::SolanaService;
 
@@ -89,6 +90,7 @@ pub struct ServerState {
     /// Sanctions / PEP / risk-tier overlays.
     pub screening: ScreeningPolicy,
     pub merkle_ledger: MerkleCommitmentLedger,
+    pub payment_smt: std::sync::Mutex<PaymentSmt>,
     pub solana_service: Option<std::sync::Arc<SolanaService>>,
 }
 
@@ -243,6 +245,12 @@ impl ServerState {
             Scalar::from_bytes_mod_order(h.finalize().into())
         };
 
+        // ── Restore Payment SMT from DB ──────────────────────────────────────
+        let payment_smt = {
+            let smt = PaymentSmt::from_db(&db);
+            std::sync::Mutex::new(smt)
+        };
+
         Self {
             db,
             k: oprf_k,
@@ -257,6 +265,7 @@ impl ServerState {
             compliance,
             screening,
             merkle_ledger,
+            payment_smt,
             solana_service: SolanaService::from_env().map(std::sync::Arc::new),
         }
     }
