@@ -208,6 +208,7 @@ jobs:
             type=semver,pattern={{version}}
             type=sha,format=long
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -216,6 +217,45 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
+
+      # Provenance and an SBOM were already attached, but nothing bound them to
+      # this repository: an attacker who can push to the registry can attach
+      # their own. Keyless signing puts a Fulcio certificate on the digest
+      # carrying the workflow identity, so a customer can verify the image they
+      # are about to run was built by this workflow from this repository, and
+      # refuse it otherwise.
+      #
+      # The signed digest is the image INDEX digest, which references the
+      # provenance and SBOM attestation manifests, so pinning it transitively
+      # pins those too.
+      #
+      # This is what closes gateway integrity for a self-hosted customer: they
+      # verify the digest, pin the digest, and start the process themselves, so
+      # they know exactly what is running without reading our source. It proves
+      # nothing about an instance somebody else operates — see
+      # docs/attestation-scope.md.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign the image digest (keyless, GitHub OIDC)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Verify the signature we just made
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+        # Publishing a signature nobody has ever verified is how an unusable
+        # verification path ships. This runs the customer's own command against
+        # the identity documented for them, so a mismatch fails the release
+        # rather than the customer.
+        run: |
+          cosign verify \
+            --certificate-identity-regexp \
+              "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${DIGEST}" >/dev/null
+          printf 'signed and verified %s@%s\n' "$IMAGE" "$DIGEST"
 
   npm:
     needs: independent-signoff

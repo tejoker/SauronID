@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: core
-          image: "{{ .Values.core.image.repository }}:{{ .Values.core.image.tag }}"
+          image: "{{ .Values.core.image.repository }}{{ if .Values.core.image.digest }}@{{ .Values.core.image.digest }}{{ else }}:{{ .Values.core.image.tag }}{{ end }}"
           imagePullPolicy: {{ .Values.core.image.pullPolicy }}
           ports:
             - name: http

@@ -71,6 +71,33 @@ SauronID never sees, and the chain head is timestamped into Bitcoin via
 OpenTimestamps. Read `transparent-zk/README.md` and the SauronID threat model
 for the full picture, including what remains trusted rather than proven.
 
+## Verify the image you run, too
+
+Reproducing the guest IDs tells you which program produced a proof. It says
+nothing about which build of the SauronID gateway you deployed. That is a
+separate, equally offline check: every released image is signed keylessly at its
+digest, so you can confirm it came from the release workflow rather than from
+anyone who obtained a registry token.
+
+```sh
+DIGEST=$(crane digest ghcr.io/OWNER/REPO/core:@@VERSION@@)
+
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/OWNER/REPO/\.github/workflows/' \
+  "ghcr.io/OWNER/REPO/core@${DIGEST}"
+```
+
+Then deploy that digest, not the tag — a tag can be repointed between the moment
+you verify it and the moment you pull it. The signed digest is the image index,
+which references the SLSA provenance and SBOM attached at build time, so pinning
+it covers those as well (`cosign download attestation ...`).
+
+If you run SauronID yourself, those two checks together mean you know exactly
+what is executing without reading a line of the gateway's source. If you use a
+managed instance, they do not: a version string reported by a process you do not
+control is not evidence, and nothing here should be read as claiming otherwise.
+
 ## Licence
 
 Apache-2.0, as in `LICENSE`. There is no obligation to use SauronID to build or
