@@ -1,5 +1,13 @@
 # TEE Deployment — AWS Nitro Enclaves
 
+> **Status: not a supported deployment mode.** The verification code in this
+> document is real and fails closed; the enclave side is scaffolding. NSM access
+> is not compiled in, so `nitro-enclave` emits a placeholder document and now
+> refuses to start without `SAURON_NITRO_ALLOW_STUB=1`. What is scoped here also
+> attests an *agent's* enclave-held key rather than the gateway itself — see
+> `docs/attestation-scope.md` for the gap that matters to a customer ("which
+> gateway binary is running") and what closing it costs.
+
 This document covers the deployment topology and operator checklist for
 running SauronID against AWS Nitro Enclave attestation (S6 M2). It is the
 companion to the code at `core/src/attestation_cbor.rs` and the wiring in

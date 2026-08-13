@@ -42,6 +42,15 @@ export SAURON_SOLANA_RPC_URL=https://api.devnet.solana.com
 export SAURON_SOLANA_NETWORK=devnet
 export SAURON_SOLANA_KEYPAIR_PATH=/etc/sauronid/solana-keypair.json
 export SAURON_ACCEPT_SINGLE_NODE_SQLITE=1                  # acknowledge single-node DB until Postgres swap
+# Leave BOTH of the following unset unless you specifically need them.
+# export SAURON_ENABLE_HE=1                                # mounts POST /v1/stats/submit-encrypted. OFF by default: the Paillier
+#                                                          # implementation is unreviewed (NEEDS_CRYPTO_REVIEW) and built on
+#                                                          # num-bigint, which is not constant-time. Admin-gated, but an unused
+#                                                          # crypto surface should not be reachable at all. See
+#                                                          # docs/homomorphic-encryption.md.
+# export SAURON_NITRO_ALLOW_STUB=1                         # lets the `nitro-enclave` binary start WITHOUT real NSM access, in which
+#                                                          # case every attestation document it emits is a placeholder no production
+#                                                          # verifier accepts. Local plumbing work only — never a deployment.
 
 # Sprint 11 multi-tenancy (see docs/multi-tenancy.md). SauronID is
 # single-operator multi-tenant out-of-the-box: every legacy request lands

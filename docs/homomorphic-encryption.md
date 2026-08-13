@@ -130,6 +130,12 @@ const sumCt = paillierAdd(c1, c2, pk);
 
 ## HTTP surface
 
+**This route is not mounted unless `SAURON_ENABLE_HE=1`.** It is opt-in because
+the implementation below is unreviewed and `num-bigint` is not constant-time, so
+a deployment that does not use encrypted aggregation should not expose the
+surface at all — the route is admin-gated, but removing it beats defending it.
+Enabling it logs a warning naming the caveat.
+
 `POST /v1/stats/submit-encrypted` — accept a customer ciphertext and
 homomorphically accumulate it into the per-cohort, per-metric, per-period
 aggregate.

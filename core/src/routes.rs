@@ -551,21 +551,52 @@ async fn action_log_verify_handler(
 ///
 /// Both admin-gated through the same middleware stack as `/v1/policy/*`.
 pub fn stats_router() -> Router<Arc<RwLock<ServerState>>> {
-    Router::new()
+    let mut router = Router::new()
         .route("/submit", post(agg_handlers::submit_handler))
         .route(
             "/submit-transparent",
             post(agg_handlers::submit_transparent_handler).route_layer(transparent_body_limit()),
         )
-        // Sprint 13-14 Tier 2: optional Paillier-encrypted submission path.
-        // NEEDS_CRYPTO_REVIEW — see core/src/he/ disclaimer block.
-        .route(
+        .route("/cohort", get(agg_handlers::cohort_handler));
+
+    // Sprint 13-14 Tier 2: optional Paillier-encrypted submission path, OFF by
+    // default and mounted only when explicitly enabled.
+    //
+    // NEEDS_CRYPTO_REVIEW — see the disclaimer block in core/src/he/. The
+    // Paillier implementation is built on `num-bigint`, which is NOT
+    // constant-time: ~2048-bit modular exponentiation over secret material with
+    // data-dependent timing is a side channel. The route is admin-gated, so an
+    // attacker needs an admin key to reach it, but an optional and unreviewed
+    // feature should not be reachable at all in a deployment that does not use
+    // it. Not mounting it removes the surface entirely instead of defending it,
+    // and keeps it out of an external reviewer's scope until it has been
+    // replaced with a reviewed, constant-time implementation.
+    if he_encrypted_submission_enabled() {
+        tracing::warn!(
+            target: "sauron::routes",
+            "SAURON_ENABLE_HE=1 — mounting /v1/stats/submit-encrypted. The Paillier \
+             path is unreviewed and not constant-time; see docs/homomorphic-encryption.md"
+        );
+        router = router.route(
             "/submit-encrypted",
             post(agg_handlers::submit_encrypted_handler),
-        )
-        .route("/cohort", get(agg_handlers::cohort_handler))
+        );
+    }
+
+    router
         .route_layer(middleware::from_fn(admin::auth_middleware))
         .route_layer(middleware::from_fn(tenancy::extract_tenant))
+}
+
+/// Whether the unreviewed Paillier submission path is mounted.
+///
+/// Opt-in, and deliberately not disable-shaped: a `SAURON_DISABLE_*` default
+/// leaves the surface live for every operator who never read the flag.
+fn he_encrypted_submission_enabled() -> bool {
+    std::env::var("SAURON_ENABLE_HE")
+        .ok()
+        .and_then(|v| crate::runtime_mode::parse_truthy(&v))
+        .unwrap_or(false)
 }
 
 /// Router for `/v1/cohort/*` — Sprint 8 DP-published cohort surface.
