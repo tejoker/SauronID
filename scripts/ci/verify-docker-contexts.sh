@@ -94,6 +94,49 @@ except ImportError:
     sys.exit(0)
 root = sys.argv[1]
 bad = False
+
+
+def check_pair(source, name, base, ctx, dockerfile):
+    """Assert one (context, dockerfile) pair is buildable, wherever it came from."""
+    global bad
+    ctx_abs = os.path.normpath(os.path.join(base, ctx))
+    df_abs = os.path.normpath(os.path.join(base, dockerfile)) if os.path.isabs(
+        dockerfile) or dockerfile.startswith(("./", "../")) or os.path.exists(
+        os.path.join(base, dockerfile)) else os.path.normpath(
+        os.path.join(ctx_abs, dockerfile))
+    for label, path in (("context", ctx_abs), ("dockerfile", df_abs)):
+        if os.path.exists(path):
+            print(f"  ok   {source}:{name} {label} {os.path.relpath(path, root)}")
+        else:
+            print(f"  FAIL {source}:{name} {label} "
+                  f"{os.path.relpath(path, root)} does not exist")
+            bad = True
+    # Anything building core/Dockerfile must see core's path dependency, so its
+    # context has to be the repository root, not core/.
+    if df_abs.endswith(os.path.join("core", "Dockerfile")):
+        dep = os.path.join(ctx_abs, "transparent-zk", "types", "Cargo.toml")
+        if os.path.exists(dep):
+            print(f"  ok   {source}:{name} context covers transparent-zk/types")
+        else:
+            print(f"  FAIL {source}:{name} context {os.path.relpath(ctx_abs, root)} "
+                  "cannot see transparent-zk/types (cargo will fail to load the manifest)")
+            bad = True
+
+
+# Workflow image builds get the same treatment as compose. They were exempt, and
+# that is precisely where the bug survived: release-publish.yml built the core
+# image with `context: ./core`, which cannot see transparent-zk/types, so every
+# release tag's core image failed while compose stayed correct.
+for f in sorted(glob.glob(".github/workflows/*.yml")):
+    doc = yaml.safe_load(open(f)) or {}
+    for job_name, job in (doc.get("jobs") or {}).items():
+        include = (((job.get("strategy") or {}).get("matrix") or {}).get("include")) or []
+        for entry in include:
+            if not isinstance(entry, dict) or "dockerfile" not in entry:
+                continue
+            check_pair(f, f"{job_name}/{entry.get('name', '?')}", root,
+                       entry.get("context", "."), entry["dockerfile"])
+
 for f in sorted(glob.glob("docker-compose*.yml") + glob.glob("deploy/docker-compose*.yml")):
     base = os.path.dirname(os.path.join(root, f)) or root
     for name, svc in (yaml.safe_load(open(f)) or {}).get("services", {}).items():
@@ -111,24 +154,7 @@ for f in sorted(glob.glob("docker-compose*.yml") + glob.glob("deploy/docker-comp
             continue
         ctx = b if isinstance(b, str) else b.get("context", ".")
         dockerfile = "Dockerfile" if isinstance(b, str) else b.get("dockerfile", "Dockerfile")
-        ctx_abs = os.path.normpath(os.path.join(base, ctx))
-        df_abs = os.path.normpath(os.path.join(ctx_abs, dockerfile))
-        for label, path in (("context", ctx_abs), ("dockerfile", df_abs)):
-            if os.path.exists(path):
-                print(f"  ok   {f}:{name} {label} {os.path.relpath(path, root)}")
-            else:
-                print(f"  FAIL {f}:{name} {label} {os.path.relpath(path, root)} does not exist")
-                bad = True
-        # A service building core/Dockerfile must see core's path dependency, so
-        # its context has to be the repository root, not core/.
-        if df_abs.endswith(os.path.join("core", "Dockerfile")):
-            dep = os.path.join(ctx_abs, "transparent-zk", "types", "Cargo.toml")
-            if os.path.exists(dep):
-                print(f"  ok   {f}:{name} context covers transparent-zk/types")
-            else:
-                print(f"  FAIL {f}:{name} context {os.path.relpath(ctx_abs, root)} "
-                      "cannot see transparent-zk/types (cargo will fail to load the manifest)")
-                bad = True
+        check_pair(f, name, base, ctx, dockerfile)
 sys.exit(1 if bad else 0)
 PY
     fail=1

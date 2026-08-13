@@ -151,6 +151,28 @@ jobs:
           path: packaging/npm-agent-action-tool/*.tgz
           if-no-files-found: error
 
+  # The verifiability claim needs the guest source public: a customer must be
+  # able to rebuild both guests and compare image IDs, or the IDs pinned in every
+  # proof mean nothing. Only transparent-zk/ is required for that, so the
+  # gateway, dashboard and deployment stay private. Depends on
+  # independent-signoff so the gate has already reproduced the IDs — an
+  # unreproducible guest must never be published as a reviewed one.
+  transparent-zk-mirror:
+    needs: independent-signoff
+    name: Mirror reproducible guest source
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Push squashed snapshot to the public mirror
+        env:
+          # owner/name of the public mirror, and a PAT with contents:write on it
+          # and nothing else. Absent credentials fail the release rather than
+          # silently shipping without the verification path.
+          MIRROR_REPO: ${{ vars.SAURON_PUBLIC_ZK_REPO }}
+          MIRROR_TOKEN: ${{ secrets.SAURON_PUBLIC_ZK_TOKEN }}
+        run: bash scripts/release/mirror-transparent-zk.sh "$GITHUB_REF_NAME"
+
   images:
     needs: independent-signoff
     name: Push images to GHCR
@@ -159,10 +181,17 @@ jobs:
     strategy:
       matrix:
         include:
+          # core/Dockerfile builds from the REPOSITORY ROOT, not from core/: it
+          # copies core/Cargo.toml and transparent-zk/types, neither of which is
+          # visible with core/ as the context. docker-compose.yml already pairs
+          # `context: .` with `dockerfile: core/Dockerfile`; this job did not,
+          # so the core image build failed on every release tag.
           - name: core
-            context: ./core
+            context: .
+            dockerfile: core/Dockerfile
           - name: dashboard
             context: ./dashboard
+            dockerfile: ./dashboard/Dockerfile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -181,6 +210,7 @@ jobs:
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -254,7 +284,7 @@ jobs:
 
   github-release:
     name: Immutable release assets and checksums
-    needs: [tool-binaries, wheels, npm-tool, images, npm, pypi]
+    needs: [tool-binaries, wheels, npm-tool, images, npm, pypi, transparent-zk-mirror]
     runs-on: ubuntu-latest
     environment: production-release
     steps:
