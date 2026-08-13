@@ -1,3 +1,5 @@
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use crate::bitcoin_anchor::BitcoinAnchorService;
 use crate::compliance::ComplianceConfig;
 use crate::db::DbHandle;
@@ -8,7 +10,7 @@ use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use hex;
 use hmac::{Hmac, Mac};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -207,13 +209,10 @@ impl ServerState {
 
         // ── Restore ring groups from DB ──────────────────────────────────────
         fn load_pubkeys(conn: &Connection, sql: &str) -> Vec<String> {
-            conn.prepare(sql)
-                .ok()
-                .and_then(|mut stmt| {
-                    stmt.query_map([], |row| row.get::<_, String>(0))
-                        .ok()
-                        .map(|rows| rows.flatten().collect::<Vec<_>>())
-                })
+            // Best-effort by design: a ring that cannot be restored leaves the
+            // in-memory group empty rather than blocking startup.
+            conn.any_conn()
+                .query_map(sql, sql_params![], |row| row.get::<String>(0))
                 .unwrap_or_default()
         }
 
@@ -345,9 +344,9 @@ impl ServerState {
             .unwrap()
             .as_secs() as i64;
         if let Ok(db) = self.db.lock() {
-            let _ = db.execute(
+            let _ = db.any_conn().execute(
                 "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1, ?2, ?3, ?4)",
-                params![ts, action_type, status, detail],
+                sql_params![&ts, &action_type, &status, &detail],
             );
         }
     }
@@ -402,28 +401,28 @@ pub fn spawn_background_gc(db: Arc<DbHandle>) {
                 Err(_) => continue,
             };
 
-            let jti_pruned = conn
-                .execute("DELETE FROM ajwt_used_jtis WHERE exp < ?1", params![now])
+            let jti_pruned = conn.any_conn()
+                .execute("DELETE FROM ajwt_used_jtis WHERE exp < ?1", sql_params![&now])
                 .unwrap_or(0);
-            let pop_pruned = conn
+            let pop_pruned = conn.any_conn()
                 .execute(
                     "DELETE FROM agent_pop_challenges WHERE exp < ?1",
-                    params![now],
+                    sql_params![&now],
                 )
                 .unwrap_or(0);
-            let call_nonce_pruned = conn
-                .execute("DELETE FROM agent_call_nonces WHERE exp < ?1", params![now])
+            let call_nonce_pruned = conn.any_conn()
+                .execute("DELETE FROM agent_call_nonces WHERE exp < ?1", sql_params![&now])
                 .unwrap_or(0);
-            let risk_pruned = conn
+            let risk_pruned = conn.any_conn()
                 .execute(
                     "DELETE FROM risk_rate_counters WHERE window_id < ?1",
-                    params![oldest_window],
+                    sql_params![&oldest_window],
                 )
                 .unwrap_or(0);
-            let log_pruned = conn
+            let log_pruned = conn.any_conn()
                 .execute(
                     "DELETE FROM requests_log WHERE timestamp < ?1",
-                    params![retention_cutoff],
+                    sql_params![&retention_cutoff],
                 )
                 .unwrap_or(0);
 

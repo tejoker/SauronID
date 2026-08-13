@@ -92,6 +92,21 @@ impl From<&bool> for SqlValue {
 /// mechanical `&x` be applied to every parameter without first knowing whether
 /// `x` is a `String` (where the borrow is required, since `SqlValue` takes
 /// ownership) or a `&str` (where it would otherwise become `&&str` and fail).
+impl<T: Clone + Into<SqlValue>> From<&Option<T>> for SqlValue {
+    fn from(v: &Option<T>) -> Self {
+        match v {
+            Some(inner) => inner.clone().into(),
+            None => SqlValue::Null,
+        }
+    }
+}
+
+impl From<&Vec<u8>> for SqlValue {
+    fn from(v: &Vec<u8>) -> Self {
+        SqlValue::Blob(v.clone())
+    }
+}
+
 impl From<&&str> for SqlValue {
     fn from(v: &&str) -> Self {
         SqlValue::Text((*v).to_string())
@@ -348,6 +363,12 @@ impl FromAnyRow for Vec<u8> {
         row.get_blob(idx)
     }
 }
+impl FromAnyRow for Option<f64> {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_f64(idx).map(Some).or(Ok(None))
+    }
+}
+
 impl FromAnyRow for Option<Vec<u8>> {
     fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
         // No dedicated optional-blob getter: an absent blob reads as empty on

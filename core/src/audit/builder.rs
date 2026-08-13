@@ -8,12 +8,13 @@
 //! the only non-deterministic field is `generated_at` (intentionally
 //! excluded from the canonical-form signature — see `report.rs`).
 
+use crate::any_db::{AnyRowGet, AsAnyConn, SqlValue};
+use crate::sql_params;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::audit::report::{AttachedProof, AuditReport, AuditSection};
@@ -91,23 +92,20 @@ pub async fn build_audit_report(
     // Pull receipts. When agent_ids is empty we pull every agent for
     // the tenant in the period.
     let receipts: Vec<(String, String, i64)> = if canonical_agents.is_empty() {
-        let mut stmt = conn
-            .prepare(
-                "SELECT agent_id, action_hash, created_at
-                 FROM agent_action_receipts
-                 WHERE tenant_id = ?1 AND created_at >= ?2 AND created_at <= ?3",
-            )
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![tenant_id, req.period_start, req.period_end], |r| {
+        let rows = conn.any_conn().query_map(
+            "SELECT agent_id, action_hash, created_at
+            FROM agent_action_receipts
+            WHERE tenant_id = ?1 AND created_at >= ?2 AND created_at <= ?3",
+            sql_params![tenant_id, req.period_start, req.period_end],
+            |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
+                    r.get::<String>(0)?,
+                    r.get::<String>(1)?,
+                    r.get::<i64>(2)?,
                 ))
             })
             .map_err(|e| AuditError::Storage(e.to_string()))?;
-        rows.flatten().collect()
+        rows
     } else {
         // Param layout: ?1 = tenant, ?2..?(1+N) = agent ids,
         // ?(2+N) = period_start, ?(3+N) = period_end.
@@ -124,26 +122,25 @@ pub async fn build_audit_report(
             2 + n,
             3 + n,
         );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
-        let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(n + 3);
-        bound.push(&tenant_id as &dyn rusqlite::ToSql);
+        let mut bound: Vec<SqlValue> = Vec::with_capacity(n + 3);
+        bound.push(tenant_id.into());
         for a in &canonical_agents {
-            bound.push(a as &dyn rusqlite::ToSql);
+            bound.push(a.into());
         }
-        bound.push(&req.period_start);
-        bound.push(&req.period_end);
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(bound.iter()), |r| {
+        bound.push(req.period_start.into());
+        bound.push(req.period_end.into());
+        let rows = conn.any_conn().query_map(
+            &sql,
+            &bound,
+            |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
+                    r.get::<String>(0)?,
+                    r.get::<String>(1)?,
+                    r.get::<i64>(2)?,
                 ))
             })
             .map_err(|e| AuditError::Storage(e.to_string()))?;
-        rows.flatten().collect()
+        rows
     };
 
     let raw_receipts_count = receipts.len() as u32;
@@ -163,30 +160,27 @@ pub async fn build_audit_report(
     };
 
     // ── 2. Stats submissions in the period ─────────────────────────
-    let mut stats_stmt = conn
-        .prepare(
-            "SELECT metric_id, claimed_value, n_records, merkle_root,
-                    proof_b64, vk_id
-             FROM customer_stats
-             WHERE tenant_id = ?1
-               AND period_start >= ?2
-               AND period_end   <= ?3
-             ORDER BY period_start ASC, metric_id ASC",
-        )
-        .map_err(|e| AuditError::Storage(e.to_string()))?;
-    let stats_rows = stats_stmt
-        .query_map(params![tenant_id, req.period_start, req.period_end], |r| {
+    let stats_rows = conn.any_conn().query_map(
+        "SELECT metric_id, claimed_value, n_records, merkle_root,
+        proof_b64, vk_id
+        FROM customer_stats
+        WHERE tenant_id = ?1
+        AND period_start >= ?2
+        AND period_end   <= ?3
+        ORDER BY period_start ASC, metric_id ASC",
+        sql_params![tenant_id, req.period_start, req.period_end],
+        |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
+                r.get::<String>(0)?,
+                r.get::<i64>(1)?,
+                r.get::<i64>(2)?,
+                r.get::<String>(3)?,
+                r.get::<String>(4)?,
+                r.get::<String>(5)?,
             ))
         })
         .map_err(|e| AuditError::Storage(e.to_string()))?;
-    let stats: Vec<(String, i64, i64, String, String, String)> = stats_rows.flatten().collect();
+    let stats: Vec<(String, i64, i64, String, String, String)> = stats_rows;
 
     let mut zk_proofs: Vec<AttachedProof> = stats
         .iter()
@@ -201,41 +195,43 @@ pub async fn build_audit_report(
         .collect();
 
     // ── 3. Anchors ─────────────────────────────────────────────────
-    let btc: Option<(String, Option<Vec<u8>>, u32)> = conn
+    let btc: Option<(String, Option<Vec<u8>>, u32)> = conn.any_conn()
         .query_row(
             "SELECT merkle_root_hex, ots_receipt_blob, ots_upgraded
              FROM bitcoin_merkle_anchors
              WHERE tenant_id = ?1
                AND created_at >= ?2 AND created_at <= ?3
              ORDER BY created_at DESC LIMIT 1",
-            params![tenant_id, req.period_start, req.period_end],
+            sql_params![tenant_id, req.period_start, req.period_end],
             |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<Vec<u8>>>(1)?,
-                    r.get::<_, i64>(2).map(|v| v as u32)?,
+                    r.get::<String>(0)?,
+                    r.get::<Option<Vec<u8>>>(1)?,
+                    r.get::<i64>(2).map(|v| v as u32)?,
                 ))
             },
         )
-        .ok();
+        .ok()
+        .flatten();
 
-    let sol: Option<(String, String, u64)> = conn
+    let sol: Option<(String, String, u64)> = conn.any_conn()
         .query_row(
             "SELECT merkle_root_hex, signature, slot
              FROM solana_merkle_anchors
              WHERE tenant_id = ?1
                AND created_at >= ?2 AND created_at <= ?3
              ORDER BY created_at DESC LIMIT 1",
-            params![tenant_id, req.period_start, req.period_end],
+            sql_params![tenant_id, req.period_start, req.period_end],
             |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2).map(|v| v as u64)?,
+                    r.get::<String>(0)?,
+                    r.get::<String>(1)?,
+                    r.get::<i64>(2).map(|v| v as u64)?,
                 ))
             },
         )
-        .ok();
+        .ok()
+        .flatten();
 
     use base64::Engine as _;
     let anchors = AnchorEvidence {
@@ -254,23 +250,20 @@ pub async fn build_audit_report(
     };
 
     // ── 4. Policy violation events from security_audit_log ─────────
-    let mut audit_stmt = conn
-        .prepare(
-            "SELECT event_json FROM security_audit_log
-             WHERE tenant_id = ?1
-               AND event_type = 'policy_violation'
-               AND timestamp >= ?2 AND timestamp <= ?3",
-        )
-        .map_err(|e| AuditError::Storage(e.to_string()))?;
-    let audit_rows = audit_stmt
-        .query_map(params![tenant_id, req.period_start, req.period_end], |r| {
-            r.get::<_, String>(0)
+    let audit_rows = conn.any_conn().query_map(
+        "SELECT event_json FROM security_audit_log
+        WHERE tenant_id = ?1
+        AND event_type = 'policy_violation'
+        AND timestamp >= ?2 AND timestamp <= ?3",
+        sql_params![tenant_id, req.period_start, req.period_end],
+        |r| {
+            r.get::<String>(0)
         })
         .map_err(|e| AuditError::Storage(e.to_string()))?;
     let mut policy_ids: Vec<String> = Vec::new();
     let mut denial_breakdown: HashMap<String, u32> = HashMap::new();
     let mut denied: u32 = 0;
-    for row in audit_rows.flatten() {
+    for row in audit_rows {
         if let Ok(AuditEvent::PolicyViolation {
             policy_id, check, ..
         }) = serde_json::from_str::<AuditEvent>(&row)
@@ -284,8 +277,6 @@ pub async fn build_audit_report(
     }
 
     // Drop the conn before further state-touching work.
-    drop(audit_stmt);
-    drop(stats_stmt);
     drop(conn);
 
     // Allowed actions ≈ receipts − denied. Denials are a separate
@@ -485,6 +476,7 @@ fn new_report_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::params;
     use super::*;
     use crate::db::{open_db_at, DbHandle};
     use crate::state::ServerState;

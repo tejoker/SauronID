@@ -1185,6 +1185,9 @@ pub fn init_schema(conn: &Connection) {
             &["seq", "prev_hash", "entry_hash"] as &[&str],
         ),
     ] {
+        // PRAGMA is SQLite-only introspection with no PostgreSQL equivalent
+        // (that would be information_schema), and this check runs against the
+        // SQLite schema bootstrap specifically. It stays on rusqlite.
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info(\"{table}\")"))
             .unwrap_or_else(|e| panic!("cannot inspect migrated table {table}: {e}"));

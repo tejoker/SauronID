@@ -3,6 +3,8 @@
 //! All routes are admin-gated through `admin::auth_middleware` and run
 //! after `tenancy::extract_tenant`. Same gating pattern as `/v1/policy/*`.
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -83,10 +85,11 @@ pub async fn submit_handler(
             .db
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
-        db.query_row(
+        db.any_conn().require(
             "SELECT merkle_root, tree_size FROM zk_proof_checkpoints WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = 'StatsHonestComputation' AND finalized_at > 0",
-            rusqlite::params![&body.checkpoint_id, &body.tenant_id],
+            sql_params![&body.checkpoint_id, &body.tenant_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
+            || AppError::NotFound("finalized stats checkpoint not found".into()),
         )
         .map_err(|_| AppError::NotFound("finalized stats proof checkpoint not found for tenant".into()))?
     };
@@ -242,14 +245,14 @@ pub async fn submit_transparent_handler(
             .db
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
-        db.query_row(
+        db.any_conn().require(
             "SELECT merkle_root, tree_size, anchor_id FROM zk_proof_checkpoints
              WHERE checkpoint_id = ?1 AND tenant_id = ?2
                AND circuit = 'StatsHonestComputation' AND finalized_at > 0",
-            rusqlite::params![&body.checkpoint_id, &body.tenant_id],
+            sql_params![&body.checkpoint_id, &body.tenant_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|_| AppError::NotFound("finalized stats checkpoint not found".into()))?
+            || AppError::NotFound("finalized stats checkpoint not found".into()),
+        )?
     };
     if !journal_root.eq_ignore_ascii_case(&expected_root)
         || journal_size != expected_size as u64

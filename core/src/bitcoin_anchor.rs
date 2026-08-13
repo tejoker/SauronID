@@ -20,7 +20,8 @@
 //! `ots verify` CLI against the original merkle root. SauronID exposes the proof
 //! via an HTTP endpoint (operator may add a thin route over `bitcoin_merkle_anchors`).
 
-use rusqlite::params;
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -193,17 +194,17 @@ impl BitcoinAnchorService {
         ]);
 
         let conn = db.lock().map_err(|e| e.to_string())?;
-        conn.execute(
+        conn.any_conn().execute(
             "INSERT INTO bitcoin_merkle_anchors
              (anchor_id, merkle_root_hex, provider, network, op_return_hex, txid, broadcast, no_real_money, created_at)
              VALUES (?1, ?2, 'mock', ?3, ?4, ?5, 0, 1, ?6)",
-            params![
-                anchor_id,
-                root_hex,
-                self.network,
-                op_return_hex,
-                txid,
-                now,
+            sql_params![
+                &anchor_id,
+                &root_hex,
+                &self.network,
+                &op_return_hex,
+                &txid,
+                &now,
             ],
         )
         .map_err(|e| format!("DB error: {e}"))?;
@@ -282,19 +283,19 @@ impl BitcoinAnchorService {
         ]);
 
         let conn = db.lock().map_err(|e| e.to_string())?;
-        conn.execute(
+        conn.any_conn().execute(
             "INSERT INTO bitcoin_merkle_anchors
              (anchor_id, merkle_root_hex, provider, network, op_return_hex, txid, broadcast, no_real_money, created_at, ots_calendar_url, ots_receipt_blob, ots_upgraded)
              VALUES (?1, ?2, 'opentimestamps', ?3, ?4, ?5, 0, 0, ?6, ?7, ?8, 0)",
-            params![
-                anchor_id,
-                root_hex,
-                self.network,
-                op_return_hex,
-                txid,
-                now,
-                calendar_url,
-                receipt_blob,
+            sql_params![
+                &anchor_id,
+                &root_hex,
+                &self.network,
+                &op_return_hex,
+                &txid,
+                &now,
+                &calendar_url,
+                &receipt_blob,
             ],
         )
         .map_err(|e| format!("DB error: {e}"))?;
@@ -332,28 +333,25 @@ pub fn spawn_ots_upgrader(db: Arc<DbHandle>) {
         loop {
             ticker.tick().await;
             let pending: Vec<(String, String, String)> = match db.lock() {
-                Ok(conn) => {
-                    let mut stmt = match conn.prepare(
+                // Best-effort: a failed poll is retried on the next tick, so the
+                // worker skips the round rather than dying.
+                Ok(conn) => conn
+                    .any_conn()
+                    .query_map(
                         "SELECT anchor_id, merkle_root_hex, ots_calendar_url
                          FROM bitcoin_merkle_anchors
                          WHERE provider = 'opentimestamps' AND ots_upgraded = 0
                          LIMIT 100",
-                    ) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    let rows = stmt
-                        .query_map([], |r| {
+                        sql_params![],
+                        |r| {
                             Ok((
-                                r.get::<_, String>(0)?,
-                                r.get::<_, String>(1)?,
-                                r.get::<_, String>(2)?,
+                                r.get::<String>(0)?,
+                                r.get::<String>(1)?,
+                                r.get::<String>(2)?,
                             ))
-                        })
-                        .ok();
-                    rows.map(|it| it.flatten().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                }
+                        },
+                    )
+                    .unwrap_or_default(),
                 Err(_) => continue,
             };
 
@@ -367,16 +365,16 @@ pub fn spawn_ots_upgrader(db: Arc<DbHandle>) {
                     Ok(r) if r.status().is_success() => match r.bytes().await {
                         Ok(b) => {
                             if let Ok(conn) = db.lock() {
-                                let _ = conn.execute(
+                                let _ = conn.any_conn().execute(
                                     "UPDATE bitcoin_merkle_anchors
                                      SET ots_receipt_blob = ?1, ots_upgraded = 1, broadcast = 1
                                      WHERE anchor_id = ?2",
-                                    params![b.to_vec(), anchor_id],
+                                    sql_params![&b.to_vec(), &anchor_id],
                                 );
-                                let _ = conn.execute(
+                                let _ = conn.any_conn().execute(
                                     "UPDATE zk_proof_checkpoints SET finalized_at = ?1
                                      WHERE anchor_id = ?2 AND finalized_at = 0",
-                                    params![now_secs(), anchor_id],
+                                    sql_params![now_secs(), &anchor_id],
                                 );
                                 tracing::info!(
                                     target: "sauron::bitcoin_anchor",
@@ -411,6 +409,7 @@ pub fn spawn_ots_upgrader(db: Arc<DbHandle>) {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::params;
     use super::*;
     use crate::db;
     use crate::sync_recover::MutexRecover;

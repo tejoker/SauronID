@@ -6,7 +6,7 @@
 //! producing a duplicate. This mirrors how the spend ledger handles its
 //! `(policy_id, agent_id, period_start)` key.
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::{AnyRowGet, AsAnyConn, SqlValue};
 use crate::sql_params;
 use rusqlite::Connection;
 
@@ -146,17 +146,14 @@ pub fn list_for_cohort(
         tenant_ids.len() + 1,
         tenant_ids.len() + 2,
     );
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| AggError::Storage(e.to_string()))?;
-    let mut bound: Vec<&dyn rusqlite::ToSql> = tenant_ids
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
-    bound.push(&period_start);
-    bound.push(&period_end);
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(bound.iter()), |r| {
+    // Variable-length IN list: the arguments are built alongside the placeholders
+    // above, so the count is whatever tenant_ids had plus the two period bounds.
+    let mut bound: Vec<SqlValue> = tenant_ids.iter().map(SqlValue::from).collect();
+    bound.push(period_start.into());
+    bound.push(period_end.into());
+    let rows = conn
+        .any_conn()
+        .query_map(&sql, &bound, |r| {
             let agent_id: String = r.get(1)?;
             Ok(CohortRow {
                 tenant_id: r.get(0)?,
@@ -175,7 +172,7 @@ pub fn list_for_cohort(
             })
         })
         .map_err(|e| AggError::Storage(e.to_string()))?;
-    Ok(rows.flatten().collect())
+    Ok(rows)
 }
 
 /// Fetch a single submission by primary key. Returns `None` when not present.

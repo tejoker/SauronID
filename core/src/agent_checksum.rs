@@ -15,7 +15,8 @@
 //! correctly. A compromised host can lie — that's gap 3 (TPM/Nitro/Secure
 //! Enclave-backed attestation, documented separately).
 
-use rusqlite::params;
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -207,11 +208,11 @@ pub fn persist_inputs(
     checksum: &str,
     now: i64,
 ) -> Result<(), String> {
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO agent_checksum_inputs
          (agent_id, agent_type, inputs_canonical, computed_checksum, version, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
-        params![agent_id, agent_type, canonical, checksum, now],
+        sql_params![&agent_id, &agent_type, &canonical, &checksum, &now],
     )
     .map_err(|e| format!("persist agent_checksum_inputs: {e}"))?;
     Ok(())
@@ -229,19 +230,20 @@ pub fn rotate_inputs(
     now: i64,
 ) -> Result<i64, String> {
     let (prev_checksum, prev_inputs_hash, prev_version): (String, String, i64) = db
-        .query_row(
+        .any_conn()
+        .require(
             "SELECT computed_checksum, inputs_canonical, version
              FROM agent_checksum_inputs WHERE agent_id = ?1",
-            params![agent_id],
+            sql_params![agent_id],
             |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
+                    r.get::<String>(0)?,
+                    r.get::<String>(1)?,
+                    r.get::<i64>(2)?,
                 ))
             },
-        )
-        .map_err(|_| "agent has no checksum_inputs row (legacy registration)".to_string())?;
+            || "agent has no checksum_inputs row (legacy registration)".to_string(),
+        )?;
 
     let prev_inputs_sha = format!(
         "sha256:{}",
@@ -253,41 +255,41 @@ pub fn rotate_inputs(
     );
 
     let new_version = prev_version + 1;
-    db.execute(
+    db.any_conn().execute(
         "UPDATE agent_checksum_inputs
          SET agent_type = ?1, inputs_canonical = ?2, computed_checksum = ?3,
              version = ?4, updated_at = ?5
          WHERE agent_id = ?6",
-        params![
-            new_agent_type,
-            new_canonical,
-            new_checksum,
-            new_version,
-            now,
-            agent_id
+        sql_params![
+            &new_agent_type,
+            &new_canonical,
+            &new_checksum,
+            &new_version,
+            &now,
+            &agent_id
         ],
     )
     .map_err(|e| format!("update agent_checksum_inputs: {e}"))?;
 
-    db.execute(
+    db.any_conn().execute(
         "UPDATE agents SET agent_checksum = ?1 WHERE agent_id = ?2",
-        params![new_checksum, agent_id],
+        sql_params![&new_checksum, &agent_id],
     )
     .map_err(|e| format!("update agents.agent_checksum: {e}"))?;
 
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO agent_checksum_audit
          (agent_id, from_checksum, to_checksum, from_inputs_hash, to_inputs_hash, reason, actor, ts)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            agent_id,
-            prev_checksum,
-            new_checksum,
-            prev_inputs_sha,
-            new_inputs_sha,
-            reason,
-            actor,
-            now
+        sql_params![
+            &agent_id,
+            &prev_checksum,
+            &new_checksum,
+            &prev_inputs_sha,
+            &new_inputs_sha,
+            &reason,
+            &actor,
+            &now
         ],
     )
     .map_err(|e| format!("insert agent_checksum_audit: {e}"))?;

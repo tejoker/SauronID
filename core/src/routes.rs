@@ -1,3 +1,5 @@
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use axum::{
     extract::{DefaultBodyLimit, Extension, Json as AxumJson, State},
     http::StatusCode,
@@ -179,7 +181,7 @@ async fn finalize_proof_checkpoint(
         let conn = db
             .lock()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        conn.query_row(
+        conn.any_conn().query_row(
             "SELECT a.batch_root_hex, a.n_actions, a.btc_anchor_id, a.anchor_status,
                     a.leaf_version, COALESCE(b.ots_upgraded, 0), COALESCE(b.provider, ''),
                     a.from_created_at, a.from_receipt_id, a.to_created_at, a.to_receipt_id
@@ -187,7 +189,7 @@ async fn finalize_proof_checkpoint(
              LEFT JOIN bitcoin_merkle_anchors b
                ON b.anchor_id = a.btc_anchor_id AND b.tenant_id = a.tenant_id
              WHERE a.anchor_id = ?1 AND a.tenant_id = ?2",
-            rusqlite::params![&body.action_anchor_id, &tenant_id],
+            sql_params![&body.action_anchor_id, &tenant_id],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -207,9 +209,13 @@ async fn finalize_proof_checkpoint(
         .map_err(|_| {
             (
                 StatusCode::NOT_FOUND,
-                "tenant action anchor not found".into(),
+                "tenant action anchor not found".to_string(),
             )
         })?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "tenant action anchor not found".to_string(),
+        ))?
     };
     if tree_size <= 0 || tree_size > 10_000 {
         return Err((
@@ -231,8 +237,9 @@ async fn finalize_proof_checkpoint(
             let conn = db
                 .lock()
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let mut stmt = conn
-                .prepare(
+            let rows = conn
+                .any_conn()
+                .query_map(
                     "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
                         policy_version, ajwt_jti, pop_jkt, status, signature,
                         created_at, COALESCE(ring_id, ''), COALESCE(config_digest, ''), tenant_id,
@@ -242,15 +249,11 @@ async fn finalize_proof_checkpoint(
                    AND (created_at > ?2 OR (created_at = ?2 AND receipt_id >= ?3))
                    AND (created_at < ?4 OR (created_at = ?4 AND receipt_id <= ?5))
                  ORDER BY created_at, receipt_id",
-                )
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let rows = stmt
-                .query_map(
-                    rusqlite::params![
+                    sql_params![
                         &tenant_id,
-                        from_created_at,
+                        &from_created_at,
                         &from_receipt_id,
-                        to_created_at,
+                        &to_created_at,
                         &to_receipt_id
                     ],
                     |r| {
@@ -271,8 +274,8 @@ async fn finalize_proof_checkpoint(
                                 prev_hash: r.get(14)?,
                                 owner_mandate_hash: r.get(15)?,
                             },
-                            r.get::<_, String>(10)?,
-                            r.get::<_, String>(11)?,
+                            r.get::<String>(10)?,
+                            r.get::<String>(11)?,
                         ))
                     },
                 )
@@ -280,9 +283,7 @@ async fn finalize_proof_checkpoint(
             let mut total = 0i64;
             let mut compatible = 0i64;
             let mut valid_macs = 0i64;
-            for row in rows {
-                let (receipt, ring_id, config_digest) =
-                    row.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            for (receipt, ring_id, config_digest) in rows {
                 total += 1;
                 if !receipt.agent_id.is_empty()
                     && !receipt.ring_key_image_hex.is_empty()
@@ -357,9 +358,9 @@ async fn finalize_proof_checkpoint(
         let conn = db
             .lock()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        conn.execute(
+        conn.any_conn().execute(
             "INSERT INTO zk_proof_checkpoints (checkpoint_id, tenant_id, circuit, merkle_root, tree_size, anchor_id, finalized_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            rusqlite::params![&checkpoint_id, &tenant_id, &body.circuit, &root_hex, tree_size, &body.action_anchor_id, finalized_at],
+            sql_params![&checkpoint_id, &tenant_id, &body.circuit, &root_hex, tree_size, &body.action_anchor_id, finalized_at],
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -448,18 +449,22 @@ async fn transparent_verify_handler(
     let (expected_root, expected_size, expected_anchor): (String, i64, String) = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        db.query_row(
+        db.any_conn().query_row(
             "SELECT merkle_root, tree_size, anchor_id FROM zk_proof_checkpoints
              WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = ?3 AND finalized_at > 0",
-            rusqlite::params![&body.checkpoint_id, &tenant_id, circuit],
+            sql_params![&body.checkpoint_id, &tenant_id, circuit],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| {
             (
                 StatusCode::NOT_FOUND,
-                "finalized transparent checkpoint not found".into(),
+                "finalized transparent checkpoint not found".to_string(),
             )
         })?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "finalized transparent checkpoint not found".to_string(),
+        ))?
     };
     if !journal_root.eq_ignore_ascii_case(&expected_root)
         || journal_size != expected_size as u64
@@ -500,12 +505,21 @@ async fn action_log_verify_handler(
     let (expected_root, tree_size): (String, i64) = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        db.query_row(
+        db.any_conn().query_row(
             "SELECT merkle_root, tree_size FROM zk_proof_checkpoints WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = ?3 AND finalized_at > 0",
-            rusqlite::params![&body.checkpoint_id, &tenant_id, &body.payload.circuit],
+            sql_params![&body.checkpoint_id, &tenant_id, &body.payload.circuit],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .map_err(|_| (StatusCode::NOT_FOUND, "finalized proof checkpoint not found for tenant/circuit".into()))?
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                "finalized proof checkpoint not found for tenant/circuit".to_string(),
+            )
+        })?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "finalized proof checkpoint not found for tenant/circuit".to_string(),
+        ))?
     };
     // Circuits with an explicit tree-size public input must bind it to this
     // server checkpoint. StatsHonestComputation places it at index 7.

@@ -15,9 +15,10 @@
 //! one row per `(cohort_id, metric_id, period_start)`. The running ciphertext
 //! is stored as URL-safe base64; the contribution counter is monotone.
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use std::fmt;
 
-use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::db::DbHandle;
@@ -67,7 +68,7 @@ pub fn upsert_he_aggregation(db: &DbHandle, row: &HeAggregationRow) -> Result<()
     let conn = db
         .lock()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
-    conn.execute(
+    conn.any_conn().execute(
         r#"INSERT INTO he_aggregations
            (aggregation_id, cohort_id, metric_id, period_start, pk_id,
             sum_ciphertext_b64, n_contributions, last_updated)
@@ -76,15 +77,15 @@ pub fn upsert_he_aggregation(db: &DbHandle, row: &HeAggregationRow) -> Result<()
              sum_ciphertext_b64 = excluded.sum_ciphertext_b64,
              n_contributions    = excluded.n_contributions,
              last_updated       = excluded.last_updated"#,
-        params![
-            row.aggregation_id,
-            row.cohort_id,
-            row.metric_id,
-            row.period_start,
-            row.pk_id,
-            row.sum_ciphertext_b64,
-            row.n_contributions,
-            row.last_updated,
+        sql_params![
+            &row.aggregation_id,
+            &row.cohort_id,
+            &row.metric_id,
+            &row.period_start,
+            &row.pk_id,
+            &row.sum_ciphertext_b64,
+            &row.n_contributions,
+            &row.last_updated,
         ],
     )
     .map_err(|e| HeStoreError::Storage(e.to_string()))?;
@@ -108,14 +109,13 @@ pub fn conflicting_cohort_for_pk(
     let conn = db
         .lock()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
-    let row: Option<String> = conn
+    let row: Option<String> = conn.any_conn()
         .query_row(
             "SELECT cohort_id FROM he_aggregations \
              WHERE pk_id = ?1 AND cohort_id <> ?2 LIMIT 1",
-            params![pk_id, expected_cohort],
+            sql_params![&pk_id, &expected_cohort],
             |r| r.get(0),
         )
-        .optional()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
     Ok(row)
 }
@@ -128,13 +128,13 @@ pub fn get_he_aggregation(
     let conn = db
         .lock()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
-    let row = conn
+    let row = conn.any_conn()
         .query_row(
             r#"SELECT aggregation_id, cohort_id, metric_id, period_start, pk_id,
                       sum_ciphertext_b64, n_contributions, last_updated
                FROM he_aggregations
                WHERE aggregation_id = ?1"#,
-            params![aggregation_id],
+            sql_params![&aggregation_id],
             |r| {
                 Ok(HeAggregationRow {
                     aggregation_id: r.get(0)?,
@@ -148,7 +148,6 @@ pub fn get_he_aggregation(
                 })
             },
         )
-        .optional()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
     Ok(row)
 }

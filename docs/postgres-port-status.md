@@ -65,94 +65,43 @@ acknowledgement.
 
 ## Sweep progress
 
-`agent_action.rs`, `agent_action_anchor.rs`, `agent.rs` and
-`middleware/audit_log.rs`, `admin.rs`, `main.rs`, `ajwt_support.rs`,
-`rings.rs`, `usage.rs` and `risk.rs` are done (2026-08-13) — every
-production statement in both now goes through `AnyConn`, and `rusqlite::params!`
-survives only in test fixtures. Together they cover the receipt write path, the
-receipt chain, the anon ring path, receipt verification, merkle batch
-construction, the anchor batch rows, and the proof/status read paths: the tables
-whose divergence would be most expensive, since they hold the audit evidence.
+**The call-site sweep is complete (2026-08-13).** Every production statement in
+`core/src` now goes through `AnyConn`, so the SQL dialect is translated and the
+backend choice lives in one place instead of at each call site.
 
-`agent.rs` covers agent registration, owner-mandate verification, the three
-active-key uniqueness checks, attestation-challenge issue and single-use consume,
-A-JWT issuance lookups, checksum rotation, agent read/list, revocation, and PoP
-challenge issuance.
+Exactly one production statement stays on rusqlite, deliberately:
+`db.rs` runs `PRAGMA table_info` to verify the SQLite schema bootstrap. PRAGMA is
+SQLite-only introspection with no PostgreSQL equivalent — that would be
+`information_schema` — and the check exists to validate the SQLite path itself.
+The surrounding `execute_batch` DDL is in the same position: PostgreSQL gets its
+schema from `migrations/postgres/`, so routing DDL through the translator would
+serve nothing.
 
-The sweep now has primitives rather than a repeated shape. `AsAnyConn::any_conn()`
-keeps the backend choice in one place — writing `AnyConn::Sqlite(&db)` at every
-call site would have meant editing them all again at the switch — and
-`AnyConn::require` / `AnyConn::scalar_or` name the two recurring read shapes
-(required-row, and deliberately-best-effort). Converted files came out shorter
-than they started.
+The primitives that made it tractable, in the order they became necessary:
 
-`AnyRowGet` closed the last source of per-site work: row closures keep writing
-`row.get(3)?` and let the binding site's type drive the decode, as rusqlite does,
-so porting a query no longer means rewriting every field of its closure into a
-named getter — which was both tedious and a chance to pair the wrong column with
-the wrong type.
+| Primitive | Replaces |
+| --- | --- |
+| `AsAnyConn::any_conn()` | `AnyConn::Sqlite(&db)` written at every site, which would have needed editing again at the switch |
+| `AnyConn::require` | `.map_err(\|_\| e())?.ok_or_else(e)?` plus a named closure per site |
+| `AnyConn::scalar_or` | `.ok().flatten().unwrap_or(d)`, and it *names* deliberate error-swallowing so those sites are greppable |
+| `AnyConn::transaction` | `rusqlite::Connection::transaction()`, which needs `&mut Connection` |
+| `AnyRowGet` + `FromAnyRow` | rewriting every field of every row closure into a named getter |
+| `From<&&str>`, `From<&Option<T>>`, borrowed scalars | a compile-fix cycle per parameter depending on owned vs Copy |
 
-`SqlValue` now converts from borrowed scalars and double references
-(`&&str`, `&&String`, `&i64`, …) as well as owned values. That exists purely so a
-mechanical `&x` can be applied to every parameter in a file without first knowing
-whether each one is owned or Copy — the alternative is a compile-fix cycle per
-call site, which is what the first three files cost.
+What the sweep found, beyond the port itself: **six silent-truncation bugs**,
+all the same shape — `.flatten()` over a row iterator dropping rows that fail to
+decode. They were in merkle-leaf construction (twice, where a dropped row changes
+a published batch root), agent listing, ZKP proof listing, audit-chain
+verification, and ring usage. All now propagate the error.
 
-Previously unmodelled, now available: **transactions**. `AnyConn::transaction` issues BEGIN/COMMIT/ROLLBACK through the translated path,
-since `rusqlite::Connection::transaction()` needs `&mut Connection` and this
-handle only borrows one. Nesting is unsupported on purpose.
-
-A scripted pass over a file is fine for the receiver rewrite, the `params!`
-rename and the generic-argument fix. It is NOT safe for anything that rewrites
-surrounding expressions: rules that touched `.unwrap_or_default()` chains and a
-blanket `&`-prefix have each mangled unrelated code, including the inside of a
-`format!` string literal. Two were caught by the compiler and the rest by reading
-every diff hunk that did not mention a database call. Do both before running the
-tests.
-
-Things to watch that `agent.rs` added:
-
-- **Nullable columns must stay nullable.** `SqlValue::from(Option<T>)` maps
-  `None` to SQL NULL, so `parent_agent_id` and the four attestation columns keep
-  storing NULL rather than an empty string. Coalescing them in the binding layer
-  would change what `IS NULL` predicates mean.
-- **Do not coalesce a nullable timestamp to 0.**
-  `agent_attestation_challenges.used_at` is NULL until spent, so it is read with
-  `get_opt_i64`. `IFNULL(used_at, 0)` would make every unspent challenge read as
-  already used.
-- **Row-count-as-verdict survives translation.** The single-use claim
-  (`UPDATE … WHERE used_at IS NULL AND expires_at >= ?1`, then `changed != 1`)
-  is atomic in the statement itself, so it ports unchanged. Keep the predicate,
-  not just the update.
-- **`.flatten()` over a row iterator hides decode failures.** In `list_agents`
-  that silently showed a caller fewer agents than they own; it is now a 500.
-
-One thing `agent_action_anchor.rs` added to the list of things to watch:
-`.flatten()` over a row iterator silently drops rows that fail to decode. On the
-two queries that build merkle leaves that would shorten a batch and change its
-published root, so both now propagate decode errors instead. Still outstanding in
-this file's neighbourhood: `middleware::audit_log::audit_chain_head` takes a
-`rusqlite::Connection` directly and is called from the anchor path.
-
-Two things that sweep surfaced, both worth expecting again elsewhere:
-
-- **`INSERT OR REPLACE` does not translate.** `sql_translate` deliberately
-  refuses to invent a conflict target rather than silently downgrading an upsert
-  to a no-op, so each such statement needs an explicit
-  `ON CONFLICT(<key>) DO UPDATE SET …` written out. Two in this file.
-- **`ORDER BY <nullable> DESC` is not portable.** SQLite sorts NULLs first
-  ascending, so they land last descending; PostgreSQL defaults to NULLS FIRST
-  for DESC. `agent_action_receipts.seq` is NULL on pre-chain rows, so the
-  unguarded form would have picked a legacy row as the chain head on Postgres
-  only. Coalesce in both the SELECT and the ORDER BY. Pinned by the chain-head
-  scenario in `core/tests/any_db_dual_backend.rs`, which is run against a real
-  PostgreSQL in CI.
-
-Also note a behaviour improvement to preserve when porting: the rusqlite version
-of `next_chain_position` swallowed all errors with `.ok()`, so a backend failure
-was indistinguishable from an empty chain and would have restarted a tenant's
-chain at seq 1. `AnyConn::query_row` returns `Option` for "no rows" and `Err` for
-failures, which separates them.
+A scripted pass is safe for the receiver rewrite, the `params!` rename and the
+generic-argument fix. It is NOT safe for anything rewriting surrounding
+expressions: rules touching `.unwrap_or_default()` chains and a blanket
+`&`-prefix each mangled unrelated code — a `tenant.map(..)` chain, an
+`Option::map` on a request field, three legitimate non-database call sites,
+`allowed as i64`, and the inside of a `format!` string literal. Most were caught
+by the compiler; the rest by reading every diff hunk that did not mention a
+database call. Do both, before running the tests.
 
 ## Remaining work to make Postgres production-primary
 

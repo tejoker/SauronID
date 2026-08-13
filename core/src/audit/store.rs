@@ -3,7 +3,8 @@
 //! Stores the report JSON + HMAC signature into the `audit_reports`
 //! table. Tenant-scoped by primary index for cheap list queries.
 
-use rusqlite::{params, OptionalExtension};
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use serde_json;
 
 use crate::audit::report::AuditReport;
@@ -66,20 +67,20 @@ pub fn store_report(
         serde_json::to_string(&report.agent_ids).map_err(|e| StoreError::Decode(e.to_string()))?;
     let report_json =
         serde_json::to_string(report).map_err(|e| StoreError::Decode(e.to_string()))?;
-    conn.execute(
+    conn.any_conn().execute(
         "INSERT OR IGNORE INTO audit_reports
          (report_id, tenant_id, agent_ids_json, period_start, period_end,
           generated_at, report_json, signature)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            report.report_id,
-            report.tenant_id,
-            agent_ids_json,
-            report.period_start,
-            report.period_end,
-            report.generated_at,
-            report_json,
-            signature,
+        sql_params![
+            &report.report_id,
+            &report.tenant_id,
+            &agent_ids_json,
+            &report.period_start,
+            &report.period_end,
+            &report.generated_at,
+            &report_json,
+            &signature,
         ],
     )
     .map_err(|e| StoreError::Db(e.to_string()))?;
@@ -94,14 +95,13 @@ pub fn get_report(
     report_id: &str,
 ) -> Result<Option<AuditReport>, StoreError> {
     let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
-    let row: Option<String> = conn
+    let row: Option<String> = conn.any_conn()
         .query_row(
             "SELECT report_json FROM audit_reports
              WHERE report_id = ?1 AND tenant_id = ?2",
-            params![report_id, tenant_id],
+            sql_params![&report_id, &tenant_id],
             |r| r.get(0),
         )
-        .optional()
         .map_err(|e| StoreError::Db(e.to_string()))?;
     match row {
         Some(json) => serde_json::from_str::<AuditReport>(&json)
@@ -120,20 +120,19 @@ pub fn list_reports(
 ) -> Result<Vec<AuditReport>, StoreError> {
     let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
     let capped = limit.clamp(1, 1000) as i64;
-    let mut stmt = conn
-        .prepare(
+    let rows = conn
+        .any_conn()
+        .query_map(
             "SELECT report_json FROM audit_reports
              WHERE tenant_id = ?1
              ORDER BY generated_at DESC
              LIMIT ?2",
+            sql_params![&tenant_id, &capped],
+            |r| r.get::<String>(0),
         )
-        .map_err(|e| StoreError::Db(e.to_string()))?;
-    let rows = stmt
-        .query_map(params![tenant_id, capped], |r| r.get::<_, String>(0))
-        .map_err(|e| StoreError::Db(e.to_string()))?;
+        .map_err(StoreError::Db)?;
     let mut out = Vec::new();
-    for r in rows {
-        let json = r.map_err(|e| StoreError::Db(e.to_string()))?;
+    for json in rows {
         let report: AuditReport =
             serde_json::from_str(&json).map_err(|e| StoreError::Decode(e.to_string()))?;
         out.push(report);
