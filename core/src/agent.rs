@@ -15,7 +15,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::ajwt_support;
+use crate::any_db::AnyConn;
 use crate::crypto_protocol::{self, CallSignatureInput};
+use crate::sql_params;
 use crate::error::AppError;
 use crate::policy;
 use crate::risk;
@@ -464,13 +466,15 @@ pub struct VerifyAjwtResponse {
 }
 
 fn has_bank_kyc_link(db: &rusqlite::Connection, human_key_image: &str) -> bool {
-    db.query_row(
-        "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
-        params![human_key_image],
-        |r| r.get::<_, i64>(0),
-    )
-    .ok()
-    .unwrap_or(0)
+    AnyConn::Sqlite(db)
+        .query_row(
+            "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
+            sql_params![human_key_image],
+            |r| r.get_i64(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0)
         > 0
 }
 
@@ -502,21 +506,23 @@ fn verify_owner_mandate(
     use base64::Engine;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-    let owner_pk_b64u: String = db
+    let missing_owner_key = || {
+        (
+            StatusCode::BAD_REQUEST,
+            "owner mandate requires an owner key bound to human_key_image; register the owner with a client-generated Ed25519 key first".to_string(),
+        )
+    };
+    let owner_pk_b64u: String = AnyConn::Sqlite(db)
         .query_row(
             "SELECT c.ed25519_public_key_b64u
              FROM user_auth_credentials c
              JOIN user_auth_tenant_bindings b ON b.key_image_hex = c.key_image_hex
              WHERE c.key_image_hex = ?1 AND b.tenant_id = ?2",
-            rusqlite::params![human_key_image, tenant_id],
-            |r| r.get(0),
+            sql_params![human_key_image, tenant_id],
+            |r| r.get_string(0),
         )
-        .map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                "owner mandate requires an owner key bound to human_key_image; register the owner with a client-generated Ed25519 key first".to_string(),
-            )
-        })?;
+        .map_err(|_| missing_owner_key())?
+        .ok_or_else(missing_owner_key)?;
 
     let owner_pk: [u8; 32] = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(owner_pk_b64u.trim())
@@ -714,18 +720,32 @@ pub async fn register_agent(
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
         let now = now_secs();
-        let row: Result<(String, String, String, i64, Option<i64>), rusqlite::Error> = db.query_row(
-            "SELECT tenant_id, human_key_image, nonce, expires_at, used_at FROM agent_attestation_challenges WHERE id = ?1 AND pop_public_key_b64u = ?2",
-            params![&payload.attestation_challenge_id, &payload.pop_public_key_b64u],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        );
+        let no_challenge = || {
+            (
+                StatusCode::UNAUTHORIZED,
+                "attestation challenge not found or not bound to this PoP key".to_string(),
+            )
+        };
         let (challenge_tenant, challenge_human, nonce, expires_at, used_at) =
-            row.map_err(|_| {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    "attestation challenge not found or not bound to this PoP key".into(),
+            AnyConn::Sqlite(&db)
+                .query_row(
+                    "SELECT tenant_id, human_key_image, nonce, expires_at, used_at FROM agent_attestation_challenges WHERE id = ?1 AND pop_public_key_b64u = ?2",
+                    sql_params![&payload.attestation_challenge_id, &payload.pop_public_key_b64u],
+                    |r| {
+                        Ok((
+                            r.get_string(0)?,
+                            r.get_string(1)?,
+                            r.get_string(2)?,
+                            r.get_i64(3)?,
+                            // NULL until the challenge is spent, so this must
+                            // stay optional rather than coalescing to 0 — a
+                            // zero timestamp would read as "already used".
+                            r.get_opt_i64(4)?,
+                        ))
+                    },
                 )
-            })?;
+                .map_err(|_| no_challenge())?
+                .ok_or_else(no_challenge)?;
         if challenge_tenant != tenant_id || challenge_human != human_key_image {
             return Err((
                 StatusCode::FORBIDDEN,
@@ -1006,12 +1026,14 @@ pub async fn register_agent(
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
         let now = now_secs();
-        let changed = db
+        // Single-use claim: the `used_at IS NULL` predicate is what makes this
+        // atomic, so the row count is the TOCTOU verdict. Preserved exactly.
+        let changed = AnyConn::Sqlite(&db)
             .execute(
                 "UPDATE agent_attestation_challenges SET used_at = ?1 WHERE id = ?2 AND used_at IS NULL AND expires_at >= ?1",
-                params![now, &payload.attestation_challenge_id],
+                sql_params![now, &payload.attestation_challenge_id],
             )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         if changed != 1 {
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -1080,12 +1102,14 @@ pub async fn register_agent(
     {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let in_use: bool = db
+        let in_use: bool = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT COUNT(*) FROM agents WHERE public_key_hex = ?1 AND revoked = 0 AND tenant_id = ?2",
-                params![payload.public_key_hex, tenant_id],
-                |r| r.get::<_, i64>(0),
+                sql_params![&payload.public_key_hex, &tenant_id],
+                |r| r.get_i64(0),
             )
+            .ok()
+            .flatten()
             .unwrap_or(0)
             > 0;
         if in_use {
@@ -1094,12 +1118,14 @@ pub async fn register_agent(
                 "public_key_hex already registered to an active agent".into(),
             ));
         }
-        let key_image_in_use: bool = db
+        let key_image_in_use: bool = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT COUNT(*) FROM agents WHERE ring_key_image_hex = ?1 AND revoked = 0 AND tenant_id = ?2",
-                params![payload.ring_key_image_hex, tenant_id],
-                |r| r.get::<_, i64>(0),
+                sql_params![&payload.ring_key_image_hex, &tenant_id],
+                |r| r.get_i64(0),
             )
+            .ok()
+            .flatten()
             .unwrap_or(0)
             > 0;
         if key_image_in_use {
@@ -1108,12 +1134,14 @@ pub async fn register_agent(
                 "ring_key_image_hex already registered to an active agent".into(),
             ));
         }
-        let pop_key_in_use: bool = db
+        let pop_key_in_use: bool = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT COUNT(*) FROM agents WHERE pop_public_key_b64u = ?1 AND revoked = 0 AND tenant_id = ?2",
-                params![payload.pop_public_key_b64u, tenant_id],
-                |r| r.get::<_, i64>(0),
+                sql_params![&payload.pop_public_key_b64u, &tenant_id],
+                |r| r.get_i64(0),
             )
+            .ok()
+            .flatten()
             .unwrap_or(0)
             > 0;
         if pop_key_in_use {
@@ -1160,17 +1188,27 @@ pub async fn register_agent(
     } else {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let row: Result<(String, String, i64, i64), rusqlite::Error> = db.query_row(
-            "SELECT intent_json, human_key_image, COALESCE(delegation_depth, 0), revoked FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-            params![&payload.parent_agent_id, tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        );
-        let (p_intent, p_human, p_depth, p_rev) = row.map_err(|_| {
+        let no_parent = || {
             (
                 StatusCode::BAD_REQUEST,
                 "parent_agent_id not found".to_string(),
             )
-        })?;
+        };
+        let (p_intent, p_human, p_depth, p_rev) = AnyConn::Sqlite(&db)
+            .query_row(
+                "SELECT intent_json, human_key_image, COALESCE(delegation_depth, 0), revoked FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
+                sql_params![&payload.parent_agent_id, &tenant_id],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_string(1)?,
+                        r.get_i64(2)?,
+                        r.get_i64(3)?,
+                    ))
+                },
+            )
+            .map_err(|_| no_parent())?
+            .ok_or_else(no_parent)?;
         if p_rev != 0 {
             return Err((StatusCode::BAD_REQUEST, "parent agent is revoked".into()));
         }
@@ -1265,7 +1303,8 @@ pub async fn register_agent(
             .tpm2_ek_cert_chain_pem
             .as_deref()
             .filter(|s| !s.is_empty());
-        db.execute(
+        AnyConn::Sqlite(&db)
+            .execute(
             // Plain INSERT (not OR REPLACE): agent_id is unique per registration,
             // so a conflict is a real error to surface, never a silent overwrite
             // of an existing agent's state.
@@ -1273,31 +1312,34 @@ pub async fn register_agent(
              (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u, attestation_blob, attestation_kind, attestation_pubkey_b64u, attestation_pcr_set, attestation_ek_cert_chain_pem, tenant_id,
               owner_mandate_sig_b64u, owner_mandate_hash)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
-            params![
-                agent_id,
-                human_key_image,
-                payload.agent_checksum,
-                payload.intent_json,
-                assurance_level,
-                payload.public_key_hex,
-                payload.ring_key_image_hex,
-                now,
-                expires_at,
-                parent_opt,
-                delegation_depth,
-                payload.pop_jkt,
-                payload.pop_public_key_b64u,
-                if payload.attestation_blob.is_empty() { None } else { Some(&payload.attestation_blob) },
-                payload.attestation_kind,
-                attestation_pubkey_b64u,
-                attestation_pcr_set,
-                attestation_ek_cert_chain_pem,
-                tenant_id,
-                owner_mandate_sig,
-                owner_mandate_hash,
-            ],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                sql_params![
+                    &agent_id,
+                    &human_key_image,
+                    &payload.agent_checksum,
+                    &payload.intent_json,
+                    &assurance_level,
+                    &payload.public_key_hex,
+                    &payload.ring_key_image_hex,
+                    now,
+                    expires_at,
+                    // Nullable columns stay nullable: SqlValue::from(Option<T>)
+                    // maps None to SQL NULL, so an absent parent or attestation
+                    // field is not silently stored as an empty string.
+                    parent_opt.as_deref(),
+                    delegation_depth,
+                    &payload.pop_jkt,
+                    &payload.pop_public_key_b64u,
+                    if payload.attestation_blob.is_empty() { None } else { Some(&payload.attestation_blob) },
+                    &payload.attestation_kind,
+                    attestation_pubkey_b64u,
+                    attestation_pcr_set,
+                    attestation_ek_cert_chain_pem,
+                    &tenant_id,
+                    &owner_mandate_sig,
+                    &owner_mandate_hash,
+                ],
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
         // Server-computed checksum: persist the structured inputs so future
         // /agent/{id}/checksum/update calls can audit the prior version.
@@ -1376,13 +1418,24 @@ pub async fn issue_agent_token(
     ) = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.query_row(
-            "SELECT human_key_image, agent_checksum, intent_json, revoked, expires_at, IFNULL(pop_jkt, '')
+        AnyConn::Sqlite(&db)
+            .query_row(
+                "SELECT human_key_image, agent_checksum, intent_json, revoked, expires_at, IFNULL(pop_jkt, '')
              FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-            params![payload.agent_id, tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )
-        .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?
+                sql_params![&payload.agent_id, &tenant_id],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_string(1)?,
+                        r.get_string(2)?,
+                        r.get_i64(3)?,
+                        r.get_i64(4)?,
+                        r.get_string(5)?,
+                    ))
+                },
+            )
+            .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?
+            .ok_or((StatusCode::NOT_FOUND, "Agent not found".to_string()))?
     };
 
     if human_key_image != session_human {
@@ -1470,12 +1523,22 @@ pub async fn update_agent_checksum(
     let owner_ki: String = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.query_row(
-            "SELECT human_key_image FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2",
-            params![agent_id, tenant_id],
-            |r| r.get::<_, String>(0),
-        )
-        .map_err(|_| (StatusCode::NOT_FOUND, "agent not found or revoked".into()))?
+        AnyConn::Sqlite(&db)
+            .query_row(
+                "SELECT human_key_image FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2",
+                sql_params![&agent_id, &tenant_id],
+                |r| r.get_string(0),
+            )
+            .map_err(|_| {
+                (
+                    StatusCode::NOT_FOUND,
+                    "agent not found or revoked".to_string(),
+                )
+            })?
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "agent not found or revoked".to_string(),
+            ))?
     };
     if owner_ki != actor_human_ki {
         return Err((
@@ -1487,12 +1550,15 @@ pub async fn update_agent_checksum(
     let prev_checksum: String = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.query_row(
-            "SELECT agent_checksum FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-            params![agent_id, tenant_id],
-            |r| r.get::<_, String>(0),
-        )
-        .unwrap_or_default()
+        AnyConn::Sqlite(&db)
+            .query_row(
+                "SELECT agent_checksum FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
+                sql_params![&agent_id, &tenant_id],
+                |r| r.get_string(0),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or_default()
     };
 
     let now = ajwt_support::now_secs();
@@ -1541,22 +1607,28 @@ pub async fn get_agent(
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    db.query_row(
-        "SELECT agent_id, human_key_image, agent_checksum, intent_json, assurance_level, IFNULL(ring_key_image_hex, ''), issued_at, expires_at, revoked
+    AnyConn::Sqlite(&db)
+        .query_row(
+            "SELECT agent_id, human_key_image, agent_checksum, intent_json, assurance_level, IFNULL(ring_key_image_hex, ''), issued_at, expires_at, revoked
          FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-        params![agent_id, tenant_id],
-        |row| Ok(AgentRecord {
-            agent_id:        row.get(0)?,
-            human_key_image: row.get(1)?,
-            agent_checksum:  row.get(2)?,
-            intent_json:     row.get(3)?,
-            assurance_level: row.get(4)?,
-            ring_key_image_hex: row.get(5)?,
-            issued_at:       row.get(6)?,
-            expires_at:      row.get(7)?,
-            revoked:         row.get::<_, i64>(8)? != 0,
-        }),
-    ).map(Json).map_err(|_| StatusCode::NOT_FOUND)
+            sql_params![&agent_id, &tenant_id],
+            |row| {
+                Ok(AgentRecord {
+                    agent_id: row.get_string(0)?,
+                    human_key_image: row.get_string(1)?,
+                    agent_checksum: row.get_string(2)?,
+                    intent_json: row.get_string(3)?,
+                    assurance_level: row.get_string(4)?,
+                    ring_key_image_hex: row.get_string(5)?,
+                    issued_at: row.get_i64(6)?,
+                    expires_at: row.get_i64(7)?,
+                    revoked: row.get_i64(8)? != 0,
+                })
+            },
+        )
+        .map_err(|_| StatusCode::NOT_FOUND)?
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// DELETE /agent/{agent_id} — revoke an agent owned by authenticated user.
@@ -1576,11 +1648,12 @@ pub async fn revoke_agent(
     let rows = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.execute(
-            "UPDATE agents SET revoked = 1 WHERE agent_id = ?1 AND human_key_image = ?2 AND tenant_id = ?3",
-            params![agent_id, human_ki, tenant_id],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        AnyConn::Sqlite(&db)
+            .execute(
+                "UPDATE agents SET revoked = 1 WHERE agent_id = ?1 AND human_key_image = ?2 AND tenant_id = ?3",
+                sql_params![&agent_id, &human_ki, &tenant_id],
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
     };
 
     if rows == 0 {
@@ -1594,12 +1667,14 @@ pub async fn revoke_agent(
     let pubkey: Option<String> = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.query_row(
-            "SELECT public_key_hex FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
-            params![tenant_id, agent_id],
-            |r| r.get(0),
-        )
-        .ok()
+        AnyConn::Sqlite(&db)
+            .query_row(
+                "SELECT public_key_hex FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
+                sql_params![&tenant_id, &agent_id],
+                |r| r.get_string(0),
+            )
+            .ok()
+            .flatten()
     };
     if let Some(hex) = pubkey {
         state.write_or_recover().drop_ring_member(&hex);
@@ -1679,13 +1754,14 @@ pub async fn verify_agent_token(
     if let Some(ref aid) = agent_id {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let row: Option<(i64, String, String)> = db
+        let row: Option<(i64, String, String)> = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT revoked, assurance_level, IFNULL(pop_public_key_b64u, '') FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-                params![aid, tenant_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                sql_params![aid, &tenant_id],
+                |r| Ok((r.get_i64(0)?, r.get_string(1)?, r.get_string(2)?)),
             )
-            .ok();
+            .ok()
+            .flatten();
         let (revoked, db_assurance, pop_pk_b64u) =
             row.unwrap_or((1, "delegated_nonbank".to_string(), String::new())); // missing row → revoked
         assurance_level = Some(db_assurance.clone());
@@ -1823,27 +1899,29 @@ pub async fn list_agents(
 
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    let mut stmt = db.prepare(
-        "SELECT agent_id, human_key_image, agent_checksum, intent_json, assurance_level, IFNULL(ring_key_image_hex, ''), issued_at, expires_at, revoked
-         FROM agents WHERE human_key_image = ?1 AND tenant_id = ?2 ORDER BY issued_at DESC"
-    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db prepare: {e}")))?;
-    let records: Vec<AgentRecord> = stmt
-        .query_map(params![human_ki, tenant_id], |row| {
-            Ok(AgentRecord {
-                agent_id: row.get(0)?,
-                human_key_image: row.get(1)?,
-                agent_checksum: row.get(2)?,
-                intent_json: row.get(3)?,
-                assurance_level: row.get(4)?,
-                ring_key_image_hex: row.get(5)?,
-                issued_at: row.get(6)?,
-                expires_at: row.get(7)?,
-                revoked: row.get::<_, i64>(8)? != 0,
-            })
-        })
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db query: {e}")))?
-        .flatten()
-        .collect();
+    let records: Vec<AgentRecord> = AnyConn::Sqlite(&db)
+        .query_map(
+            "SELECT agent_id, human_key_image, agent_checksum, intent_json, assurance_level, IFNULL(ring_key_image_hex, ''), issued_at, expires_at, revoked
+         FROM agents WHERE human_key_image = ?1 AND tenant_id = ?2 ORDER BY issued_at DESC",
+            sql_params![&human_ki, &tenant_id],
+            |row| {
+                Ok(AgentRecord {
+                    agent_id: row.get_string(0)?,
+                    human_key_image: row.get_string(1)?,
+                    agent_checksum: row.get_string(2)?,
+                    intent_json: row.get_string(3)?,
+                    assurance_level: row.get_string(4)?,
+                    ring_key_image_hex: row.get_string(5)?,
+                    issued_at: row.get_i64(6)?,
+                    expires_at: row.get_i64(7)?,
+                    revoked: row.get_i64(8)? != 0,
+                })
+            },
+        )
+        // Previously `.flatten()`: a row that failed to decode was dropped, so a
+        // caller listing their agents could silently be shown fewer than they
+        // have. A decode failure is now a 500.
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db query: {e}")))?;
     Ok(Json(records))
 }
 
@@ -1907,16 +1985,18 @@ pub async fn agent_attestation_challenge(
     let expires_at = now + 300;
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    db.execute(
-        "DELETE FROM agent_attestation_challenges WHERE expires_at < ?1 OR used_at IS NOT NULL",
-        params![now],
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    db.execute(
-        "INSERT INTO agent_attestation_challenges (id, tenant_id, human_key_image, nonce, pop_public_key_b64u, expires_at, used_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-        params![&id, &tenant_id, &human, &nonce, payload.pop_public_key_b64u.trim(), expires_at],
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    AnyConn::Sqlite(&db)
+        .execute(
+            "DELETE FROM agent_attestation_challenges WHERE expires_at < ?1 OR used_at IS NOT NULL",
+            sql_params![now],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    AnyConn::Sqlite(&db)
+        .execute(
+            "INSERT INTO agent_attestation_challenges (id, tenant_id, human_key_image, nonce, pop_public_key_b64u, expires_at, used_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+            sql_params![&id, &tenant_id, &human, &nonce, payload.pop_public_key_b64u.trim(), expires_at],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(AgentAttestationChallengeResponse {
         attestation_challenge_id: id,
@@ -1957,13 +2037,14 @@ pub async fn agent_pop_challenge(
 
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    let (db_human, revoked, exp_a): (String, i64, i64) = db
+    let (db_human, revoked, exp_a): (String, i64, i64) = AnyConn::Sqlite(&db)
         .query_row(
             "SELECT human_key_image, revoked, expires_at FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-            params![&payload.agent_id, tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            sql_params![&payload.agent_id, &tenant_id],
+            |r| Ok((r.get_string(0)?, r.get_i64(1)?, r.get_i64(2)?)),
         )
-        .map_err(|_| (StatusCode::NOT_FOUND, "agent not found".into()))?;
+        .map_err(|_| (StatusCode::NOT_FOUND, "agent not found".to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "agent not found".to_string()))?;
     if db_human != human {
         return Err((
             StatusCode::FORBIDDEN,

@@ -65,12 +65,34 @@ acknowledgement.
 
 ## Sweep progress
 
-`agent_action.rs` and `agent_action_anchor.rs` are done (2026-08-13) — every
+`agent_action.rs`, `agent_action_anchor.rs` and `agent.rs` are done (2026-08-13) — every
 production statement in both now goes through `AnyConn`, and `rusqlite::params!`
 survives only in test fixtures. Together they cover the receipt write path, the
 receipt chain, the anon ring path, receipt verification, merkle batch
 construction, the anchor batch rows, and the proof/status read paths: the tables
 whose divergence would be most expensive, since they hold the audit evidence.
+
+`agent.rs` covers agent registration, owner-mandate verification, the three
+active-key uniqueness checks, attestation-challenge issue and single-use consume,
+A-JWT issuance lookups, checksum rotation, agent read/list, revocation, and PoP
+challenge issuance.
+
+Things to watch that `agent.rs` added:
+
+- **Nullable columns must stay nullable.** `SqlValue::from(Option<T>)` maps
+  `None` to SQL NULL, so `parent_agent_id` and the four attestation columns keep
+  storing NULL rather than an empty string. Coalescing them in the binding layer
+  would change what `IS NULL` predicates mean.
+- **Do not coalesce a nullable timestamp to 0.**
+  `agent_attestation_challenges.used_at` is NULL until spent, so it is read with
+  `get_opt_i64`. `IFNULL(used_at, 0)` would make every unspent challenge read as
+  already used.
+- **Row-count-as-verdict survives translation.** The single-use claim
+  (`UPDATE … WHERE used_at IS NULL AND expires_at >= ?1`, then `changed != 1`)
+  is atomic in the statement itself, so it ports unchanged. Keep the predicate,
+  not just the update.
+- **`.flatten()` over a row iterator hides decode failures.** In `list_agents`
+  that silently showed a caller fewer agents than they own; it is now a 500.
 
 One thing `agent_action_anchor.rs` added to the list of things to watch:
 `.flatten()` over a row iterator silently drops rows that fail to decode. On the
