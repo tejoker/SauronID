@@ -273,12 +273,68 @@ pub enum AnyConn<'a> {
     Postgres(&'a mut postgres::Client),
 }
 
+/// Borrow a connection as an [`AnyConn`].
+///
+/// The call-site sweep replaced `db.query_row(..)` with
+/// `AnyConn::Sqlite(&db).query_row(..)`, which fixed the SQL dialect but wrote
+/// the backend choice into every one of those sites — so switching to Postgres
+/// would mean editing them all a second time. Going through this trait keeps the
+/// choice in one place: when the handle can yield a Postgres client, call sites
+/// follow with no further edits.
+pub trait AsAnyConn {
+    fn any_conn(&self) -> AnyConn<'_>;
+}
+
+impl AsAnyConn for rusqlite::Connection {
+    fn any_conn(&self) -> AnyConn<'_> {
+        AnyConn::Sqlite(self)
+    }
+}
+
 impl AnyConn<'_> {
     pub fn backend(&self) -> Backend {
         match self {
             AnyConn::Sqlite(_) => Backend::Sqlite,
             AnyConn::Postgres(_) => Backend::Postgres,
         }
+    }
+
+    /// Read one row, or fail with the caller's error.
+    ///
+    /// Collapses the shape that appears at nearly every required-row read:
+    /// distinct handling for "the query failed" and "there is no such row" that
+    /// produces the same response either way. `err` is a closure because the
+    /// error is usually built from owned data and is needed twice.
+    pub fn require<T, E>(
+        &mut self,
+        sql: &str,
+        params: &[SqlValue],
+        map: impl FnOnce(&dyn AnyRow) -> Result<T, String>,
+        err: impl Fn() -> E,
+    ) -> Result<T, E> {
+        match self.query_row(sql, params, map) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) | Err(_) => Err(err()),
+        }
+    }
+
+    /// Read one row, falling back to `default` when it is missing OR the query
+    /// failed.
+    ///
+    /// This is the deliberate best-effort shape — the one that used to be
+    /// written `.ok().flatten().unwrap_or(x)`. Naming it makes the sites that
+    /// swallow errors greppable, instead of each one looking like an accident.
+    pub fn scalar_or<T>(
+        &mut self,
+        sql: &str,
+        params: &[SqlValue],
+        map: impl FnOnce(&dyn AnyRow) -> Result<T, String>,
+        default: T,
+    ) -> T {
+        self.query_row(sql, params, map)
+            .ok()
+            .flatten()
+            .unwrap_or(default)
     }
 
     /// Run a statement, returning rows affected.

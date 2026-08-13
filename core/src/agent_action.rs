@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 
-use crate::any_db::AnyConn;
+use crate::any_db::{AnyConn, AsAnyConn};
 use crate::sql_params;
 use crate::sync_recover::RwLockRecover;
 use crate::{policy, ring, state::ServerState, tenancy::TenantId};
@@ -148,7 +148,7 @@ fn active_tenant_ring(
     tenant_id: &str,
     now: i64,
 ) -> Result<Vec<(String, curve25519_dalek::ristretto::RistrettoPoint)>, String> {
-    active_tenant_ring_any(&mut AnyConn::Sqlite(db), tenant_id, now)
+    active_tenant_ring_any(&mut db.any_conn(), tenant_id, now)
 }
 
 /// Backend-agnostic form.
@@ -348,7 +348,7 @@ fn receipt_signing_payload(receipt: &ActionReceipt) -> Vec<u8> {
 /// writers, so the read-then-insert that follows cannot interleave with another
 /// receipt for the same tenant. On an empty chain this returns `(1, "")`.
 fn next_chain_position(db: &Connection, tenant_id: &str) -> Result<(i64, String), String> {
-    next_chain_position_any(&mut AnyConn::Sqlite(db), tenant_id)
+    next_chain_position_any(&mut db.any_conn(), tenant_id)
 }
 
 /// Backend-agnostic form.
@@ -394,7 +394,7 @@ fn next_chain_position_any(
 
 /// Load a receipt by id, including its chain fields.
 pub fn load_receipt(db: &Connection, receipt_id: &str) -> Result<Option<ActionReceipt>, String> {
-    load_receipt_any(&mut AnyConn::Sqlite(db), receipt_id)
+    load_receipt_any(&mut db.any_conn(), receipt_id)
 }
 
 /// Backend-agnostic form. First call site converted to [`AnyConn`]: same SQL,
@@ -443,7 +443,7 @@ pub fn load_receipt_any(
 /// predecessor (so no edits or reordering). Needs no key — a customer holding a
 /// database copy can run it against a vendor.
 pub fn verify_receipt_chain(db: &Connection, tenant_id: &str) -> Result<i64, String> {
-    verify_receipt_chain_any(&mut AnyConn::Sqlite(db), tenant_id)
+    verify_receipt_chain_any(&mut db.any_conn(), tenant_id)
 }
 
 /// Backend-agnostic form of [`verify_receipt_chain`].
@@ -610,7 +610,7 @@ pub fn validate_agent_action(
             String,
             String,
             String,
-        ) = AnyConn::Sqlite(&db)
+        ) = db.any_conn()
             .query_row(
                 "SELECT human_key_image, revoked, expires_at, IFNULL(public_key_hex, ''), IFNULL(ring_key_image_hex, ''), IFNULL(pop_jkt, '')
                  FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
@@ -698,13 +698,13 @@ pub fn validate_agent_action(
 
         let ring_ok = ring::verify(&canonical, &tenant_ring, &proof.ring_signature);
         if ring_ok {
-            AnyConn::Sqlite(&db)
+            db.any_conn()
                 .execute(
                     "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
                     sql_params![now],
                 )
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-            AnyConn::Sqlite(&db)
+            db.any_conn()
                 .execute(
                     "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -734,16 +734,13 @@ pub fn validate_agent_action(
         // Which grant authorised this action. Read at receipt time, so a later
         // re-registration under a different mandate cannot retroactively change
         // what an existing receipt points at.
-        let owner_mandate_hash: String = AnyConn::Sqlite(&db)
-            .query_row(
+        let owner_mandate_hash: String = db.any_conn()
+            .scalar_or(
                 "SELECT IFNULL(owner_mandate_hash, '') FROM agents
                  WHERE agent_id = ?1 AND tenant_id = ?2",
                 sql_params![opts.agent_id, opts.tenant_id],
                 |r| r.get_string(0),
-            )
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+                String::new());
         let mut receipt = ActionReceipt {
             tenant_id: opts.tenant_id.to_string(),
             receipt_id: format!("ar_{}", crate::ajwt_support::random_hex_32()),
@@ -769,7 +766,7 @@ pub fn validate_agent_action(
             // unreachable — `receipt_id` is a fresh 32-byte random per receipt —
             // but writing it out keeps the statement meaning the same thing on
             // both backends instead of erroring on one.
-            AnyConn::Sqlite(&db)
+            db.any_conn()
                 .execute(
                 "INSERT OR REPLACE INTO agent_action_receipts
                  (receipt_id, action_hash, agent_id, ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at, tenant_id, seq, prev_hash, owner_mandate_hash)
@@ -1044,14 +1041,14 @@ pub fn validate_anon_action(
 
     // 4. Single-use on (per-ring key image | nonce) — replay protection keyed on
     //    the pseudonym, never an agent identity.
-    AnyConn::Sqlite(db)
+    db.any_conn()
         .execute(
             "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
             sql_params![now],
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let nonce_key = format!("{key_image_hex}|{}", env.nonce);
-    AnyConn::Sqlite(db)
+    db.any_conn()
         .execute(
             "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1096,7 +1093,7 @@ pub fn validate_anon_action(
     receipt.signature = sign_receipt(jwt_secret, &receipt);
     // Explicit conflict target, as in the identity path — `INSERT OR REPLACE`
     // on its own does not translate to PostgreSQL.
-    AnyConn::Sqlite(db)
+    db.any_conn()
         .execute(
         "INSERT OR REPLACE INTO agent_action_receipts
          (receipt_id, action_hash, agent_id, ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at, ring_id, config_digest, tenant_id, seq, prev_hash)
@@ -1177,7 +1174,7 @@ pub async fn action_challenge(
     let (agent_ring_public_keys_hex, signer_index, signing_public_key_hex) = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let signing_public_key_hex: String = AnyConn::Sqlite(&db)
+        let signing_public_key_hex: String = db.any_conn()
             .query_row(
                 "SELECT IFNULL(public_key_hex, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2 AND human_key_image = ?3 AND revoked = 0 AND expires_at > ?4",
                 sql_params![tenant.as_str(), &payload.agent_id, &payload.human_key_image, now],
@@ -1272,8 +1269,8 @@ pub async fn receipt_verify(
     let valid_sig = verify_receipt_signature(&st.jwt_secret, &payload.receipt);
     let db_seen: bool = {
         let db = st.db.lock().unwrap();
-        AnyConn::Sqlite(&db)
-            .query_row(
+        db.any_conn()
+            .scalar_or(
                 "SELECT COUNT(*) FROM agent_action_receipts WHERE receipt_id = ?1 AND action_hash = ?2 AND signature = ?3",
                 sql_params![
                     &payload.receipt.receipt_id,
@@ -1281,10 +1278,7 @@ pub async fn receipt_verify(
                     &payload.receipt.signature
                 ],
                 |r| r.get_i64(0),
-            )
-            .ok()
-            .flatten()
-            .unwrap_or(0)
+                0)
             > 0
     };
     Json(serde_json::json!({
