@@ -2,15 +2,15 @@
 
 **A fail-closed authorization and verifiable-audit boundary for AI agents.**
 
-[![Tests](https://github.com/tejoker/HackNation2026/actions/workflows/test.yml/badge.svg)](https://github.com/tejoker/HackNation2026/actions/workflows/test.yml)
-[![Security scans](https://github.com/tejoker/HackNation2026/actions/workflows/security.yml/badge.svg)](https://github.com/tejoker/HackNation2026/actions/workflows/security.yml)
-[![Release gate](https://github.com/tejoker/HackNation2026/actions/workflows/release-gate.yml/badge.svg)](https://github.com/tejoker/HackNation2026/actions/workflows/release-gate.yml)
+[![Tests](https://github.com/tejoker/SauronID/actions/workflows/test.yml/badge.svg)](https://github.com/tejoker/SauronID/actions/workflows/test.yml)
+[![Security scans](https://github.com/tejoker/SauronID/actions/workflows/security.yml/badge.svg)](https://github.com/tejoker/SauronID/actions/workflows/security.yml)
+[![Release gate](https://github.com/tejoker/SauronID/actions/workflows/release-gate.yml/badge.svg)](https://github.com/tejoker/SauronID/actions/workflows/release-gate.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## Build and try the source release
 
 ```bash
-git clone https://github.com/tejoker/HackNation2026 sauronid && cd sauronid
+git clone https://github.com/tejoker/SauronID sauronid && cd sauronid
 docker compose up        # core :3001 + dashboard :3000 + seeded demo tenant
 ```
 
@@ -134,6 +134,38 @@ Be honest about who you have to trust.
 - Canonical trust boundaries and remaining impossibility results are maintained
   in [`docs/crypto-migration-boundary.md`](docs/crypto-migration-boundary.md).
 
+## Verifying a release without reading this source
+
+Verification does not depend on source access, which matters if you received
+SauronID as images rather than as a repository. Three independent checks, none of
+which require our cooperation — full procedure in
+[`docs/verifying-what-you-run.md`](docs/verifying-what-you-run.md):
+
+- **The image is ours.** Released images are signed keylessly at their digest
+  (GitHub OIDC → Fulcio), so `cosign verify` establishes that the bytes were
+  built by this repository's release workflow rather than pushed by anyone
+  holding a registry token. The release workflow runs that same verification
+  against its own output before completing. The signed digest is the image index,
+  so it also covers the attached SLSA provenance and SBOM.
+- **You run what you verified.** Deploy the digest, not the tag — a tag can be
+  repointed between verification and pull. The Helm values take
+  `core.image.digest` / `dashboard.image.digest`, which override `tag`.
+- **The proof guests match their published source.** Both RISC Zero guests are
+  published with their lock files, and `transparent-zk/verify.sh` — the same
+  script the release gate runs — rebuilds them in a pinned container and fails
+  if the image IDs differ from
+  [`transparent-zk/image-ids.json`](transparent-zk/image-ids.json) by one bit.
+  The containerised build is what makes that reproducible: a guest compiled
+  directly on a host embeds its absolute paths, so the ID would otherwise depend
+  on which directory it was built in.
+
+What none of that establishes: that an instance **somebody else operates** runs
+the image it claims to. Self-hosting closes that gap because you start the
+process; a managed instance needs hardware attestation of the gateway, which is
+scoped but not built — see
+[`docs/attestation-scope.md`](docs/attestation-scope.md). A self-reported version
+string is not evidence and is deliberately not offered as one.
+
 ## What ships, what's partial, what doesn't yet exist
 
 Honest table. Re-verifiable from the source.
@@ -145,6 +177,25 @@ Honest table. Re-verifiable from the source.
 - A-JWT (intent + checksum + delegation depth) with single-use JTI.
 - Versioned per-call signature over tenant, method, path, canonical query,
   audience, body digest, timestamp, nonce, JTI, and runtime configuration.
+- **Owner-signed mandates.** A grant is signed by the human owner's key over
+  tenant, owner key image, agent key, PoP thumbprint, intent and TTL. The
+  operator cannot mint or widen a grant for an agent it hosts, because it does
+  not hold the owner key. Required by default in production
+  (`SAURON_REQUIRE_OWNER_MANDATE`).
+- **Default-deny call-signature enforcement.** The requirement is a global
+  middleware decision, not a per-route opt-in, so a new route is protected the
+  moment it exists. Six paths are explicitly exempt and enumerated in
+  `CALL_SIG_EXEMPT_PATHS` — registration and challenge issuance, where the
+  caller cannot yet sign, plus public verification surfaces.
+- **Hash-chained per-action receipts.** Each receipt carries `seq`, `prev_hash`
+  and the owner-mandate hash, so removing or reordering one breaks the chain.
+  The chain-hash domain is versioned, so extending the receipt shape does not
+  invalidate chains written by an earlier version.
+- **Reproducible guest image IDs.** The published IDs are generated by a
+  containerised build at a fixed path and verified byte-for-byte in CI, so a
+  customer can reproduce them from source instead of taking the number on trust.
+- **Signed release images.** Keyless signing at the digest, verified by the
+  release workflow itself before the release completes.
 - Server-computed agent checksum from typed `agent_type` + `checksum_inputs`. Operators cannot supply a fake checksum.
 - Per-call `x-sauron-agent-config-digest` header check: agent runtime cannot drift from registered config without rejecting on every call.
 - Atomic single-use TOCTOU patterns on every consume table (consent, payment, credential, bank nonce, lightning, call-nonce, JTI).
@@ -177,6 +228,13 @@ Honest table. Re-verifiable from the source.
   Postgres paths are enabled. Production startup requires explicit acceptance
   of the single-node topology. There is no honest HA/failover/multi-region
   claim yet; use a dedicated node and perform the documented restore drill.
+  The port now runs through one translation layer rather than 55 hand-ported
+  tables — `core/src/sql_translate.rs` rewrites the narrow SQLite dialect this
+  codebase uses, and `core/src/any_db.rs` gives one row/parameter abstraction
+  over both backends, both pinned by unit tests plus a dual-backend equivalence
+  test and a SQL differential test that run against a real PostgreSQL in CI.
+  The mechanical sweep of the remaining raw `rusqlite` call sites is unfinished,
+  which is why the single-node acknowledgement still exists.
 - **OpenTimestamps confirmation latency**: receipts are submitted instantly to public calendars; **Bitcoin block inclusion takes ~1 hour**. Solana memo finalisation is ~30 s. Dashboard surfaces three honest states per batch (ADR-001): Solana-confirmed (≤30 s), BTC-pending (≤1 h), Dually anchored. No single false "anchored" summary — both chains are reported independently on `/admin/anchor/batches` and the `/anchors` console page. Operators with stricter timing pick the Solana path or run their own calendar.
 - **ZKP issuer / KYC consent / bank-KYC ingest**: feature-flagged off by default. Available behind `SAURON_DISABLE_*=0` for legacy deployments. SauronID does NOT ship a sanctions/PEP screening provider — wire your own data into `compliance_screening`.
 - **External key custody**: production secret resolution and external partner-key
@@ -221,7 +279,7 @@ for the body-digest caveat. Full HTTP surface:
 ## Quickstart (build from source)
 
 ```bash
-git clone https://github.com/tejoker/HackNation2026 sauronid && cd sauronid
+git clone https://github.com/tejoker/SauronID sauronid && cd sauronid
 ./scripts/dev/quickstart.sh
 ```
 
@@ -392,7 +450,11 @@ redteam/               16-attack empirical suite + 18-attack Tavily fuzzer + com
 contracts/             Solana Anchor program (sauron_ledger)
 migrations/postgres/   Postgres schema
 schemas/               Shared JSON schemas + OpenAPI spec (schemas/openapi.yaml)
-zkp/                   ZKP issuer + circuits
+transparent-zk/        RISC Zero guests (stats + action-policy), journal types, customer
+                       verifier, pinned image-ids.json, and verify.sh. Self-contained and
+                       published on its own so the proofs stay verifiable without this repo
+zkp/                   Legacy Groth16 circom circuits + ceremony scripts. The ZKP issuer
+                       service has been removed from the tree
 site/                  Static landing page
 
 scripts/dev/           Dev orchestration shell scripts (quickstart, launch, start, ...)
@@ -420,6 +482,8 @@ archive/banking-2025/  Pre-pivot bank-KYC code. Feature-flagged off by default; 
 - Deploy config: [`deploy/`](deploy/) — docker-compose (dev/prod/postgres) **or** no-Docker native/systemd ([`deploy/native/`](deploy/native/): `vm-setup.sh`, `sauronid-core.service`, `sauronid-dashboard.service`, Caddyfiles).
 - Live-demo driver: [`scripts/demo/democtl.sh`](scripts/demo/) — build-native / deploy-native / runner / status; pairs with the real LLM agent-runner (`agent_runner.py`) behind the Console.
 - Custom Solana program: [`contracts/sauron_ledger/`](contracts/sauron_ledger/) — Anchor program (optional; default uses Solana Memo).
+- Transparent proofs: [`transparent-zk/`](transparent-zk/) — both guests, the customer verifier, and [`verify.sh`](transparent-zk/verify.sh), which reproduces the published image IDs in a pinned container.
+- Release verification: [`docs/verifying-what-you-run.md`](docs/verifying-what-you-run.md) — the procedure to hand a customer who cannot read this source.
 - Operations: [`docs/operations.md`](docs/operations.md) — every env var, every deploy step.
 - Threat model: [`docs/threat-model.md`](docs/threat-model.md) — what we protect against, what we don't.
 - Empirical comparison: [`docs/empirical-comparison.md`](docs/empirical-comparison.md) — vs DPoP / GNAP / MCP / Auth0 / AWS / Cloudflare.
