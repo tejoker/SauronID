@@ -24,11 +24,13 @@ use axum::{
     Json,
 };
 use curve25519_dalek::{ristretto::CompressedRistretto, ristretto::RistrettoPoint, scalar::Scalar};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use crate::ring_pseudonym;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
@@ -174,14 +176,14 @@ pub fn upsert_ring(
     now: i64,
 ) -> Result<(), String> {
     let rule_json = serde_json::to_string(rule).map_err(|e| format!("rule serialize: {e}"))?;
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO rings (tenant_id, ring_id, rule_json, version, created_at, updated_at)
          VALUES (?1, ?2, ?3, 1, ?4, ?4)
          ON CONFLICT(tenant_id, ring_id) DO UPDATE SET
             rule_json = excluded.rule_json,
             version   = rings.version + 1,
             updated_at = excluded.updated_at",
-        params![tenant_id, ring_id, rule_json, now],
+        sql_params![&tenant_id, &ring_id, &rule_json, &now],
     )
     .map_err(|e| format!("upsert ring: {e}"))?;
     Ok(())
@@ -194,12 +196,14 @@ pub fn get_ring(
     ring_id: &str,
 ) -> Result<Option<(RingRule, i64)>, String> {
     let row = db
+        .any_conn()
         .query_row(
             "SELECT rule_json, version FROM rings WHERE tenant_id = ?1 AND ring_id = ?2",
-            params![tenant_id, ring_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            sql_params![tenant_id, ring_id],
+            |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)),
         )
-        .ok();
+        .ok()
+        .flatten();
     match row {
         None => Ok(None),
         Some((json, version)) => {
@@ -215,23 +219,16 @@ pub fn list_rings(
     db: &Connection,
     tenant_id: &str,
 ) -> Result<Vec<(String, RingRule, i64)>, String> {
-    let mut stmt = db
-        .prepare(
+    let rows = db
+        .any_conn()
+        .query_map(
             "SELECT ring_id, rule_json, version FROM rings WHERE tenant_id = ?1 ORDER BY ring_id",
+            sql_params![tenant_id],
+            |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<i64>(2)?)),
         )
-        .map_err(|e| format!("prepare list_rings: {e}"))?;
-    let rows = stmt
-        .query_map(params![tenant_id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })
         .map_err(|e| format!("query list_rings: {e}"))?;
     let mut out = Vec::new();
-    for row in rows {
-        let (ring_id, json, version) = row.map_err(|e| format!("row list_rings: {e}"))?;
+    for (ring_id, json, version) in rows {
         let rule: RingRule =
             serde_json::from_str(&json).map_err(|e| format!("rule deserialize: {e}"))?;
         out.push((ring_id, rule, version));
@@ -248,11 +245,11 @@ pub fn insert_member(
     member_point_hex: &str,
     now: i64,
 ) -> Result<bool, String> {
-    let n = db
+    let n = db.any_conn()
         .execute(
             "INSERT OR IGNORE INTO ring_members (tenant_id, ring_id, member_point_hex, created_at)
              VALUES (?1, ?2, ?3, ?4)",
-            params![tenant_id, ring_id, member_point_hex, now],
+            sql_params![&tenant_id, &ring_id, &member_point_hex, &now],
         )
         .map_err(|e| format!("insert member: {e}"))?;
     Ok(n > 0)
@@ -265,10 +262,10 @@ pub fn delete_member(
     ring_id: &str,
     member_point_hex: &str,
 ) -> Result<bool, String> {
-    let n = db
+    let n = db.any_conn()
         .execute(
             "DELETE FROM ring_members WHERE tenant_id = ?1 AND ring_id = ?2 AND member_point_hex = ?3",
-            params![tenant_id, ring_id, member_point_hex],
+            sql_params![&tenant_id, &ring_id, &member_point_hex],
         )
         .map_err(|e| format!("delete member: {e}"))?;
     Ok(n > 0)
@@ -276,12 +273,12 @@ pub fn delete_member(
 
 /// Number of members in a ring.
 pub fn member_count(db: &Connection, tenant_id: &str, ring_id: &str) -> Result<i64, String> {
-    db.query_row(
+    Ok(db.any_conn().scalar_or(
         "SELECT COUNT(*) FROM ring_members WHERE tenant_id = ?1 AND ring_id = ?2",
-        params![tenant_id, ring_id],
-        |r| r.get::<_, i64>(0),
-    )
-    .map_err(|e| format!("member_count: {e}"))
+        sql_params![tenant_id, ring_id],
+        |r| r.get::<i64>(0),
+        0,
+    ))
 }
 
 /// The ring's member set as decompressed points, ordered deterministically.
@@ -291,18 +288,17 @@ pub fn list_member_points(
     tenant_id: &str,
     ring_id: &str,
 ) -> Result<Vec<RistrettoPoint>, String> {
-    let mut stmt = db
-        .prepare(
+    let rows = db
+        .any_conn()
+        .query_map(
             "SELECT member_point_hex FROM ring_members
              WHERE tenant_id = ?1 AND ring_id = ?2 ORDER BY member_point_hex",
+            sql_params![tenant_id, ring_id],
+            |r| r.get::<String>(0),
         )
-        .map_err(|e| format!("prepare members: {e}"))?;
-    let rows = stmt
-        .query_map(params![tenant_id, ring_id], |r| r.get::<_, String>(0))
         .map_err(|e| format!("query members: {e}"))?;
     let mut out = Vec::new();
-    for row in rows {
-        let hex_s = row.map_err(|e| format!("row members: {e}"))?;
+    for hex_s in rows {
         out.push(parse_point_hex(&hex_s)?);
     }
     Ok(out)
@@ -398,12 +394,12 @@ fn resolve_master_pub(
             StatusCode::BAD_REQUEST,
             "agent_id or agent_public_hex is required".to_string(),
         ))?;
-    db.query_row(
+    db.any_conn().require(
         "SELECT public_key_hex FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-        params![agent_id, tenant_id],
-        |r| r.get::<_, String>(0),
+        sql_params![agent_id, tenant_id],
+        |r| r.get::<String>(0),
+        || (StatusCode::NOT_FOUND, "agent not found".to_string()),
     )
-    .map_err(|_| (StatusCode::NOT_FOUND, "agent not found".to_string()))
 }
 
 /// POST /admin/rings — create or update a ring rule.

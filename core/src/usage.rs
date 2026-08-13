@@ -23,10 +23,12 @@ use axum::{
     extract::{Extension, Json, Path, State},
     http::StatusCode,
 };
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use crate::rings::RingBudgets;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
@@ -85,11 +87,11 @@ pub fn get_usage(
     ring_id: &str,
     key_image_hex: &str,
 ) -> Result<UsageTotals, String> {
-    let row = db
+    let row = db.any_conn()
         .query_row(
             "SELECT input_tokens, output_tokens, usd FROM usage_ledger
              WHERE tenant_id = ?1 AND ring_id = ?2 AND key_image_hex = ?3",
-            params![tenant_id, ring_id, key_image_hex],
+            sql_params![&tenant_id, &ring_id, &key_image_hex],
             |r| {
                 Ok(UsageTotals {
                     input_tokens: r.get(0)?,
@@ -98,7 +100,8 @@ pub fn get_usage(
                 })
             },
         )
-        .ok();
+        .ok()
+        .flatten();
     Ok(row.unwrap_or_default())
 }
 
@@ -143,14 +146,14 @@ pub fn record_usage(
     if in_tokens < 0 || out_tokens < 0 {
         return Err((StatusCode::BAD_REQUEST, "token counts must be >= 0".into()));
     }
-    let (tenant_id, ring_id_opt, key_image): (String, Option<String>, String) = db
-        .query_row(
+    let (tenant_id, ring_id_opt, key_image): (String, Option<String>, String) =
+        db.any_conn().require(
             "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
              WHERE receipt_id = ?1",
-            params![receipt_id],
+            sql_params![receipt_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|_| (StatusCode::NOT_FOUND, "receipt not found".into()))?;
+            || (StatusCode::NOT_FOUND, "receipt not found".to_string()),
+        )?;
     let ring_id = ring_id_opt.filter(|s| !s.is_empty()).ok_or((
         StatusCode::BAD_REQUEST,
         "usage recording requires an anon-ring receipt (ring_id missing)".to_string(),
@@ -158,14 +161,14 @@ pub fn record_usage(
 
     let usd = derive_usd(model_id, in_tokens, out_tokens);
     let log_id = format!("ul_{}", crate::ajwt_support::random_hex_32());
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO usage_log
          (log_id, tenant_id, ring_id, key_image_hex, model_id, input_tokens, output_tokens, usd, recorded_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        params![log_id, tenant_id, ring_id, key_image, model_id, in_tokens, out_tokens, usd, now],
+        sql_params![&log_id, &tenant_id, &ring_id, &key_image, &model_id, &in_tokens, &out_tokens, &usd, &now],
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO usage_ledger
          (tenant_id, ring_id, key_image_hex, input_tokens, output_tokens, usd, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7)
@@ -174,7 +177,7 @@ pub fn record_usage(
             output_tokens = usage_ledger.output_tokens + excluded.output_tokens,
             usd           = usage_ledger.usd           + excluded.usd,
             updated_at    = excluded.updated_at",
-        params![tenant_id, ring_id, key_image, in_tokens, out_tokens, usd, now],
+        sql_params![&tenant_id, &ring_id, &key_image, &in_tokens, &out_tokens, &usd, &now],
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -189,29 +192,23 @@ pub fn list_ring_usage(
     tenant_id: &str,
     ring_id: &str,
 ) -> Result<Vec<(String, UsageTotals)>, String> {
-    let mut stmt = db
-        .prepare(
+    db.any_conn()
+        .query_map(
             "SELECT key_image_hex, input_tokens, output_tokens, usd FROM usage_ledger
              WHERE tenant_id = ?1 AND ring_id = ?2 ORDER BY key_image_hex",
+            sql_params![tenant_id, ring_id],
+            |r| {
+                Ok((
+                    r.get::<String>(0)?,
+                    UsageTotals {
+                        input_tokens: r.get(1)?,
+                        output_tokens: r.get(2)?,
+                        usd: r.get(3)?,
+                    },
+                ))
+            },
         )
-        .map_err(|e| format!("prepare list_ring_usage: {e}"))?;
-    let rows = stmt
-        .query_map(params![tenant_id, ring_id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                UsageTotals {
-                    input_tokens: r.get(1)?,
-                    output_tokens: r.get(2)?,
-                    usd: r.get(3)?,
-                },
-            ))
-        })
-        .map_err(|e| format!("query list_ring_usage: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| format!("row list_ring_usage: {e}"))?);
-    }
-    Ok(out)
+        .map_err(|e| format!("query list_ring_usage: {e}"))
 }
 
 // ─── HTTP handlers ───────────────────────────────────────────────────────────
@@ -271,14 +268,14 @@ pub fn verify_usage_report(
             "nonce must be 16..128 chars".into(),
         ));
     }
-    let (tenant_id, ring_id, receipt_key_image): (String, Option<String>, String) = db
-        .query_row(
+    let (tenant_id, ring_id, receipt_key_image): (String, Option<String>, String) =
+        db.any_conn().require(
             "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
              WHERE receipt_id = ?1",
-            params![req.receipt_id],
+            sql_params![&req.receipt_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|_| (StatusCode::NOT_FOUND, "receipt not found".to_string()))?;
+            || (StatusCode::NOT_FOUND, "receipt not found".to_string()),
+        )?;
     let ring_id = ring_id.filter(|s| !s.is_empty()).ok_or((
         StatusCode::BAD_REQUEST,
         "usage recording requires an anon-ring receipt (ring_id missing)".to_string(),
@@ -318,14 +315,14 @@ pub fn verify_usage_report(
     // violation IS the check. Consumed only after the signature verifies.
     // ponytail: a 30-day window, not forever — long enough that a captured
     // report cannot be replayed once the row ages out of any realistic session.
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
          VALUES (?1, '', ?2, ?3, ?4)",
-        params![
+        sql_params![
             format!("usage|{key_image_hex}|{}", req.nonce),
-            req.receipt_id,
-            now + 30 * 24 * 3600,
-            now
+            &req.receipt_id,
+            &now + 30 * 24 * 3600,
+            &now
         ],
     )
     .map_err(|e| {
@@ -398,6 +395,7 @@ pub async fn ring_usage_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     fn mem_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

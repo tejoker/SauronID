@@ -66,7 +66,8 @@ acknowledgement.
 ## Sweep progress
 
 `agent_action.rs`, `agent_action_anchor.rs`, `agent.rs` and
-`middleware/audit_log.rs`, `admin.rs` and `main.rs` are done (2026-08-13) — every
+`middleware/audit_log.rs`, `admin.rs`, `main.rs`, `ajwt_support.rs`,
+`rings.rs`, `usage.rs` and `risk.rs` are done (2026-08-13) — every
 production statement in both now goes through `AnyConn`, and `rusqlite::params!`
 survives only in test fixtures. Together they cover the receipt write path, the
 receipt chain, the anon ring path, receipt verification, merkle batch
@@ -100,6 +101,14 @@ call site, which is what the first three files cost.
 Previously unmodelled, now available: **transactions**. `AnyConn::transaction` issues BEGIN/COMMIT/ROLLBACK through the translated path,
 since `rusqlite::Connection::transaction()` needs `&mut Connection` and this
 handle only borrows one. Nesting is unsupported on purpose.
+
+A scripted pass over a file is fine for the receiver rewrite, the `params!`
+rename and the generic-argument fix. It is NOT safe for anything that rewrites
+surrounding expressions: rules that touched `.unwrap_or_default()` chains and a
+blanket `&`-prefix have each mangled unrelated code, including the inside of a
+`format!` string literal. Two were caught by the compiler and the rest by reading
+every diff hunk that did not mention a database call. Do both before running the
+tests.
 
 Things to watch that `agent.rs` added:
 

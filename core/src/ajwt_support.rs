@@ -1,8 +1,10 @@
 //! Shared A-JWT / KYA helpers: intent scopes, JTI replay store, PoP JWS verification.
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use rand::rngs::OsRng;
 use rand::RngCore;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -88,11 +90,11 @@ pub fn consume_ajwt_jti(db: &Connection, jti: &str, exp: i64) -> Result<(), Stri
     db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
         .map_err(|e| format!("begin immediate: {e}"))?;
     let res = (|| -> Result<(), String> {
-        db.execute("DELETE FROM ajwt_used_jtis WHERE exp < ?", params![now])
+        db.any_conn().execute("DELETE FROM ajwt_used_jtis WHERE exp < ?", sql_params![&now])
             .map_err(|e| e.to_string())?;
-        db.execute(
+        db.any_conn().execute(
             "INSERT INTO ajwt_used_jtis (jti, exp) VALUES (?1, ?2)",
-            params![jti, exp],
+            sql_params![&jti, &exp],
         )
         .map_err(|e| {
             if e.to_string().contains("UNIQUE") {
@@ -136,9 +138,9 @@ pub fn consume_call_nonce(
     }
     db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
         .map_err(|e| format!("begin immediate: {e}"))?;
-    let res = db.execute(
+    let res = db.any_conn().execute(
         "INSERT INTO agent_call_nonces (agent_id, nonce, exp) VALUES (?1, ?2, ?3)",
-        params![agent_id, nonce, exp],
+        sql_params![&agent_id, &nonce, &exp],
     );
     match res {
         Ok(_) => {
@@ -226,14 +228,14 @@ pub fn insert_pop_challenge(
 ) -> Result<i64, String> {
     let now = now_secs();
     let exp = now + ttl_secs;
-    db.execute(
+    db.any_conn().execute(
         "DELETE FROM agent_pop_challenges WHERE exp < ?",
-        params![now],
+        sql_params![&now],
     )
     .map_err(|e| e.to_string())?;
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO agent_pop_challenges (id, agent_id, challenge, exp) VALUES (?1, ?2, ?3, ?4)",
-        params![id, agent_id, challenge, exp],
+        sql_params![&id, &agent_id, &challenge, &exp],
     )
     .map_err(|e| e.to_string())?;
     Ok(exp)
@@ -246,26 +248,25 @@ pub fn take_pop_challenge(
     expected_agent_id: &str,
 ) -> Result<String, String> {
     let now = now_secs();
-    let (challenge, agent_id, exp): (String, String, i64) = db
-        .query_row(
-            "SELECT challenge, agent_id, exp FROM agent_pop_challenges WHERE id = ?1",
-            params![challenge_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|_| "unknown or expired pop_challenge_id".to_string())?;
+    let (challenge, agent_id, exp): (String, String, i64) = db.any_conn().require(
+        "SELECT challenge, agent_id, exp FROM agent_pop_challenges WHERE id = ?1",
+        sql_params![challenge_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        || "unknown or expired pop_challenge_id".to_string(),
+    )?;
     if agent_id != expected_agent_id {
         return Err("pop challenge does not match agent".into());
     }
     if exp < now {
-        let _ = db.execute(
+        let _ = db.any_conn().execute(
             "DELETE FROM agent_pop_challenges WHERE id = ?1",
-            params![challenge_id],
+            sql_params![&challenge_id],
         );
         return Err("pop challenge expired".into());
     }
-    db.execute(
+    db.any_conn().execute(
         "DELETE FROM agent_pop_challenges WHERE id = ?1",
-        params![challenge_id],
+        sql_params![&challenge_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(challenge)

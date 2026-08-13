@@ -2,8 +2,10 @@
 //! In **development** runtimes, limits default to **disabled** (0) unless env is set.
 //! In production-like runtimes, sane defaults apply unless overridden by env.
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use crate::runtime_mode::is_development_runtime;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -132,19 +134,18 @@ pub fn check_and_increment(
     db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
         .map_err(|e| format!("risk: begin immediate: {e}"))?;
     let inner = (|| -> Result<i64, String> {
-        db.execute(
+        db.any_conn().execute(
             "INSERT INTO risk_rate_counters (bucket, window_id, cnt) VALUES (?1, ?2, 1)
              ON CONFLICT(bucket, window_id) DO UPDATE SET cnt = cnt + 1",
-            params![bucket, window_id],
+            sql_params![&bucket, &window_id],
         )
         .map_err(|e| format!("risk: db error: {e}"))?;
-        let cnt: i64 = db
-            .query_row(
-                "SELECT cnt FROM risk_rate_counters WHERE bucket = ?1 AND window_id = ?2",
-                params![bucket, window_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("risk: read cnt: {e}"))?;
+        let cnt: i64 = db.any_conn().require(
+            "SELECT cnt FROM risk_rate_counters WHERE bucket = ?1 AND window_id = ?2",
+            sql_params![&bucket, &window_id],
+            |r| r.get(0),
+            || "risk: read cnt: row vanished".to_string(),
+        )?;
         Ok(cnt)
     })();
     let cnt = match inner {
@@ -164,9 +165,9 @@ pub fn check_and_increment(
     }
 
     // Best-effort GC of stale windows (bounded work per request, outside txn).
-    let _ = db.execute(
+    let _ = db.any_conn().execute(
         "DELETE FROM risk_rate_counters WHERE window_id < ?1",
-        params![window_id - 120],
+        sql_params![&window_id - 120],
     );
 
     Ok(())
