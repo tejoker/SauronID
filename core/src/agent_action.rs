@@ -3,7 +3,9 @@ use axum::{
     http::StatusCode,
 };
 use hmac::{Hmac, Mac};
-use rusqlite::{params, Connection};
+// Production paths in this file go through `AnyConn`, so `params!` is only used
+// by the tests below, which build SQLite fixtures directly.
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -145,15 +147,30 @@ fn active_tenant_ring(
     db: &Connection,
     tenant_id: &str,
     now: i64,
-) -> rusqlite::Result<Vec<(String, curve25519_dalek::ristretto::RistrettoPoint)>> {
-    let mut stmt = db.prepare(
+) -> Result<Vec<(String, curve25519_dalek::ristretto::RistrettoPoint)>, String> {
+    active_tenant_ring_any(&mut AnyConn::Sqlite(db), tenant_id, now)
+}
+
+/// Backend-agnostic form.
+///
+/// `revoked = 0` is left as an integer comparison rather than `= FALSE`: the
+/// column is INTEGER in both schemas (there are no BOOLEAN columns in the
+/// migrations), and [`SqlValue`] normalises bools to 0/1 for exactly this
+/// reason.
+fn active_tenant_ring_any(
+    conn: &mut AnyConn<'_>,
+    tenant_id: &str,
+    now: i64,
+) -> Result<Vec<(String, curve25519_dalek::ristretto::RistrettoPoint)>, String> {
+    let keys: Vec<String> = conn.query_map(
         "SELECT public_key_hex FROM agents \
          WHERE tenant_id = ?1 AND revoked = 0 AND expires_at > ?2 \
          AND public_key_hex != '' ORDER BY agent_id",
+        sql_params![tenant_id, now],
+        |r| r.get_string(0),
     )?;
-    let rows = stmt.query_map(params![tenant_id, now], |row| row.get::<_, String>(0))?;
-    Ok(rows
-        .filter_map(Result::ok)
+    Ok(keys
+        .into_iter()
         .filter_map(|hex_key| {
             let bytes = hex::decode(&hex_key).ok()?;
             let encoded = <[u8; 32]>::try_from(bytes).ok()?;
@@ -331,14 +348,38 @@ fn receipt_signing_payload(receipt: &ActionReceipt) -> Vec<u8> {
 /// writers, so the read-then-insert that follows cannot interleave with another
 /// receipt for the same tenant. On an empty chain this returns `(1, "")`.
 fn next_chain_position(db: &Connection, tenant_id: &str) -> Result<(i64, String), String> {
-    let head: Option<(i64, String)> = db
-        .query_row(
-            "SELECT seq, receipt_id FROM agent_action_receipts
-             WHERE tenant_id = ?1 ORDER BY seq DESC LIMIT 1",
-            params![tenant_id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-        )
-        .ok();
+    next_chain_position_any(&mut AnyConn::Sqlite(db), tenant_id)
+}
+
+/// Backend-agnostic form.
+///
+/// Note the error handling change: the rusqlite version swallowed every failure
+/// with `.ok()`, so a genuine backend error read as "empty chain" and would have
+/// restarted the chain at seq 1 instead of failing. `query_row` returns
+/// `Option` for "no rows" and `Err` for real failures, which keeps the two
+/// apart.
+///
+/// `seq` is NULL on legacy rows written before the chain existed, and that NULL
+/// is why the SQL coalesces in two places rather than one:
+///
+///   * reading a NULL through a typed getter is an error, and with the `.ok()`
+///     gone that error would now propagate instead of falling back to "start a
+///     new chain" — a regression on any database holding pre-chain receipts;
+///   * `ORDER BY seq DESC` does not mean the same thing on both backends.
+///     SQLite sorts NULLs first ascending, so they land last descending;
+///     PostgreSQL defaults to NULLS FIRST for DESC, so a legacy row would be
+///     picked as the chain head. Ordering by the coalesced value removes the
+///     difference instead of relying on either engine's default.
+fn next_chain_position_any(
+    conn: &mut AnyConn<'_>,
+    tenant_id: &str,
+) -> Result<(i64, String), String> {
+    let head: Option<(i64, String)> = conn.query_row(
+        "SELECT IFNULL(seq, 0), receipt_id FROM agent_action_receipts
+             WHERE tenant_id = ?1 ORDER BY IFNULL(seq, 0) DESC LIMIT 1",
+        sql_params![tenant_id],
+        |r| Ok((r.get_i64(0)?, r.get_string(1)?)),
+    )?;
     let Some((prev_seq, prev_receipt_id)) = head else {
         return Ok((1, String::new()));
     };
@@ -346,7 +387,7 @@ fn next_chain_position(db: &Connection, tenant_id: &str) -> Result<(i64, String)
         // Chain starts after the legacy (unchained) rows.
         return Ok((1, String::new()));
     }
-    let prev = load_receipt(db, &prev_receipt_id)?
+    let prev = load_receipt_any(conn, &prev_receipt_id)?
         .ok_or_else(|| "chain head receipt vanished between read and link".to_string())?;
     Ok((prev_seq + 1, receipt_chain_hash(&prev)))
 }
@@ -569,14 +610,26 @@ pub fn validate_agent_action(
             String,
             String,
             String,
-        ) = db
+        ) = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT human_key_image, revoked, expires_at, IFNULL(public_key_hex, ''), IFNULL(ring_key_image_hex, ''), IFNULL(pop_jkt, '')
                  FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-                params![opts.agent_id, opts.tenant_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                sql_params![opts.agent_id, opts.tenant_id],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_i64(1)?,
+                        r.get_i64(2)?,
+                        r.get_string(3)?,
+                        r.get_string(4)?,
+                        r.get_string(5)?,
+                    ))
+                },
             )
-            .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
+            .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?
+            // `query_row` distinguishes "no such agent" from a backend failure;
+            // the caller's contract here is a single 404 for both, as before.
+            .ok_or((StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
         if db_human != opts.human_key_image || revoked != 0 || expires_at < now {
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -645,23 +698,35 @@ pub fn validate_agent_action(
 
         let ring_ok = ring::verify(&canonical, &tenant_ring, &proof.ring_signature);
         if ring_ok {
-            db.execute(
-                "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
-                params![now],
-            )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            db.execute(
-                "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
+            AnyConn::Sqlite(&db)
+                .execute(
+                    "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
+                    sql_params![now],
+                )
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            AnyConn::Sqlite(&db)
+                .execute(
+                    "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![env.nonce, opts.agent_id, action_hash, env.expires_at, now],
-            )
-            .map_err(|e| {
-                if e.to_string().contains("UNIQUE") {
-                    (StatusCode::UNAUTHORIZED, "agent_action nonce replay".to_string())
-                } else {
-                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                }
-            })?;
+                    sql_params![&env.nonce, opts.agent_id, &action_hash, env.expires_at, now],
+                )
+                .map_err(|e| {
+                    // The replay signal is a unique-violation, spelled
+                    // differently by each backend: SQLite says "UNIQUE
+                    // constraint failed", PostgreSQL says "duplicate key value
+                    // violates unique constraint". Matching only the SQLite
+                    // wording would silently turn a replay into a 500 once the
+                    // backend flips.
+                    let msg = e.to_lowercase();
+                    if msg.contains("unique") || msg.contains("duplicate key") {
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            "agent_action nonce replay".to_string(),
+                        )
+                    } else {
+                        (StatusCode::INTERNAL_SERVER_ERROR, e)
+                    }
+                })?;
         }
 
         let (seq, prev_hash) = next_chain_position(&db, opts.tenant_id)
@@ -669,13 +734,15 @@ pub fn validate_agent_action(
         // Which grant authorised this action. Read at receipt time, so a later
         // re-registration under a different mandate cannot retroactively change
         // what an existing receipt points at.
-        let owner_mandate_hash: String = db
+        let owner_mandate_hash: String = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT IFNULL(owner_mandate_hash, '') FROM agents
                  WHERE agent_id = ?1 AND tenant_id = ?2",
-                params![opts.agent_id, opts.tenant_id],
-                |r| r.get(0),
+                sql_params![opts.agent_id, opts.tenant_id],
+                |r| r.get_string(0),
             )
+            .ok()
+            .flatten()
             .unwrap_or_default();
         let mut receipt = ActionReceipt {
             tenant_id: opts.tenant_id.to_string(),
@@ -695,28 +762,50 @@ pub fn validate_agent_action(
         };
         receipt.signature = sign_receipt(&st.jwt_secret, &receipt);
         if ring_ok {
-            db.execute(
+            // The conflict target is explicit because `INSERT OR REPLACE` alone
+            // does not translate: PostgreSQL needs a target and an update list,
+            // and sql_translate refuses to invent one rather than silently
+            // downgrading an upsert into a no-op. In practice the branch is
+            // unreachable — `receipt_id` is a fresh 32-byte random per receipt —
+            // but writing it out keeps the statement meaning the same thing on
+            // both backends instead of erroring on one.
+            AnyConn::Sqlite(&db)
+                .execute(
                 "INSERT OR REPLACE INTO agent_action_receipts
                  (receipt_id, action_hash, agent_id, ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at, tenant_id, seq, prev_hash, owner_mandate_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                params![
-                    receipt.receipt_id,
-                    receipt.action_hash,
-                    receipt.agent_id,
-                    receipt.ring_key_image_hex,
-                    receipt.policy_version,
-                    receipt.ajwt_jti,
-                    receipt.pop_jkt,
-                    receipt.status,
-                    receipt.signature,
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(receipt_id) DO UPDATE SET
+                   action_hash = excluded.action_hash,
+                   agent_id = excluded.agent_id,
+                   ring_key_image_hex = excluded.ring_key_image_hex,
+                   policy_version = excluded.policy_version,
+                   ajwt_jti = excluded.ajwt_jti,
+                   pop_jkt = excluded.pop_jkt,
+                   status = excluded.status,
+                   signature = excluded.signature,
+                   created_at = excluded.created_at,
+                   tenant_id = excluded.tenant_id,
+                   seq = excluded.seq,
+                   prev_hash = excluded.prev_hash,
+                   owner_mandate_hash = excluded.owner_mandate_hash",
+                sql_params![
+                    &receipt.receipt_id,
+                    &receipt.action_hash,
+                    &receipt.agent_id,
+                    &receipt.ring_key_image_hex,
+                    &receipt.policy_version,
+                    &receipt.ajwt_jti,
+                    &receipt.pop_jkt,
+                    &receipt.status,
+                    &receipt.signature,
                     receipt.timestamp,
                     opts.tenant_id,
                     receipt.seq,
-                    receipt.prev_hash,
-                    receipt.owner_mandate_hash,
+                    &receipt.prev_hash,
+                    &receipt.owner_mandate_hash,
                 ],
-            )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                )
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         }
         (receipt, ring_ok)
     };
@@ -955,27 +1044,31 @@ pub fn validate_anon_action(
 
     // 4. Single-use on (per-ring key image | nonce) — replay protection keyed on
     //    the pseudonym, never an agent identity.
-    db.execute(
-        "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
-        params![now],
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    AnyConn::Sqlite(db)
+        .execute(
+            "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
+            sql_params![now],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let nonce_key = format!("{key_image_hex}|{}", env.nonce);
-    db.execute(
-        "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
+    AnyConn::Sqlite(db)
+        .execute(
+            "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![nonce_key, "", action_hash, env.expires_at, now],
-    )
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            (
-                StatusCode::UNAUTHORIZED,
-                "anon action nonce replay".to_string(),
-            )
-        } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
-    })?;
+            sql_params![&nonce_key, "", &action_hash, env.expires_at, now],
+        )
+        .map_err(|e| {
+            // Both backends' unique-violation wording — see the identity path.
+            let msg = e.to_lowercase();
+            if msg.contains("unique") || msg.contains("duplicate key") {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "anon action nonce replay".to_string(),
+                )
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
 
     // 5. Receipt with NO agent identity. ring_id + config_digest are also
     //    committed by action_hash (which is in the signed payload).
@@ -1001,29 +1094,47 @@ pub fn validate_anon_action(
         owner_mandate_hash: String::new(),
     };
     receipt.signature = sign_receipt(jwt_secret, &receipt);
-    db.execute(
+    // Explicit conflict target, as in the identity path — `INSERT OR REPLACE`
+    // on its own does not translate to PostgreSQL.
+    AnyConn::Sqlite(db)
+        .execute(
         "INSERT OR REPLACE INTO agent_action_receipts
          (receipt_id, action_hash, agent_id, ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at, ring_id, config_digest, tenant_id, seq, prev_hash)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-        params![
-            receipt.receipt_id,
-            receipt.action_hash,
-            receipt.agent_id,
-            receipt.ring_key_image_hex,
-            receipt.policy_version,
-            receipt.ajwt_jti,
-            receipt.pop_jkt,
-            receipt.status,
-            receipt.signature,
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+         ON CONFLICT(receipt_id) DO UPDATE SET
+           action_hash = excluded.action_hash,
+           agent_id = excluded.agent_id,
+           ring_key_image_hex = excluded.ring_key_image_hex,
+           policy_version = excluded.policy_version,
+           ajwt_jti = excluded.ajwt_jti,
+           pop_jkt = excluded.pop_jkt,
+           status = excluded.status,
+           signature = excluded.signature,
+           created_at = excluded.created_at,
+           ring_id = excluded.ring_id,
+           config_digest = excluded.config_digest,
+           tenant_id = excluded.tenant_id,
+           seq = excluded.seq,
+           prev_hash = excluded.prev_hash",
+        sql_params![
+            &receipt.receipt_id,
+            &receipt.action_hash,
+            &receipt.agent_id,
+            &receipt.ring_key_image_hex,
+            &receipt.policy_version,
+            &receipt.ajwt_jti,
+            &receipt.pop_jkt,
+            &receipt.status,
+            &receipt.signature,
             receipt.timestamp,
-            env.ring_id,
-            env.config_digest,
-            env.tenant_id,
+            &env.ring_id,
+            &env.config_digest,
+            &env.tenant_id,
             receipt.seq,
-            receipt.prev_hash,
+            &receipt.prev_hash,
         ],
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(receipt)
 }
@@ -1066,18 +1177,22 @@ pub async fn action_challenge(
     let (agent_ring_public_keys_hex, signer_index, signing_public_key_hex) = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let signing_public_key_hex: String = db
+        let signing_public_key_hex: String = AnyConn::Sqlite(&db)
             .query_row(
                 "SELECT IFNULL(public_key_hex, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2 AND human_key_image = ?3 AND revoked = 0 AND expires_at > ?4",
-                params![tenant.as_str(), payload.agent_id, payload.human_key_image, now],
-                |r| r.get(0),
+                sql_params![tenant.as_str(), &payload.agent_id, &payload.human_key_image, now],
+                |r| r.get_string(0),
             )
             .map_err(|_| {
                 (
                     StatusCode::UNAUTHORIZED,
                     "Agent not active for requested human".to_string(),
                 )
-            })?;
+            })?
+            .ok_or((
+                StatusCode::UNAUTHORIZED,
+                "Agent not active for requested human".to_string(),
+            ))?;
         if signing_public_key_hex.is_empty() {
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -1157,16 +1272,19 @@ pub async fn receipt_verify(
     let valid_sig = verify_receipt_signature(&st.jwt_secret, &payload.receipt);
     let db_seen: bool = {
         let db = st.db.lock().unwrap();
-        db.query_row(
-            "SELECT COUNT(*) FROM agent_action_receipts WHERE receipt_id = ?1 AND action_hash = ?2 AND signature = ?3",
-            params![
-                payload.receipt.receipt_id,
-                payload.receipt.action_hash,
-                payload.receipt.signature
-            ],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
+        AnyConn::Sqlite(&db)
+            .query_row(
+                "SELECT COUNT(*) FROM agent_action_receipts WHERE receipt_id = ?1 AND action_hash = ?2 AND signature = ?3",
+                sql_params![
+                    &payload.receipt.receipt_id,
+                    &payload.receipt.action_hash,
+                    &payload.receipt.signature
+                ],
+                |r| r.get_i64(0),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or(0)
             > 0
     };
     Json(serde_json::json!({
@@ -1183,6 +1301,7 @@ pub async fn receipt_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     fn sample_env() -> AgentActionEnvelope {
         AgentActionEnvelope {

@@ -63,6 +63,34 @@ single-node store with no cross-region HA. Two guards keep this honest:
 This turns a data-corruption footgun into an explicit, auditable
 acknowledgement.
 
+## Sweep progress
+
+`agent_action.rs` is done (2026-08-13) — every production statement in it now
+goes through `AnyConn`, and `rusqlite::params!` survives only in its test
+fixtures. That covers the receipt write path, the receipt chain, the anon ring
+path, and receipt verification: the tables whose divergence would be most
+expensive, since they hold the audit evidence.
+
+Two things that sweep surfaced, both worth expecting again elsewhere:
+
+- **`INSERT OR REPLACE` does not translate.** `sql_translate` deliberately
+  refuses to invent a conflict target rather than silently downgrading an upsert
+  to a no-op, so each such statement needs an explicit
+  `ON CONFLICT(<key>) DO UPDATE SET …` written out. Two in this file.
+- **`ORDER BY <nullable> DESC` is not portable.** SQLite sorts NULLs first
+  ascending, so they land last descending; PostgreSQL defaults to NULLS FIRST
+  for DESC. `agent_action_receipts.seq` is NULL on pre-chain rows, so the
+  unguarded form would have picked a legacy row as the chain head on Postgres
+  only. Coalesce in both the SELECT and the ORDER BY. Pinned by the chain-head
+  scenario in `core/tests/any_db_dual_backend.rs`, which is run against a real
+  PostgreSQL in CI.
+
+Also note a behaviour improvement to preserve when porting: the rusqlite version
+of `next_chain_position` swallowed all errors with `.ok()`, so a backend failure
+was indistinguishable from an empty chain and would have restarted a tenant's
+chain at seq 1. `AnyConn::query_row` returns `Option` for "no rows" and `Err` for
+failures, which separates them.
+
 ## Remaining work to make Postgres production-primary
 
 In dependency order (sizes: S/M/L):

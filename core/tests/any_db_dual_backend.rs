@@ -12,10 +12,14 @@
 use sauron_core::any_db::{AnyConn, SqlValue};
 use sauron_core::sql_params;
 
+// `legacy_seq` is nullable on purpose: it models `agent_action_receipts.seq`,
+// which is NULL for rows written before the receipt chain existed. See the
+// ordering scenario in `exercise`.
 const DDL_SQLITE: &str = "CREATE TABLE t (
     id TEXT PRIMARY KEY NOT NULL,
     tenant TEXT NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0,
+    legacy_seq INTEGER,
     flag INTEGER NOT NULL DEFAULT 0,
     amount REAL NOT NULL DEFAULT 0,
     note TEXT
@@ -24,6 +28,7 @@ const DDL_PG: &str = "CREATE TABLE t (
     id TEXT PRIMARY KEY NOT NULL,
     tenant TEXT NOT NULL,
     seq BIGINT NOT NULL DEFAULT 0,
+    legacy_seq BIGINT,
     flag BIGINT NOT NULL DEFAULT 0,
     amount DOUBLE PRECISION NOT NULL DEFAULT 0,
     note TEXT
@@ -114,6 +119,56 @@ fn exercise(conn: &mut AnyConn<'_>) -> Vec<String> {
         )
         .expect("update");
     out.push(format!("updated={affected}"));
+
+    // Picking a chain head over a column that is NULL on legacy rows.
+    //
+    // `ORDER BY legacy_seq DESC` does NOT mean the same thing on both backends:
+    // SQLite sorts NULLs first ascending, so they land LAST descending, while
+    // PostgreSQL defaults to NULLS FIRST for DESC and would return the legacy
+    // row as the head. Coalescing in the ORDER BY removes the difference rather
+    // than depending on either engine's default, and coalescing in the SELECT
+    // keeps a NULL from reaching a typed getter, which is an error.
+    //
+    // This is the exact shape of `agent_action::next_chain_position_any`, where
+    // getting it wrong would either restart a tenant's receipt chain at seq 1 or
+    // fail every write on a database holding pre-chain receipts.
+    conn.execute(
+        "INSERT INTO t (id, tenant, legacy_seq, note) VALUES (?1, ?2, ?3, ?4)",
+        &[
+            SqlValue::from("legacy"),
+            SqlValue::from("chain"),
+            SqlValue::Null,
+            SqlValue::from("pre-chain row"),
+        ],
+    )
+    .expect("insert legacy");
+    conn.execute(
+        "INSERT INTO t (id, tenant, legacy_seq, note) VALUES (?1, ?2, ?3, ?4)",
+        sql_params!["chained", "chain", 5i64, "chained row"],
+    )
+    .expect("insert chained");
+
+    let head = conn
+        .query_row(
+            "SELECT id, IFNULL(legacy_seq, 0) FROM t WHERE tenant = ?1
+             ORDER BY IFNULL(legacy_seq, 0) DESC LIMIT 1",
+            sql_params!["chain"],
+            |r| Ok(format!("{}@{}", r.get_string(0)?, r.get_i64(1)?)),
+        )
+        .expect("query_row chain head")
+        .expect("chain head exists");
+    out.push(format!("chain_head={head}"));
+
+    // And the coalesced NULL reads as 0 rather than erroring.
+    let legacy = conn
+        .query_row(
+            "SELECT IFNULL(legacy_seq, 0) FROM t WHERE id = ?1",
+            sql_params!["legacy"],
+            |r| r.get_i64(0),
+        )
+        .expect("query_row legacy")
+        .expect("legacy row exists");
+    out.push(format!("legacy_seq_coalesced={legacy}"));
 
     out
 }
