@@ -583,8 +583,7 @@ pub fn query_audit_events(
                 audit_id: row.get_string(0)?,
                 tenant_id: row.get_string(1)?,
                 event_type: row.get_string(2)?,
-                event: serde_json::from_str(&event_json)
-                    .map_err(|e| format!("event_json: {e}"))?,
+                event: serde_json::from_str(&event_json).map_err(|e| format!("event_json: {e}"))?,
                 timestamp: row.get_i64(4)?,
             })
         })

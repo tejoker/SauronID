@@ -90,19 +90,24 @@ pub fn consume_ajwt_jti(db: &Connection, jti: &str, exp: i64) -> Result<(), Stri
     db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
         .map_err(|e| format!("begin immediate: {e}"))?;
     let res = (|| -> Result<(), String> {
-        db.any_conn().execute("DELETE FROM ajwt_used_jtis WHERE exp < ?", sql_params![&now])
+        db.any_conn()
+            .execute(
+                "DELETE FROM ajwt_used_jtis WHERE exp < ?",
+                sql_params![&now],
+            )
             .map_err(|e| e.to_string())?;
-        db.any_conn().execute(
-            "INSERT INTO ajwt_used_jtis (jti, exp) VALUES (?1, ?2)",
-            sql_params![&jti, &exp],
-        )
-        .map_err(|e| {
-            if e.to_string().contains("UNIQUE") {
-                "A-JWT jti replay (token already used)".to_string()
-            } else {
-                e.to_string()
-            }
-        })?;
+        db.any_conn()
+            .execute(
+                "INSERT INTO ajwt_used_jtis (jti, exp) VALUES (?1, ?2)",
+                sql_params![&jti, &exp],
+            )
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE") {
+                    "A-JWT jti replay (token already used)".to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
         Ok(())
     })();
     match res {
@@ -228,11 +233,12 @@ pub fn insert_pop_challenge(
 ) -> Result<i64, String> {
     let now = now_secs();
     let exp = now + ttl_secs;
-    db.any_conn().execute(
-        "DELETE FROM agent_pop_challenges WHERE exp < ?",
-        sql_params![&now],
-    )
-    .map_err(|e| e.to_string())?;
+    db.any_conn()
+        .execute(
+            "DELETE FROM agent_pop_challenges WHERE exp < ?",
+            sql_params![&now],
+        )
+        .map_err(|e| e.to_string())?;
     db.any_conn().execute(
         "INSERT INTO agent_pop_challenges (id, agent_id, challenge, exp) VALUES (?1, ?2, ?3, ?4)",
         sql_params![&id, &agent_id, &challenge, &exp],
@@ -264,11 +270,12 @@ pub fn take_pop_challenge(
         );
         return Err("pop challenge expired".into());
     }
-    db.any_conn().execute(
-        "DELETE FROM agent_pop_challenges WHERE id = ?1",
-        sql_params![&challenge_id],
-    )
-    .map_err(|e| e.to_string())?;
+    db.any_conn()
+        .execute(
+            "DELETE FROM agent_pop_challenges WHERE id = ?1",
+            sql_params![&challenge_id],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(challenge)
 }
 

@@ -288,10 +288,12 @@ impl PolicyStore {
     pub fn delete_tenant(&self, tenant_id: &str, id: &str) -> Result<(), StoreError> {
         {
             let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
-            conn.any_conn().execute(
-                "DELETE FROM policies WHERE policy_id = ?1 AND tenant_id = ?2",
-                sql_params![&id, &tenant_id],
-            ).map_err(StoreError::Db)?;
+            conn.any_conn()
+                .execute(
+                    "DELETE FROM policies WHERE policy_id = ?1 AND tenant_id = ?2",
+                    sql_params![&id, &tenant_id],
+                )
+                .map_err(StoreError::Db)?;
         }
         let key = (tenant_id.to_string(), id.to_string());
         let mut idx = self.inner.write().map_err(|_| StoreError::Lock)?;

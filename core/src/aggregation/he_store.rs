@@ -68,8 +68,9 @@ pub fn upsert_he_aggregation(db: &DbHandle, row: &HeAggregationRow) -> Result<()
     let conn = db
         .lock()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
-    conn.any_conn().execute(
-        r#"INSERT INTO he_aggregations
+    conn.any_conn()
+        .execute(
+            r#"INSERT INTO he_aggregations
            (aggregation_id, cohort_id, metric_id, period_start, pk_id,
             sum_ciphertext_b64, n_contributions, last_updated)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -77,18 +78,18 @@ pub fn upsert_he_aggregation(db: &DbHandle, row: &HeAggregationRow) -> Result<()
              sum_ciphertext_b64 = excluded.sum_ciphertext_b64,
              n_contributions    = excluded.n_contributions,
              last_updated       = excluded.last_updated"#,
-        sql_params![
-            &row.aggregation_id,
-            &row.cohort_id,
-            &row.metric_id,
-            &row.period_start,
-            &row.pk_id,
-            &row.sum_ciphertext_b64,
-            &row.n_contributions,
-            &row.last_updated,
-        ],
-    )
-    .map_err(|e| HeStoreError::Storage(e.to_string()))?;
+            sql_params![
+                &row.aggregation_id,
+                &row.cohort_id,
+                &row.metric_id,
+                &row.period_start,
+                &row.pk_id,
+                &row.sum_ciphertext_b64,
+                &row.n_contributions,
+                &row.last_updated,
+            ],
+        )
+        .map_err(|e| HeStoreError::Storage(e.to_string()))?;
     Ok(())
 }
 
@@ -109,7 +110,8 @@ pub fn conflicting_cohort_for_pk(
     let conn = db
         .lock()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
-    let row: Option<String> = conn.any_conn()
+    let row: Option<String> = conn
+        .any_conn()
         .query_row(
             "SELECT cohort_id FROM he_aggregations \
              WHERE pk_id = ?1 AND cohort_id <> ?2 LIMIT 1",
@@ -128,7 +130,8 @@ pub fn get_he_aggregation(
     let conn = db
         .lock()
         .map_err(|e| HeStoreError::Storage(e.to_string()))?;
-    let row = conn.any_conn()
+    let row = conn
+        .any_conn()
         .query_row(
             r#"SELECT aggregation_id, cohort_id, metric_id, period_start, pk_id,
                       sum_ciphertext_b64, n_contributions, last_updated

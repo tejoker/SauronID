@@ -30,8 +30,9 @@ fn upsert_submission_conn(
     submitted_at: i64,
 ) -> Result<CohortRow, AggError> {
     let agent_key = sub.agent_id_or_none.clone().unwrap_or_default();
-    conn.any_conn().execute(
-        r#"INSERT INTO customer_stats
+    conn.any_conn()
+        .execute(
+            r#"INSERT INTO customer_stats
            (tenant_id, agent_id, metric_id, claimed_value, n_records,
             period_start, period_end, merkle_root, proof_b64, vk_id, checkpoint_id, submitted_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
@@ -45,22 +46,22 @@ fn upsert_submission_conn(
              vk_id         = excluded.vk_id,
              checkpoint_id = excluded.checkpoint_id,
              submitted_at  = excluded.submitted_at"#,
-        sql_params![
-            &sub.tenant_id,
-            &agent_key,
-            &sub.metric_id,
-            &sub.claimed_value,
-            &sub.n_records,
-            &sub.period_start,
-            &sub.period_end,
-            &sub.merkle_root,
-            &sub.proof_b64,
-            &sub.vk_id,
-            &sub.checkpoint_id,
-            &submitted_at,
-        ],
-    )
-    .map_err(|e| AggError::Storage(e.to_string()))?;
+            sql_params![
+                &sub.tenant_id,
+                &agent_key,
+                &sub.metric_id,
+                &sub.claimed_value,
+                &sub.n_records,
+                &sub.period_start,
+                &sub.period_end,
+                &sub.merkle_root,
+                &sub.proof_b64,
+                &sub.vk_id,
+                &sub.checkpoint_id,
+                &submitted_at,
+            ],
+        )
+        .map_err(|e| AggError::Storage(e.to_string()))?;
 
     Ok(CohortRow {
         tenant_id: sub.tenant_id.clone(),
@@ -84,7 +85,8 @@ pub fn list_cohort(
     period_end: i64,
 ) -> Result<Vec<CohortRow>, AggError> {
     let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
-    let rows = conn.any_conn()
+    let rows = conn
+        .any_conn()
         .query_map(
             r#"SELECT tenant_id, agent_id, metric_id, claimed_value, n_records,
                       period_start, period_end, merkle_root, submitted_at
@@ -93,24 +95,26 @@ pub fn list_cohort(
                  AND period_start = ?2
                  AND period_end   = ?3
                ORDER BY tenant_id ASC, agent_id ASC"#,
-            sql_params![&metric_id, &period_start, &period_end], |r| {
-            let agent_id: String = r.get(1)?;
-            Ok(CohortRow {
-                tenant_id: r.get(0)?,
-                agent_id_or_none: if agent_id.is_empty() {
-                    None
-                } else {
-                    Some(agent_id)
-                },
-                metric_id: r.get(2)?,
-                claimed_value: r.get(3)?,
-                n_records: r.get(4)?,
-                period_start: r.get(5)?,
-                period_end: r.get(6)?,
-                merkle_root: r.get(7)?,
-                submitted_at: r.get(8)?,
-            })
-        })
+            sql_params![&metric_id, &period_start, &period_end],
+            |r| {
+                let agent_id: String = r.get(1)?;
+                Ok(CohortRow {
+                    tenant_id: r.get(0)?,
+                    agent_id_or_none: if agent_id.is_empty() {
+                        None
+                    } else {
+                        Some(agent_id)
+                    },
+                    metric_id: r.get(2)?,
+                    claimed_value: r.get(3)?,
+                    n_records: r.get(4)?,
+                    period_start: r.get(5)?,
+                    period_end: r.get(6)?,
+                    merkle_root: r.get(7)?,
+                    submitted_at: r.get(8)?,
+                })
+            },
+        )
         .map_err(|e| AggError::Storage(e.to_string()))?;
     Ok(rows)
 }
@@ -185,35 +189,36 @@ pub fn get_one(
 ) -> Result<Option<CohortRow>, AggError> {
     let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
     let agent_key = agent_id_or_none.unwrap_or("");
-    conn.any_conn().query_row(
-        r#"SELECT tenant_id, agent_id, metric_id, claimed_value, n_records,
+    conn.any_conn()
+        .query_row(
+            r#"SELECT tenant_id, agent_id, metric_id, claimed_value, n_records,
                   period_start, period_end, merkle_root, submitted_at
            FROM customer_stats
            WHERE tenant_id = ?1
              AND agent_id  = ?2
              AND metric_id = ?3
              AND period_start = ?4"#,
-        sql_params![&tenant_id, &agent_key, &metric_id, &period_start],
-        |r| {
-            let agent_id: String = r.get(1)?;
-            Ok(CohortRow {
-                tenant_id: r.get(0)?,
-                agent_id_or_none: if agent_id.is_empty() {
-                    None
-                } else {
-                    Some(agent_id)
-                },
-                metric_id: r.get(2)?,
-                claimed_value: r.get(3)?,
-                n_records: r.get(4)?,
-                period_start: r.get(5)?,
-                period_end: r.get(6)?,
-                merkle_root: r.get(7)?,
-                submitted_at: r.get(8)?,
-            })
-        },
-    )
-    .map_err(|e| AggError::Storage(e.to_string()))
+            sql_params![&tenant_id, &agent_key, &metric_id, &period_start],
+            |r| {
+                let agent_id: String = r.get(1)?;
+                Ok(CohortRow {
+                    tenant_id: r.get(0)?,
+                    agent_id_or_none: if agent_id.is_empty() {
+                        None
+                    } else {
+                        Some(agent_id)
+                    },
+                    metric_id: r.get(2)?,
+                    claimed_value: r.get(3)?,
+                    n_records: r.get(4)?,
+                    period_start: r.get(5)?,
+                    period_end: r.get(6)?,
+                    merkle_root: r.get(7)?,
+                    submitted_at: r.get(8)?,
+                })
+            },
+        )
+        .map_err(|e| AggError::Storage(e.to_string()))
 }
 
 /// Canonical commitment to the complete verified stats statement. Committing
@@ -269,19 +274,20 @@ fn anchor_submission_conn(
     submitted_at: i64,
 ) -> Result<String, AggError> {
     let action_hash = synthetic_action_hash(sub);
-    conn.any_conn().execute(
-        r#"INSERT OR IGNORE INTO stats_submission_receipts
+    conn.any_conn()
+        .execute(
+            r#"INSERT OR IGNORE INTO stats_submission_receipts
            (statement_hash, tenant_id, checkpoint_id, metric_id, submitted_at)
            VALUES (?1, ?2, ?3, ?4, ?5)"#,
-        sql_params![
-            &action_hash,
-            &sub.tenant_id,
-            &sub.checkpoint_id,
-            &sub.metric_id,
-            &submitted_at,
-        ],
-    )
-    .map_err(|e| AggError::Storage(e.to_string()))?;
+            sql_params![
+                &action_hash,
+                &sub.tenant_id,
+                &sub.checkpoint_id,
+                &sub.metric_id,
+                &submitted_at,
+            ],
+        )
+        .map_err(|e| AggError::Storage(e.to_string()))?;
     Ok(action_hash)
 }
 

@@ -218,13 +218,14 @@ impl SolanaAnchorService {
         let now = now_secs();
         {
             let conn = db.lock().map_err(|e| e.to_string())?;
-            conn.any_conn().execute(
-                "INSERT INTO solana_merkle_anchors
+            conn.any_conn()
+                .execute(
+                    "INSERT INTO solana_merkle_anchors
                  (anchor_id, merkle_root_hex, network, signature, slot, confirmed, created_at)
                  VALUES (?1, ?2, ?3, ?4, 0, 0, ?5)",
-                sql_params![&anchor_id, &root_hex, &self.network, &signature_b58, &now,],
-            )
-            .map_err(|e| format!("DB error: {e}"))?;
+                    sql_params![&anchor_id, &root_hex, &self.network, &signature_b58, &now,],
+                )
+                .map_err(|e| format!("DB error: {e}"))?;
         }
 
         Ok(SolanaAnchorReceipt {

@@ -67,23 +67,24 @@ pub fn store_report(
         serde_json::to_string(&report.agent_ids).map_err(|e| StoreError::Decode(e.to_string()))?;
     let report_json =
         serde_json::to_string(report).map_err(|e| StoreError::Decode(e.to_string()))?;
-    conn.any_conn().execute(
-        "INSERT OR IGNORE INTO audit_reports
+    conn.any_conn()
+        .execute(
+            "INSERT OR IGNORE INTO audit_reports
          (report_id, tenant_id, agent_ids_json, period_start, period_end,
           generated_at, report_json, signature)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        sql_params![
-            &report.report_id,
-            &report.tenant_id,
-            &agent_ids_json,
-            &report.period_start,
-            &report.period_end,
-            &report.generated_at,
-            &report_json,
-            &signature,
-        ],
-    )
-    .map_err(|e| StoreError::Db(e.to_string()))?;
+            sql_params![
+                &report.report_id,
+                &report.tenant_id,
+                &agent_ids_json,
+                &report.period_start,
+                &report.period_end,
+                &report.generated_at,
+                &report_json,
+                &signature,
+            ],
+        )
+        .map_err(|e| StoreError::Db(e.to_string()))?;
     Ok(())
 }
 
@@ -95,7 +96,8 @@ pub fn get_report(
     report_id: &str,
 ) -> Result<Option<AuditReport>, StoreError> {
     let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
-    let row: Option<String> = conn.any_conn()
+    let row: Option<String> = conn
+        .any_conn()
         .query_row(
             "SELECT report_json FROM audit_reports
              WHERE report_id = ?1 AND tenant_id = ?2",

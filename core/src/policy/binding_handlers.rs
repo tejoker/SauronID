@@ -160,15 +160,16 @@ pub async fn bind_policy_with_handles(
         let db = db_handle
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
-        db.any_conn().execute(
-            "INSERT INTO agent_policy_bindings (tenant_id, agent_id, policy_id, bound_at) \
+        db.any_conn()
+            .execute(
+                "INSERT INTO agent_policy_bindings (tenant_id, agent_id, policy_id, bound_at) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(tenant_id, agent_id) DO UPDATE SET \
                 policy_id = excluded.policy_id, \
                 bound_at  = excluded.bound_at",
-            sql_params![&tenant_id, &agent_id, &body.policy_id, &now],
-        )
-        .map_err(|e| AppError::Internal(format!("binding upsert: {e}")))?;
+                sql_params![&tenant_id, &agent_id, &body.policy_id, &now],
+            )
+            .map_err(|e| AppError::Internal(format!("binding upsert: {e}")))?;
     }
 
     Ok(Json(PolicyBindingRecord {
@@ -216,7 +217,8 @@ pub async fn get_binding_with_handle(
     let db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
-    let row = db.any_conn()
+    let row = db
+        .any_conn()
         .query_row(
             "SELECT policy_id, bound_at FROM agent_policy_bindings \
              WHERE tenant_id = ?1 AND agent_id = ?2",
@@ -275,11 +277,12 @@ pub async fn unbind_policy_with_handle(
     let db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
-    db.any_conn().execute(
-        "DELETE FROM agent_policy_bindings WHERE tenant_id = ?1 AND agent_id = ?2",
-        sql_params![&tenant_id, &agent_id],
-    )
-    .map_err(|e| AppError::Internal(format!("binding delete: {e}")))?;
+    db.any_conn()
+        .execute(
+            "DELETE FROM agent_policy_bindings WHERE tenant_id = ?1 AND agent_id = ?2",
+            sql_params![&tenant_id, &agent_id],
+        )
+        .map_err(|e| AppError::Internal(format!("binding delete: {e}")))?;
     Ok(Json(UnbindResponse { unbound: true }))
 }
 
@@ -317,12 +320,12 @@ mod tests {
     //! Unit tests for the low-level (db-handle driven) binding helpers.
     //! Each test owns its own SQLite-on-disk database for parallel safety.
 
-    use rusqlite::params;
     use super::*;
     use crate::db::open_db_at;
     use crate::policy::compiler::compile;
     use crate::policy::parser::parse;
     use crate::policy::PolicyStore;
+    use rusqlite::params;
 
     const FX_MINIMAL: &str = include_str!("../../../schemas/fixtures/policy_minimal.yaml");
 

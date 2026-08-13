@@ -229,19 +229,12 @@ pub fn rotate_inputs(
     actor: &str,
     now: i64,
 ) -> Result<i64, String> {
-    let (prev_checksum, prev_inputs_hash, prev_version): (String, String, i64) = db
-        .any_conn()
-        .require(
+    let (prev_checksum, prev_inputs_hash, prev_version): (String, String, i64) =
+        db.any_conn().require(
             "SELECT computed_checksum, inputs_canonical, version
              FROM agent_checksum_inputs WHERE agent_id = ?1",
             sql_params![agent_id],
-            |r| {
-                Ok((
-                    r.get::<String>(0)?,
-                    r.get::<String>(1)?,
-                    r.get::<i64>(2)?,
-                ))
-            },
+            |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<i64>(2)?)),
             || "agent has no checksum_inputs row (legacy registration)".to_string(),
         )?;
 
@@ -255,44 +248,47 @@ pub fn rotate_inputs(
     );
 
     let new_version = prev_version + 1;
-    db.any_conn().execute(
-        "UPDATE agent_checksum_inputs
+    db.any_conn()
+        .execute(
+            "UPDATE agent_checksum_inputs
          SET agent_type = ?1, inputs_canonical = ?2, computed_checksum = ?3,
              version = ?4, updated_at = ?5
          WHERE agent_id = ?6",
-        sql_params![
-            &new_agent_type,
-            &new_canonical,
-            &new_checksum,
-            &new_version,
-            &now,
-            &agent_id
-        ],
-    )
-    .map_err(|e| format!("update agent_checksum_inputs: {e}"))?;
+            sql_params![
+                &new_agent_type,
+                &new_canonical,
+                &new_checksum,
+                &new_version,
+                &now,
+                &agent_id
+            ],
+        )
+        .map_err(|e| format!("update agent_checksum_inputs: {e}"))?;
 
-    db.any_conn().execute(
-        "UPDATE agents SET agent_checksum = ?1 WHERE agent_id = ?2",
-        sql_params![&new_checksum, &agent_id],
-    )
-    .map_err(|e| format!("update agents.agent_checksum: {e}"))?;
+    db.any_conn()
+        .execute(
+            "UPDATE agents SET agent_checksum = ?1 WHERE agent_id = ?2",
+            sql_params![&new_checksum, &agent_id],
+        )
+        .map_err(|e| format!("update agents.agent_checksum: {e}"))?;
 
-    db.any_conn().execute(
-        "INSERT INTO agent_checksum_audit
+    db.any_conn()
+        .execute(
+            "INSERT INTO agent_checksum_audit
          (agent_id, from_checksum, to_checksum, from_inputs_hash, to_inputs_hash, reason, actor, ts)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        sql_params![
-            &agent_id,
-            &prev_checksum,
-            &new_checksum,
-            &prev_inputs_sha,
-            &new_inputs_sha,
-            &reason,
-            &actor,
-            &now
-        ],
-    )
-    .map_err(|e| format!("insert agent_checksum_audit: {e}"))?;
+            sql_params![
+                &agent_id,
+                &prev_checksum,
+                &new_checksum,
+                &prev_inputs_sha,
+                &new_inputs_sha,
+                &reason,
+                &actor,
+                &now
+            ],
+        )
+        .map_err(|e| format!("insert agent_checksum_audit: {e}"))?;
 
     Ok(new_version)
 }

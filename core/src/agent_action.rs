@@ -734,13 +734,13 @@ pub fn validate_agent_action(
         // Which grant authorised this action. Read at receipt time, so a later
         // re-registration under a different mandate cannot retroactively change
         // what an existing receipt points at.
-        let owner_mandate_hash: String = db.any_conn()
-            .scalar_or(
-                "SELECT IFNULL(owner_mandate_hash, '') FROM agents
+        let owner_mandate_hash: String = db.any_conn().scalar_or(
+            "SELECT IFNULL(owner_mandate_hash, '') FROM agents
                  WHERE agent_id = ?1 AND tenant_id = ?2",
-                sql_params![opts.agent_id, opts.tenant_id],
-                |r| r.get_string(0),
-                String::new());
+            sql_params![opts.agent_id, opts.tenant_id],
+            |r| r.get_string(0),
+            String::new(),
+        );
         let mut receipt = ActionReceipt {
             tenant_id: opts.tenant_id.to_string(),
             receipt_id: format!("ar_{}", crate::ajwt_support::random_hex_32()),

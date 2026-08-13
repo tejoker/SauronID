@@ -454,7 +454,8 @@ impl AnyConn<'_> {
             .map_err(|e| format!("begin: {e}"))?;
         match f(self) {
             Ok(v) => {
-                self.execute("COMMIT", &[]).map_err(|e| format!("commit: {e}"))?;
+                self.execute("COMMIT", &[])
+                    .map_err(|e| format!("commit: {e}"))?;
                 Ok(v)
             }
             Err(e) => {

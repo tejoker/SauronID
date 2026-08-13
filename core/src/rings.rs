@@ -30,8 +30,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 
 use crate::any_db::{AnyRowGet, AsAnyConn};
-use crate::sql_params;
 use crate::ring_pseudonym;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
 
@@ -176,16 +176,17 @@ pub fn upsert_ring(
     now: i64,
 ) -> Result<(), String> {
     let rule_json = serde_json::to_string(rule).map_err(|e| format!("rule serialize: {e}"))?;
-    db.any_conn().execute(
-        "INSERT INTO rings (tenant_id, ring_id, rule_json, version, created_at, updated_at)
+    db.any_conn()
+        .execute(
+            "INSERT INTO rings (tenant_id, ring_id, rule_json, version, created_at, updated_at)
          VALUES (?1, ?2, ?3, 1, ?4, ?4)
          ON CONFLICT(tenant_id, ring_id) DO UPDATE SET
             rule_json = excluded.rule_json,
             version   = rings.version + 1,
             updated_at = excluded.updated_at",
-        sql_params![&tenant_id, &ring_id, &rule_json, &now],
-    )
-    .map_err(|e| format!("upsert ring: {e}"))?;
+            sql_params![&tenant_id, &ring_id, &rule_json, &now],
+        )
+        .map_err(|e| format!("upsert ring: {e}"))?;
     Ok(())
 }
 
@@ -245,7 +246,8 @@ pub fn insert_member(
     member_point_hex: &str,
     now: i64,
 ) -> Result<bool, String> {
-    let n = db.any_conn()
+    let n = db
+        .any_conn()
         .execute(
             "INSERT OR IGNORE INTO ring_members (tenant_id, ring_id, member_point_hex, created_at)
              VALUES (?1, ?2, ?3, ?4)",

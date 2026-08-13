@@ -17,10 +17,10 @@
 use crate::ajwt_support;
 use crate::any_db::AsAnyConn;
 use crate::crypto_protocol::{self, CallSignatureInput};
-use crate::sql_params;
 use crate::error::AppError;
 use crate::policy;
 use crate::risk;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
 use crate::tenancy::TenantId;
@@ -466,13 +466,12 @@ pub struct VerifyAjwtResponse {
 }
 
 fn has_bank_kyc_link(db: &rusqlite::Connection, human_key_image: &str) -> bool {
-    db.any_conn()
-        .scalar_or(
-            "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
-            sql_params![human_key_image],
-            |r| r.get_i64(0),
-                0)
-        > 0
+    db.any_conn().scalar_or(
+        "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
+        sql_params![human_key_image],
+        |r| r.get_i64(0),
+        0,
+    ) > 0
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -509,15 +508,15 @@ fn verify_owner_mandate(
             "owner mandate requires an owner key bound to human_key_image; register the owner with a client-generated Ed25519 key first".to_string(),
         )
     };
-    let owner_pk_b64u: String = db.any_conn()
-        .require(
-            "SELECT c.ed25519_public_key_b64u
+    let owner_pk_b64u: String = db.any_conn().require(
+        "SELECT c.ed25519_public_key_b64u
              FROM user_auth_credentials c
              JOIN user_auth_tenant_bindings b ON b.key_image_hex = c.key_image_hex
              WHERE c.key_image_hex = ?1 AND b.tenant_id = ?2",
-            sql_params![human_key_image, tenant_id],
-            |r| r.get_string(0),
-                missing_owner_key)?;
+        sql_params![human_key_image, tenant_id],
+        |r| r.get_string(0),
+        missing_owner_key,
+    )?;
 
     let owner_pk: [u8; 32] = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(owner_pk_b64u.trim())
@@ -1530,12 +1529,12 @@ pub async fn update_agent_checksum(
     let prev_checksum: String = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.any_conn()
-            .scalar_or(
-                "SELECT agent_checksum FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-                sql_params![&agent_id, &tenant_id],
-                |r| r.get_string(0),
-                String::new())
+        db.any_conn().scalar_or(
+            "SELECT agent_checksum FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
+            sql_params![&agent_id, &tenant_id],
+            |r| r.get_string(0),
+            String::new(),
+        )
     };
 
     let now = ajwt_support::now_secs();

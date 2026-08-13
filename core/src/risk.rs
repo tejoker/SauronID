@@ -3,8 +3,8 @@
 //! In production-like runtimes, sane defaults apply unless overridden by env.
 
 use crate::any_db::{AnyRowGet, AsAnyConn};
-use crate::sql_params;
 use crate::runtime_mode::is_development_runtime;
+use crate::sql_params;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -134,12 +134,13 @@ pub fn check_and_increment(
     db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
         .map_err(|e| format!("risk: begin immediate: {e}"))?;
     let inner = (|| -> Result<i64, String> {
-        db.any_conn().execute(
-            "INSERT INTO risk_rate_counters (bucket, window_id, cnt) VALUES (?1, ?2, 1)
+        db.any_conn()
+            .execute(
+                "INSERT INTO risk_rate_counters (bucket, window_id, cnt) VALUES (?1, ?2, 1)
              ON CONFLICT(bucket, window_id) DO UPDATE SET cnt = cnt + 1",
-            sql_params![&bucket, &window_id],
-        )
-        .map_err(|e| format!("risk: db error: {e}"))?;
+                sql_params![&bucket, &window_id],
+            )
+            .map_err(|e| format!("risk: db error: {e}"))?;
         let cnt: i64 = db.any_conn().require(
             "SELECT cnt FROM risk_rate_counters WHERE bucket = ?1 AND window_id = ?2",
             sql_params![&bucket, &window_id],

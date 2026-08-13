@@ -12,11 +12,11 @@ use subtle::ConstantTimeEq;
 
 use crate::any_db::{AnyRowGet, AsAnyConn};
 use crate::error::AppError;
-use crate::sql_params;
 use crate::identity::Identity;
 use crate::risk;
 use crate::runtime_mode::is_development_runtime;
 use crate::sites::ClientType;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
 
@@ -684,16 +684,17 @@ pub async fn get_anchor_ots(
             Ok(c) => c,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
-        conn.any_conn().query_row(
-            "SELECT merkle_root_hex, ots_receipt_blob
+        conn.any_conn()
+            .query_row(
+                "SELECT merkle_root_hex, ots_receipt_blob
              FROM bitcoin_merkle_anchors
              WHERE anchor_id = ?1 AND provider = 'opentimestamps'
                AND (?2 = '*' OR tenant_id = ?2)",
-            sql_params![anchor_id, &scope],
-            |r| Ok((r.get::<String>(0)?, r.get::<Vec<u8>>(1)?)),
-        )
-        .ok()
-        .flatten()
+                sql_params![anchor_id, &scope],
+                |r| Ok((r.get::<String>(0)?, r.get::<Vec<u8>>(1)?)),
+            )
+            .ok()
+            .flatten()
     };
 
     let (root_hex, blob) = match row {
@@ -805,7 +806,10 @@ pub async fn readyz(
     let db_ok = {
         let st = state.read_or_recover();
         match st.db.lock() {
-            Ok(conn) => match conn.any_conn().query_row("SELECT 1", sql_params![], |r| r.get_i64(0)) {
+            Ok(conn) => match conn
+                .any_conn()
+                .query_row("SELECT 1", sql_params![], |r| r.get_i64(0))
+            {
                 Ok(_) => true,
                 Err(e) => {
                     tracing::error!(target: "sauron::health", error = %e, "readyz DB probe failed");
@@ -960,7 +964,10 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
     let database = {
         let st = state.read_or_recover();
         match st.db.lock() {
-            Ok(conn) => match conn.any_conn().query_row("SELECT 1", sql_params![], |r| r.get_i64(0)) {
+            Ok(conn) => match conn
+                .any_conn()
+                .query_row("SELECT 1", sql_params![], |r| r.get_i64(0))
+            {
                 Ok(_) => HealthComponent {
                     ok: true,
                     detail: "sqlite".into(),
@@ -1197,7 +1204,9 @@ pub async fn get_agents(
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    let records: Vec<AdminAgentRecord> = db.any_conn().query_map(
+    let records: Vec<AdminAgentRecord> = db
+        .any_conn()
+        .query_map(
             "SELECT a.agent_id, a.human_key_image, a.agent_checksum, a.assurance_level,
                     a.issued_at, a.expires_at, a.revoked,
                     IFNULL(LENGTH(a.pop_public_key_b64u), 0),
@@ -1209,20 +1218,22 @@ pub async fn get_agents(
              ORDER BY a.issued_at DESC",
             sql_params![&scope],
             |row| {
-            let pop_len: i64 = row.get(7)?;
-            Ok(AdminAgentRecord {
-                agent_id: row.get(0)?,
-                human_key_image: row.get(1)?,
-                agent_checksum: row.get(2)?,
-                assurance_level: row.get(3)?,
-                issued_at: row.get(4)?,
-                expires_at: row.get(5)?,
-                revoked: row.get::<i64>(6)? != 0,
-                has_pop: pop_len > 0,
-                agent_type: row.get(8)?,
-                intent_json: row.get(9)?,
-            })
-        }).map_err(AppError::internal)?;
+                let pop_len: i64 = row.get(7)?;
+                Ok(AdminAgentRecord {
+                    agent_id: row.get(0)?,
+                    human_key_image: row.get(1)?,
+                    agent_checksum: row.get(2)?,
+                    assurance_level: row.get(3)?,
+                    issued_at: row.get(4)?,
+                    expires_at: row.get(5)?,
+                    revoked: row.get::<i64>(6)? != 0,
+                    has_pop: pop_len > 0,
+                    agent_type: row.get(8)?,
+                    intent_json: row.get(9)?,
+                })
+            },
+        )
+        .map_err(AppError::internal)?;
     Ok(Json(records))
 }
 
@@ -1247,7 +1258,9 @@ pub async fn get_recent_actions(
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    let records: Vec<AdminActionReceiptRecord> = db.any_conn().query_map(
+    let records: Vec<AdminActionReceiptRecord> = db
+        .any_conn()
+        .query_map(
             "SELECT receipt_id, action_hash, agent_id, status, policy_version, created_at
              FROM agent_action_receipts
              WHERE (?1 = '*' OR tenant_id = ?1)
@@ -1255,15 +1268,17 @@ pub async fn get_recent_actions(
              LIMIT ?2",
             sql_params![&scope, limit],
             |row| {
-            Ok(AdminActionReceiptRecord {
-                receipt_id: row.get(0)?,
-                action_hash: row.get(1)?,
-                agent_id: row.get(2)?,
-                status: row.get(3)?,
-                policy_version: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        }).map_err(AppError::internal)?;
+                Ok(AdminActionReceiptRecord {
+                    receipt_id: row.get(0)?,
+                    action_hash: row.get(1)?,
+                    agent_id: row.get(2)?,
+                    status: row.get(3)?,
+                    policy_version: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .map_err(AppError::internal)?;
     Ok(Json(records))
 }
 
@@ -1599,51 +1614,59 @@ pub async fn get_anchor_status(
     s.bitcoin_provider = crate::bitcoin_anchor::configured_provider_label();
     s.bitcoin_network = crate::bitcoin_anchor::configured_network_label();
     s.bitcoin_synthetic = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM bitcoin_merkle_anchors
+        "SELECT COUNT(*) FROM bitcoin_merkle_anchors
              WHERE no_real_money = 1 AND (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.bitcoin_total = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM bitcoin_merkle_anchors WHERE (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        "SELECT COUNT(*) FROM bitcoin_merkle_anchors WHERE (?1 = '*' OR tenant_id = ?1)",
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.bitcoin_pending_upgrade = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM bitcoin_merkle_anchors
+        "SELECT COUNT(*) FROM bitcoin_merkle_anchors
              WHERE provider = 'opentimestamps' AND ots_upgraded = 0
                AND (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.bitcoin_upgraded = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM bitcoin_merkle_anchors
+        "SELECT COUNT(*) FROM bitcoin_merkle_anchors
              WHERE ots_upgraded = 1 AND (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.solana_total = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM solana_merkle_anchors WHERE (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        "SELECT COUNT(*) FROM solana_merkle_anchors WHERE (?1 = '*' OR tenant_id = ?1)",
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.solana_unconfirmed = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM solana_merkle_anchors
+        "SELECT COUNT(*) FROM solana_merkle_anchors
              WHERE confirmed = 0 AND (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.solana_confirmed = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM solana_merkle_anchors
+        "SELECT COUNT(*) FROM solana_merkle_anchors
              WHERE confirmed = 1 AND (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     s.agent_action_batches = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM agent_action_anchors WHERE (?1 = '*' OR tenant_id = ?1)",
-            sql_params![&scope],
-            |r| r.get_i64(0),
-            0);
+        "SELECT COUNT(*) FROM agent_action_anchors WHERE (?1 = '*' OR tenant_id = ?1)",
+        sql_params![&scope],
+        |r| r.get_i64(0),
+        0,
+    );
     if let Ok(Some(row)) = db.any_conn().query_row(
         "SELECT created_at, n_actions FROM agent_action_anchors
          WHERE (?1 = '*' OR tenant_id = ?1)
@@ -1720,24 +1743,28 @@ pub async fn get_recent_egress(
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    let records: Vec<AdminEgressEntry> = db.any_conn().query_map(
+    let records: Vec<AdminEgressEntry> = db
+        .any_conn()
+        .query_map(
             "SELECT id, agent_id, target_host, target_path, method, status_code, ts, allowed
              FROM agent_egress_log
              WHERE (?1 = '*' OR tenant_id = ?1)
              ORDER BY ts DESC LIMIT ?2",
             sql_params![&scope, limit],
             |row| {
-            Ok(AdminEgressEntry {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                target_host: row.get(2)?,
-                target_path: row.get(3)?,
-                method: row.get(4)?,
-                status_code: row.get(5)?,
-                ts: row.get(6)?,
-                allowed: row.get::<i64>(7)? != 0,
-            })
-        }).map_err(AppError::internal)?;
+                Ok(AdminEgressEntry {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    target_host: row.get(2)?,
+                    target_path: row.get(3)?,
+                    method: row.get(4)?,
+                    status_code: row.get(5)?,
+                    ts: row.get(6)?,
+                    allowed: row.get::<i64>(7)? != 0,
+                })
+            },
+        )
+        .map_err(AppError::internal)?;
     Ok(Json(records))
 }
 
@@ -1760,7 +1787,9 @@ pub async fn get_checksum_audit(
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    let records: Vec<AdminChecksumAudit> = db.any_conn().query_map(
+    let records: Vec<AdminChecksumAudit> = db
+        .any_conn()
+        .query_map(
             "SELECT c.from_checksum, c.to_checksum, c.reason, c.actor, c.ts
              FROM agent_checksum_audit c
              JOIN agents a ON a.agent_id = c.agent_id
@@ -1768,14 +1797,16 @@ pub async fn get_checksum_audit(
              ORDER BY ts DESC",
             sql_params![agent_id, scope],
             |row| {
-            Ok(AdminChecksumAudit {
-                from_checksum: row.get(0)?,
-                to_checksum: row.get(1)?,
-                reason: row.get(2)?,
-                actor: row.get(3)?,
-                ts: row.get(4)?,
-            })
-        }).map_err(AppError::internal)?;
+                Ok(AdminChecksumAudit {
+                    from_checksum: row.get(0)?,
+                    to_checksum: row.get(1)?,
+                    reason: row.get(2)?,
+                    actor: row.get(3)?,
+                    ts: row.get(4)?,
+                })
+            },
+        )
+        .map_err(AppError::internal)?;
     Ok(Json(records))
 }
 
@@ -1902,17 +1933,20 @@ pub async fn get_site_zkp_proofs(
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
     let pattern = format!("site={} %", name);
-    let records: Vec<SiteZkpProofRecord> = db.any_conn().query_map(
+    let records: Vec<SiteZkpProofRecord> = db
+        .any_conn()
+        .query_map(
             "SELECT id, timestamp, detail FROM requests_log \
          WHERE action_type = 'ZKP_VERIFY' AND status = 'OK' AND detail LIKE ?1 \
          ORDER BY id DESC LIMIT 200",
             sql_params![pattern],
             |row| {
-            let id: i64 = row.get(0)?;
-            let ts: i64 = row.get(1)?;
-            let detail: String = row.get(2)?;
-            Ok((id, ts, detail))
-        })
+                let id: i64 = row.get(0)?;
+                let ts: i64 = row.get(1)?;
+                let detail: String = row.get(2)?;
+                Ok((id, ts, detail))
+            },
+        )
         .map_err(AppError::internal)?
         .into_iter()
         .map(|(id, timestamp, detail)| {

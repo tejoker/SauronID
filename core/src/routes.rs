@@ -181,41 +181,42 @@ async fn finalize_proof_checkpoint(
         let conn = db
             .lock()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        conn.any_conn().query_row(
-            "SELECT a.batch_root_hex, a.n_actions, a.btc_anchor_id, a.anchor_status,
+        conn.any_conn()
+            .query_row(
+                "SELECT a.batch_root_hex, a.n_actions, a.btc_anchor_id, a.anchor_status,
                     a.leaf_version, COALESCE(b.ots_upgraded, 0), COALESCE(b.provider, ''),
                     a.from_created_at, a.from_receipt_id, a.to_created_at, a.to_receipt_id
              FROM agent_action_anchors a
              LEFT JOIN bitcoin_merkle_anchors b
                ON b.anchor_id = a.btc_anchor_id AND b.tenant_id = a.tenant_id
              WHERE a.anchor_id = ?1 AND a.tenant_id = ?2",
-            sql_params![&body.action_anchor_id, &tenant_id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                    r.get(8)?,
-                    r.get(9)?,
-                    r.get(10)?,
-                ))
-            },
-        )
-        .map_err(|_| {
-            (
+                sql_params![&body.action_anchor_id, &tenant_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                    ))
+                },
+            )
+            .map_err(|_| {
+                (
+                    StatusCode::NOT_FOUND,
+                    "tenant action anchor not found".to_string(),
+                )
+            })?
+            .ok_or((
                 StatusCode::NOT_FOUND,
                 "tenant action anchor not found".to_string(),
-            )
-        })?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            "tenant action anchor not found".to_string(),
-        ))?
+            ))?
     };
     if tree_size <= 0 || tree_size > 10_000 {
         return Err((
@@ -449,22 +450,23 @@ async fn transparent_verify_handler(
     let (expected_root, expected_size, expected_anchor): (String, i64, String) = {
         let st = state.read().unwrap();
         let db = st.db.lock().unwrap();
-        db.any_conn().query_row(
-            "SELECT merkle_root, tree_size, anchor_id FROM zk_proof_checkpoints
+        db.any_conn()
+            .query_row(
+                "SELECT merkle_root, tree_size, anchor_id FROM zk_proof_checkpoints
              WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = ?3 AND finalized_at > 0",
-            sql_params![&body.checkpoint_id, &tenant_id, circuit],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|_| {
-            (
+                sql_params![&body.checkpoint_id, &tenant_id, circuit],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| {
+                (
+                    StatusCode::NOT_FOUND,
+                    "finalized transparent checkpoint not found".to_string(),
+                )
+            })?
+            .ok_or((
                 StatusCode::NOT_FOUND,
                 "finalized transparent checkpoint not found".to_string(),
-            )
-        })?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            "finalized transparent checkpoint not found".to_string(),
-        ))?
+            ))?
     };
     if !journal_root.eq_ignore_ascii_case(&expected_root)
         || journal_size != expected_size as u64

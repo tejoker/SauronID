@@ -1,11 +1,11 @@
 use crate::any_db::{AnyRowGet, AsAnyConn};
-use crate::sql_params;
 use crate::bitcoin_anchor::BitcoinAnchorService;
 use crate::compliance::ComplianceConfig;
 use crate::db::DbHandle;
 use crate::issuer_runtime::IssuerRuntime;
 use crate::merkle::MerkleCommitmentLedger;
 use crate::ring;
+use crate::sql_params;
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use hex;
@@ -401,25 +401,36 @@ pub fn spawn_background_gc(db: Arc<DbHandle>) {
                 Err(_) => continue,
             };
 
-            let jti_pruned = conn.any_conn()
-                .execute("DELETE FROM ajwt_used_jtis WHERE exp < ?1", sql_params![&now])
+            let jti_pruned = conn
+                .any_conn()
+                .execute(
+                    "DELETE FROM ajwt_used_jtis WHERE exp < ?1",
+                    sql_params![&now],
+                )
                 .unwrap_or(0);
-            let pop_pruned = conn.any_conn()
+            let pop_pruned = conn
+                .any_conn()
                 .execute(
                     "DELETE FROM agent_pop_challenges WHERE exp < ?1",
                     sql_params![&now],
                 )
                 .unwrap_or(0);
-            let call_nonce_pruned = conn.any_conn()
-                .execute("DELETE FROM agent_call_nonces WHERE exp < ?1", sql_params![&now])
+            let call_nonce_pruned = conn
+                .any_conn()
+                .execute(
+                    "DELETE FROM agent_call_nonces WHERE exp < ?1",
+                    sql_params![&now],
+                )
                 .unwrap_or(0);
-            let risk_pruned = conn.any_conn()
+            let risk_pruned = conn
+                .any_conn()
                 .execute(
                     "DELETE FROM risk_rate_counters WHERE window_id < ?1",
                     sql_params![&oldest_window],
                 )
                 .unwrap_or(0);
-            let log_pruned = conn.any_conn()
+            let log_pruned = conn
+                .any_conn()
                 .execute(
                     "DELETE FROM requests_log WHERE timestamp < ?1",
                     sql_params![&retention_cutoff],

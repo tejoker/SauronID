@@ -409,10 +409,10 @@ pub fn spawn_ots_upgrader(db: Arc<DbHandle>) {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::params;
     use super::*;
     use crate::db;
     use crate::sync_recover::MutexRecover;
+    use rusqlite::params;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {

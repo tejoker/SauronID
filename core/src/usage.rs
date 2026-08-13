@@ -28,8 +28,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::any_db::{AnyRowGet, AsAnyConn};
-use crate::sql_params;
 use crate::rings::RingBudgets;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
 
@@ -87,7 +87,8 @@ pub fn get_usage(
     ring_id: &str,
     key_image_hex: &str,
 ) -> Result<UsageTotals, String> {
-    let row = db.any_conn()
+    let row = db
+        .any_conn()
         .query_row(
             "SELECT input_tokens, output_tokens, usd FROM usage_ledger
              WHERE tenant_id = ?1 AND ring_id = ?2 AND key_image_hex = ?3",
@@ -168,8 +169,9 @@ pub fn record_usage(
         sql_params![&log_id, &tenant_id, &ring_id, &key_image, &model_id, &in_tokens, &out_tokens, &usd, &now],
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    db.any_conn().execute(
-        "INSERT INTO usage_ledger
+    db.any_conn()
+        .execute(
+            "INSERT INTO usage_ledger
          (tenant_id, ring_id, key_image_hex, input_tokens, output_tokens, usd, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7)
          ON CONFLICT(tenant_id, ring_id, key_image_hex) DO UPDATE SET
@@ -177,9 +179,17 @@ pub fn record_usage(
             output_tokens = usage_ledger.output_tokens + excluded.output_tokens,
             usd           = usage_ledger.usd           + excluded.usd,
             updated_at    = excluded.updated_at",
-        sql_params![&tenant_id, &ring_id, &key_image, &in_tokens, &out_tokens, &usd, &now],
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            sql_params![
+                &tenant_id,
+                &ring_id,
+                &key_image,
+                &in_tokens,
+                &out_tokens,
+                &usd,
+                &now
+            ],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let totals = get_usage(db, &tenant_id, &ring_id, &key_image)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -315,23 +325,24 @@ pub fn verify_usage_report(
     // violation IS the check. Consumed only after the signature verifies.
     // ponytail: a 30-day window, not forever — long enough that a captured
     // report cannot be replayed once the row ages out of any realistic session.
-    db.any_conn().execute(
-        "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
+    db.any_conn()
+        .execute(
+            "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
          VALUES (?1, '', ?2, ?3, ?4)",
-        sql_params![
-            format!("usage|{key_image_hex}|{}", req.nonce),
-            &req.receipt_id,
-            now + 30 * 24 * 3600,
-            &now
-        ],
-    )
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            (StatusCode::UNAUTHORIZED, "usage report replay".to_string())
-        } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
-    })?;
+            sql_params![
+                format!("usage|{key_image_hex}|{}", req.nonce),
+                &req.receipt_id,
+                now + 30 * 24 * 3600,
+                &now
+            ],
+        )
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                (StatusCode::UNAUTHORIZED, "usage report replay".to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })?;
     Ok(())
 }
 

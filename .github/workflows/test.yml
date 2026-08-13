@@ -79,6 +79,27 @@ jobs:
         with:
           toolchain: 1.91.1
 
+      # MUST come before the first cargo invocation in this job. It used to sit
+      # after the dual-backend test, so the restore dropped a stale core/target
+      # on top of one cargo had already built: the merged tree carried
+      # fingerprints claiming freshness for a dependency rlib that era no longer
+      # had, and every later cargo command failed with
+      # "can't find crate for sauron_transparent_types" — which then cascaded
+      # into a wall of unresolved-const errors in transparent_proof.rs. Because
+      # the key is keyed on Cargo.lock and the lock had not changed, the poisoned
+      # entry was reused on every run, so the job failed deterministically in CI
+      # and never locally. The key is bumped to abandon that entry.
+      - name: Cache cargo registry + target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+          key: cargo-test-pg-v2-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-pg-v2-${{ runner.os }}-
+
       - name: Install postgres client
         run: |
           sudo apt-get update -qq
@@ -133,17 +154,6 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: postgres
           PGDATABASE: sauron_test
-
-      - name: Cache cargo registry + target
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            core/target
-          key: cargo-test-pg-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
-          restore-keys: |
-            cargo-test-pg-${{ runner.os }}-
 
       - name: cargo test --lib (M1 ported modules)
         working-directory: core
