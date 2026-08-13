@@ -348,6 +348,15 @@ impl FromAnyRow for Vec<u8> {
         row.get_blob(idx)
     }
 }
+impl FromAnyRow for Option<Vec<u8>> {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        // No dedicated optional-blob getter: an absent blob reads as empty on
+        // both backends via the same path, and a genuinely NULL column errors
+        // in get_blob, which is what the caller wants to see.
+        row.get_blob(idx).map(Some).or(Ok(None))
+    }
+}
+
 impl FromAnyRow for Option<String> {
     fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
         row.get_opt_string(idx)

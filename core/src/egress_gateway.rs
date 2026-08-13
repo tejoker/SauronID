@@ -19,6 +19,8 @@
 //! so it enforces at the host + resolved-IP level only — no payload inspection
 //! beyond opt-in PII redaction of the request body.
 
+use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::sql_params;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -346,19 +348,19 @@ pub fn record_egress(
     allowed: bool,
     now: i64,
 ) -> Result<i64, String> {
-    db.execute(
+    db.any_conn().execute(
         "INSERT INTO agent_egress_log
          (tenant_id, agent_id, target_host, target_path, method, body_hash_hex, status_code, ts, allowed)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            tenant_id,
-            agent_id,
-            target_host,
-            target_path,
-            method,
-            body_hash_hex,
-            status_code,
-            now,
+        sql_params![
+            &tenant_id,
+            &agent_id,
+            &target_host,
+            &target_path,
+            &method,
+            &body_hash_hex,
+            &status_code,
+            &now,
             allowed as i64
         ],
     )
@@ -375,18 +377,20 @@ fn agent_intent(
     tenant_id: &str,
     agent_id: &str,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let s: String = db
-        .query_row(
-            "SELECT intent_json FROM agents WHERE agent_id = ?1 AND tenant_id = ?2 AND revoked = 0",
-            params![agent_id, tenant_id],
-            |r| r.get(0),
-        )
-        .map_err(|_| {
+    // A missing or revoked agent must stay a 401 — `require` keeps "no such row"
+    // and "query failed" both mapping to that, where a default-on-missing would
+    // have handed back an empty intent and let the call proceed.
+    let s: String = db.any_conn().require(
+        "SELECT intent_json FROM agents WHERE agent_id = ?1 AND tenant_id = ?2 AND revoked = 0",
+        sql_params![agent_id, tenant_id],
+        |r| r.get(0),
+        || {
             (
                 StatusCode::UNAUTHORIZED,
                 "agent not found or revoked".to_string(),
             )
-        })?;
+        },
+    )?;
     Ok(serde_json::from_str(&s).unwrap_or_default())
 }
 
