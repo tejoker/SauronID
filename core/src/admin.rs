@@ -6,7 +6,6 @@ use axum::{
 };
 use curve25519_dalek::ristretto::CompressedRistretto;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock, RwLock};
 use subtle::ConstantTimeEq;
@@ -491,22 +490,35 @@ pub async fn add_client(
     // Persistance en DB.
     {
         let st = state.read_or_recover();
-        let mut db = st.db.lock().unwrap();
-        let tx = db
-            .transaction()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        tx.execute(
-            "INSERT INTO clients (name, public_key_hex, private_key_hex, key_image_hex, client_type)
+        let db = st.db.lock().unwrap();
+        // Both rows or neither: a client without its tenant binding is
+        // unreachable and would block the name from being re-registered.
+        db.any_conn()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO clients (name, public_key_hex, private_key_hex, key_image_hex, client_type)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![payload.name, pub_hex, "EXTERNAL_CUSTODY", ki_hex, type_str],
-        ).map_err(|e| (StatusCode::CONFLICT, format!("Client already exists or DB error: {e}")))?;
-        tx.execute(
-            "INSERT INTO client_tenant_bindings (client_name, tenant_id) VALUES (?1, ?2)",
-            params![payload.name, tenant_id],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        tx.commit()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                    sql_params![&payload.name, &pub_hex, "EXTERNAL_CUSTODY", &ki_hex, type_str],
+                )?;
+                tx.execute(
+                    "INSERT INTO client_tenant_bindings (client_name, tenant_id) VALUES (?1, ?2)",
+                    sql_params![&payload.name, &tenant_id],
+                )?;
+                Ok(())
+            })
+            .map_err(|e| {
+                // A duplicate client name is a 409, anything else a 500. Each
+                // backend spells the violation differently.
+                let msg = e.to_lowercase();
+                if msg.contains("unique") || msg.contains("duplicate key") {
+                    (
+                        StatusCode::CONFLICT,
+                        format!("Client already exists or DB error: {e}"),
+                    )
+                } else {
+                    (StatusCode::INTERNAL_SERVER_ERROR, e)
+                }
+            })?;
     }
 
     // Ajouter la clé publique au groupe client en mémoire (pour vérifier les ring sigs Flux 1).

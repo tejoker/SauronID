@@ -360,6 +360,43 @@ impl AnyConn<'_> {
         }
     }
 
+    /// Run `f` inside a transaction, committing on `Ok` and rolling back on
+    /// `Err`.
+    ///
+    /// Statements are issued through the same translated path rather than via
+    /// `rusqlite::Connection::transaction()`, which needs `&mut Connection` —
+    /// this handle only borrows one. `BEGIN IMMEDIATE TRANSACTION` is SQLite's
+    /// write-lock hint and `sql_translate` rewrites it to a plain `BEGIN` for
+    /// PostgreSQL, so one spelling covers both.
+    ///
+    /// The error type is `String` because that is what the query helpers return
+    /// and a transaction cannot usefully invent a richer one; call sites that
+    /// need an HTTP status map the result afterwards, including the ones that
+    /// distinguish a unique-violation from a genuine failure.
+    ///
+    /// Nesting is not supported — neither backend gives plain `BEGIN` nested
+    /// semantics, and faking it with savepoints would silently change what a
+    /// rollback undoes.
+    pub fn transaction<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.execute("BEGIN IMMEDIATE TRANSACTION", &[])
+            .map_err(|e| format!("begin: {e}"))?;
+        match f(self) {
+            Ok(v) => {
+                self.execute("COMMIT", &[]).map_err(|e| format!("commit: {e}"))?;
+                Ok(v)
+            }
+            Err(e) => {
+                // The original error is what the caller needs; a rollback that
+                // also fails must not mask it.
+                let _ = self.execute("ROLLBACK", &[]);
+                Err(e)
+            }
+        }
+    }
+
     /// Read one row, or fail with the caller's error.
     ///
     /// Collapses the shape that appears at nearly every required-row read:

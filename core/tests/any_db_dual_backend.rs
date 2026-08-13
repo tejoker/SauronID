@@ -170,6 +170,37 @@ fn exercise(conn: &mut AnyConn<'_>) -> Vec<String> {
         .expect("legacy row exists");
     out.push(format!("legacy_seq_coalesced={legacy}"));
 
+    // Transactions: commit persists, a failing closure rolls the whole thing
+    // back. Both spellings go through sql_translate (BEGIN IMMEDIATE becomes a
+    // plain BEGIN on PostgreSQL), so this pins that the wrapper means the same
+    // thing on both backends rather than just compiling against both.
+    conn.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO t (id, tenant, note) VALUES (?1, ?2, ?3)",
+            sql_params!["txn-commit", "txn", "kept"],
+        )?;
+        Ok(())
+    })
+    .expect("commit path");
+
+    let rolled_back = conn.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO t (id, tenant, note) VALUES (?1, ?2, ?3)",
+            sql_params!["txn-rollback", "txn", "discarded"],
+        )?;
+        Err::<(), String>("deliberate failure".to_string())
+    });
+    out.push(format!("rollback_err={}", rolled_back.is_err()));
+
+    let survivors = conn
+        .query_map(
+            "SELECT id FROM t WHERE tenant = ?1 ORDER BY id",
+            sql_params!["txn"],
+            |r| r.get_string(0),
+        )
+        .expect("txn survivors");
+    out.push(format!("after_txn={}", survivors.join(",")));
+
     out
 }
 
