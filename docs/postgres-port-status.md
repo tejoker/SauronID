@@ -65,11 +65,19 @@ acknowledgement.
 
 ## Sweep progress
 
-`agent_action.rs` is done (2026-08-13) — every production statement in it now
-goes through `AnyConn`, and `rusqlite::params!` survives only in its test
-fixtures. That covers the receipt write path, the receipt chain, the anon ring
-path, and receipt verification: the tables whose divergence would be most
-expensive, since they hold the audit evidence.
+`agent_action.rs` and `agent_action_anchor.rs` are done (2026-08-13) — every
+production statement in both now goes through `AnyConn`, and `rusqlite::params!`
+survives only in test fixtures. Together they cover the receipt write path, the
+receipt chain, the anon ring path, receipt verification, merkle batch
+construction, the anchor batch rows, and the proof/status read paths: the tables
+whose divergence would be most expensive, since they hold the audit evidence.
+
+One thing `agent_action_anchor.rs` added to the list of things to watch:
+`.flatten()` over a row iterator silently drops rows that fail to decode. On the
+two queries that build merkle leaves that would shorten a batch and change its
+published root, so both now propagate decode errors instead. Still outstanding in
+this file's neighbourhood: `middleware::audit_log::audit_chain_head` takes a
+`rusqlite::Connection` directly and is called from the anchor path.
 
 Two things that sweep surfaced, both worth expecting again elsewhere:
 

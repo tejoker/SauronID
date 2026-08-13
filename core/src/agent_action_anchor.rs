@@ -32,12 +32,13 @@
 //! That's not a realistic adversary.
 
 use rs_merkle::{algorithms::Sha256 as MerkleSha256, MerkleTree};
-use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ajwt_support::random_hex_32;
+use crate::any_db::{AnyConn, AnyRow};
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
 
@@ -82,21 +83,26 @@ struct AnchoredReceipt {
     config_digest: String,
 }
 
-fn receipt_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AnchoredReceipt> {
+/// Read one anchored receipt, backend-agnostically. Column order is shared by
+/// both queries that build merkle leaves, and the typed getters make SQLite's
+/// dynamic typing and PostgreSQL's strict typing produce the same struct —
+/// which matters more here than anywhere else in the file, because any
+/// difference changes a published batch root.
+fn receipt_from_any_row(row: &dyn AnyRow) -> Result<AnchoredReceipt, String> {
     Ok(AnchoredReceipt {
-        receipt_id: row.get(0)?,
-        action_hash: row.get(1)?,
-        agent_id: row.get(2)?,
-        ring_key_image_hex: row.get(3)?,
-        policy_version: row.get(4)?,
-        ajwt_jti: row.get(5)?,
-        pop_jkt: row.get(6)?,
-        status: row.get(7)?,
-        signature: row.get(8)?,
-        created_at: row.get(9)?,
-        tenant_id: row.get(10)?,
-        ring_id: row.get(11)?,
-        config_digest: row.get(12)?,
+        receipt_id: row.get_string(0)?,
+        action_hash: row.get_string(1)?,
+        agent_id: row.get_string(2)?,
+        ring_key_image_hex: row.get_string(3)?,
+        policy_version: row.get_string(4)?,
+        ajwt_jti: row.get_string(5)?,
+        pop_jkt: row.get_string(6)?,
+        status: row.get_string(7)?,
+        signature: row.get_string(8)?,
+        created_at: row.get_i64(9)?,
+        tenant_id: row.get_string(10)?,
+        ring_id: row.get_string(11)?,
+        config_digest: row.get_string(12)?,
     })
 }
 
@@ -166,15 +172,11 @@ pub async fn anchor_pending_actions(
     let tenants: Vec<String> = {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT tenant_id FROM agent_action_receipts ORDER BY tenant_id")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .collect();
-        rows
+        AnyConn::Sqlite(&conn).query_map(
+            "SELECT DISTINCT tenant_id FROM agent_action_receipts ORDER BY tenant_id",
+            sql_params![],
+            |r| r.get_string(0),
+        )?
     };
     let mut first = None;
     for tenant_id in tenants {
@@ -197,23 +199,25 @@ pub async fn anchor_pending_actions_for_tenant(
     let (last_to, last_receipt_id): (i64, String) = {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT to_created_at, to_receipt_id FROM agent_action_anchors
+        AnyConn::Sqlite(&conn)
+            .query_row(
+                "SELECT to_created_at, to_receipt_id FROM agent_action_anchors
              WHERE tenant_id = ?1 AND anchor_status = 'submitted'
              ORDER BY to_created_at DESC LIMIT 1",
-            params![tenant_id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-        )
-        .unwrap_or((0i64, String::new()))
+                sql_params![tenant_id],
+                |r| Ok((r.get_i64(0)?, r.get_string(1)?)),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or((0i64, String::new()))
     };
 
     // 2. Pull all receipts after that watermark, ordered.
     let receipts: Vec<AnchoredReceipt> = {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
+        AnyConn::Sqlite(&conn).query_map(
+            "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
                         policy_version, ajwt_jti, pop_jkt, status, signature,
                         created_at, tenant_id, COALESCE(ring_id, ''),
                         COALESCE(config_digest, '')
@@ -222,20 +226,17 @@ pub async fn anchor_pending_actions_for_tenant(
                    AND (created_at > ?2 OR (created_at = ?2 AND receipt_id > ?3))
                  ORDER BY created_at ASC, receipt_id ASC
                  LIMIT ?4",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(
-                params![
-                    tenant_id,
-                    last_to,
-                    last_receipt_id,
-                    MAX_RECEIPTS_PER_BATCH as i64
-                ],
-                receipt_from_row,
-            )
-            .map_err(|e| e.to_string())?;
-        rows.flatten().collect()
+            sql_params![
+                tenant_id,
+                last_to,
+                &last_receipt_id,
+                MAX_RECEIPTS_PER_BATCH as i64
+            ],
+            receipt_from_any_row,
+        )?
+        // A row that failed to decode used to be dropped silently by
+        // `.flatten()`, which would quietly shorten a batch and change its root.
+        // Decoding errors now abort the batch instead.
     };
 
     if receipts.is_empty() {
@@ -281,28 +282,29 @@ pub async fn anchor_pending_actions_for_tenant(
     {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO agent_action_anchors
+        AnyConn::Sqlite(&conn)
+            .execute(
+                "INSERT INTO agent_action_anchors
              (anchor_id, batch_root_hex, n_actions, from_receipt_id, to_receipt_id,
              from_created_at, to_created_at, btc_anchor_id, sol_anchor_id,
              anchor_status, anchor_error, leaf_version, created_at, tenant_id,
              audit_head_seq, audit_head_hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', '', 'pending', '', 2, ?8, ?9, ?10, ?11)",
-            params![
-                anchor_id,
-                batch_root_hex,
-                n_actions,
-                from_receipt_id,
-                to_receipt_id,
-                from_created_at,
-                to_created_at,
-                now_secs(),
-                tenant_id,
-                audit_head_seq,
-                audit_head_hash,
-            ],
-        )
-        .map_err(|e| format!("DB insert agent_action_anchors: {e}"))?;
+                sql_params![
+                    &anchor_id,
+                    &batch_root_hex,
+                    n_actions,
+                    &from_receipt_id,
+                    &to_receipt_id,
+                    from_created_at,
+                    to_created_at,
+                    now_secs(),
+                    tenant_id,
+                    audit_head_seq,
+                    &audit_head_hash,
+                ],
+            )
+            .map_err(|e| format!("DB insert agent_action_anchors: {e}"))?;
     }
 
     // 5. Fire BOTH on-chain anchors in parallel; collect receipt ids.
@@ -386,15 +388,15 @@ pub async fn anchor_pending_actions_for_tenant(
         // receipt with the legacy `default` tenant. Re-stamp the rows here so
         // proof/status queries cannot cross a tenant boundary.
         if !btc_id.is_empty() {
-            let _ = conn.execute(
+            let _ = AnyConn::Sqlite(&conn).execute(
                 "UPDATE bitcoin_merkle_anchors SET tenant_id = ?1 WHERE anchor_id = ?2",
-                params![tenant_id, btc_id],
+                sql_params![tenant_id, &btc_id],
             );
         }
         if !sol_id.is_empty() {
-            let _ = conn.execute(
+            let _ = AnyConn::Sqlite(&conn).execute(
                 "UPDATE solana_merkle_anchors SET tenant_id = ?1 WHERE anchor_id = ?2",
-                params![tenant_id, sol_id],
+                sql_params![tenant_id, &sol_id],
             );
         }
         let successes = usize::from(!btc_id.is_empty()) + usize::from(!sol_id.is_empty());
@@ -410,11 +412,12 @@ pub async fn anchor_pending_actions_for_tenant(
         } else {
             anchor_errors.join("; ")
         };
-        conn.execute(
-            "UPDATE agent_action_anchors SET btc_anchor_id = ?1, sol_anchor_id = ?2, anchor_status = ?3, anchor_error = ?4 WHERE anchor_id = ?5",
-            params![btc_id, sol_id, anchor_status, anchor_error, anchor_id],
-        )
-        .ok();
+        AnyConn::Sqlite(&conn)
+            .execute(
+                "UPDATE agent_action_anchors SET btc_anchor_id = ?1, sol_anchor_id = ?2, anchor_status = ?3, anchor_error = ?4 WHERE anchor_id = ?5",
+                sql_params![&btc_id, &sol_id, anchor_status, &anchor_error, &anchor_id],
+            )
+            .ok();
     }
 
     Ok(Some(anchor_id))
@@ -476,14 +479,16 @@ pub fn proof_for_receipt_for_tenant(
     let receipt_created_at: i64 = {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        match conn.query_row(
+        match AnyConn::Sqlite(&conn).query_row(
             "SELECT created_at FROM agent_action_receipts
              WHERE receipt_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
-            params![receipt_id, tenant_id],
-            |r| r.get::<_, i64>(0),
+            sql_params![receipt_id, tenant_id],
+            |r| r.get_i64(0),
         ) {
-            Ok(v) => v,
-            Err(_) => return Ok(None),
+            Ok(Some(v)) => v,
+            // No such receipt, or a backend failure: both mean "no proof to
+            // return here", as before.
+            Ok(None) | Err(_) => return Ok(None),
         }
     };
 
@@ -500,26 +505,28 @@ pub fn proof_for_receipt_for_tenant(
     )> = {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
+        AnyConn::Sqlite(&conn)
+            .query_row(
             "SELECT anchor_id, batch_root_hex, from_created_at, to_created_at, btc_anchor_id, sol_anchor_id, from_receipt_id, to_receipt_id, leaf_version
              FROM agent_action_anchors
              WHERE from_created_at <= ?1 AND to_created_at >= ?1
                AND (?2 = '*' OR tenant_id = ?2)
              ORDER BY created_at ASC LIMIT 1",
-            params![receipt_created_at, tenant_id],
-            |r| Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, String>(7)?,
-                r.get::<_, i64>(8)?,
-            )),
-        )
-        .ok()
+                sql_params![receipt_created_at, tenant_id],
+                |r| Ok((
+                    r.get_string(0)?,
+                    r.get_string(1)?,
+                    r.get_i64(2)?,
+                    r.get_i64(3)?,
+                    r.get_string(4)?,
+                    r.get_string(5)?,
+                    r.get_string(6)?,
+                    r.get_string(7)?,
+                    r.get_i64(8)?,
+                )),
+            )
+            .ok()
+            .flatten()
     };
 
     let (anchor_id, batch_root_hex, from_ts, to_ts, btc, sol, from_rid, to_rid, leaf_version) =
@@ -538,32 +545,38 @@ pub fn proof_for_receipt_for_tenant(
     } else {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT confirmed, slot, signature FROM solana_merkle_anchors
+        AnyConn::Sqlite(&conn)
+            .query_row(
+                "SELECT confirmed, slot, signature FROM solana_merkle_anchors
              WHERE anchor_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
-            params![sol, tenant_id],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)? == 1,
-                    Some(r.get::<_, i64>(1)?),
-                    Some(r.get::<_, String>(2)?),
-                ))
-            },
-        )
-        .unwrap_or((false, None, None))
+                sql_params![&sol, tenant_id],
+                |r| {
+                    Ok((
+                        r.get_i64(0)? == 1,
+                        Some(r.get_i64(1)?),
+                        Some(r.get_string(2)?),
+                    ))
+                },
+            )
+            .ok()
+            .flatten()
+            .unwrap_or((false, None, None))
     };
     let (btc_ots_upgraded, btc_provider) = if btc.is_empty() {
         (false, "opentimestamps".to_string())
     } else {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT ots_upgraded, provider FROM bitcoin_merkle_anchors
+        AnyConn::Sqlite(&conn)
+            .query_row(
+                "SELECT ots_upgraded, provider FROM bitcoin_merkle_anchors
              WHERE anchor_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
-            params![btc, tenant_id],
-            |r| Ok((r.get::<_, i64>(0)? == 1, r.get::<_, String>(1)?)),
-        )
-        .unwrap_or((false, "opentimestamps".to_string()))
+                sql_params![&btc, tenant_id],
+                |r| Ok((r.get_i64(0)? == 1, r.get_string(1)?)),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or((false, "opentimestamps".to_string()))
     };
 
     // Deprecated: keep one minor version for clients still reading a single
@@ -589,9 +602,8 @@ pub fn proof_for_receipt_for_tenant(
     let receipts: Vec<AnchoredReceipt> = {
         let st = state.read_or_recover();
         let conn = st.db.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
+        AnyConn::Sqlite(&conn).query_map(
+            "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
                         policy_version, ajwt_jti, pop_jkt, status, signature,
                         created_at, tenant_id, COALESCE(ring_id, ''),
                         COALESCE(config_digest, '')
@@ -600,15 +612,11 @@ pub fn proof_for_receipt_for_tenant(
                    AND (created_at > ?1 OR (created_at = ?1 AND receipt_id >= ?2))
                    AND (created_at < ?3 OR (created_at = ?3 AND receipt_id <= ?4))
                  ORDER BY created_at ASC, receipt_id ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(
-                params![from_ts, from_rid, to_ts, to_rid, tenant_id],
-                receipt_from_row,
-            )
-            .map_err(|e| e.to_string())?;
-        rows.flatten().collect()
+            sql_params![from_ts, &from_rid, to_ts, &to_rid, tenant_id],
+            receipt_from_any_row,
+        )?
+        // As in the batch build: a row that fails to decode must not be dropped
+        // silently, because this set has to reproduce the anchored root exactly.
     };
 
     let leaves: Vec<[u8; 32]> = receipts
@@ -684,32 +692,27 @@ pub fn recent_batches_for_tenant(
 ) -> Result<Vec<serde_json::Value>, String> {
     let st = state.read_or_recover();
     let conn = st.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
+    let batches: Vec<(String, String, i64, String, String, i64, String, String)> =
+        AnyConn::Sqlite(&conn).query_map(
             "SELECT anchor_id, batch_root_hex, n_actions, btc_anchor_id, sol_anchor_id, created_at, anchor_status, anchor_error
              FROM agent_action_anchors
              WHERE (?2 = '*' OR tenant_id = ?2)
              ORDER BY created_at DESC
              LIMIT ?1",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![limit, tenant_id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, String>(7)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let batches: Vec<(String, String, i64, String, String, i64, String, String)> =
-        rows.flatten().collect();
-    drop(stmt);
+            sql_params![limit, tenant_id],
+            |r| {
+                Ok((
+                    r.get_string(0)?,
+                    r.get_string(1)?,
+                    r.get_i64(2)?,
+                    r.get_string(3)?,
+                    r.get_string(4)?,
+                    r.get_i64(5)?,
+                    r.get_string(6)?,
+                    r.get_string(7)?,
+                ))
+            },
+        )?;
     drop(conn);
     drop(st);
 
@@ -722,32 +725,38 @@ pub fn recent_batches_for_tenant(
         } else {
             let st = state.read_or_recover();
             let conn = st.db.lock().map_err(|e| e.to_string())?;
-            conn.query_row(
-                "SELECT confirmed, slot, signature FROM solana_merkle_anchors
+            AnyConn::Sqlite(&conn)
+                .query_row(
+                    "SELECT confirmed, slot, signature FROM solana_merkle_anchors
                      WHERE anchor_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
-                params![sol, tenant_id],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)? == 1,
-                        Some(r.get::<_, i64>(1)?),
-                        Some(r.get::<_, String>(2)?),
-                    ))
-                },
-            )
-            .unwrap_or((false, None, None))
+                    sql_params![&sol, tenant_id],
+                    |r| {
+                        Ok((
+                            r.get_i64(0)? == 1,
+                            Some(r.get_i64(1)?),
+                            Some(r.get_string(2)?),
+                        ))
+                    },
+                )
+                .ok()
+                .flatten()
+                .unwrap_or((false, None, None))
         };
         let (btc_ots_upgraded, btc_provider) = if btc.is_empty() {
             (false, "opentimestamps".to_string())
         } else {
             let st = state.read_or_recover();
             let conn = st.db.lock().map_err(|e| e.to_string())?;
-            conn.query_row(
-                "SELECT ots_upgraded, provider FROM bitcoin_merkle_anchors
+            AnyConn::Sqlite(&conn)
+                .query_row(
+                    "SELECT ots_upgraded, provider FROM bitcoin_merkle_anchors
                  WHERE anchor_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
-                params![btc, tenant_id],
-                |r| Ok((r.get::<_, i64>(0)? == 1, r.get::<_, String>(1)?)),
-            )
-            .unwrap_or((false, "opentimestamps".to_string()))
+                    sql_params![&btc, tenant_id],
+                    |r| Ok((r.get_i64(0)? == 1, r.get_string(1)?)),
+                )
+                .ok()
+                .flatten()
+                .unwrap_or((false, "opentimestamps".to_string()))
         };
 
         // Deprecated: see ADR-001 / proof_for_receipt.
