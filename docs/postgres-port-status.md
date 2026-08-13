@@ -66,7 +66,7 @@ acknowledgement.
 ## Sweep progress
 
 `agent_action.rs`, `agent_action_anchor.rs`, `agent.rs` and
-`middleware/audit_log.rs` are done (2026-08-13) — every
+`middleware/audit_log.rs` and `admin.rs` are done (2026-08-13) — every
 production statement in both now goes through `AnyConn`, and `rusqlite::params!`
 survives only in test fixtures. Together they cover the receipt write path, the
 receipt chain, the anon ring path, receipt verification, merkle batch
@@ -84,6 +84,18 @@ call site would have meant editing them all again at the switch — and
 `AnyConn::require` / `AnyConn::scalar_or` name the two recurring read shapes
 (required-row, and deliberately-best-effort). Converted files came out shorter
 than they started.
+
+`AnyRowGet` closed the last source of per-site work: row closures keep writing
+`row.get(3)?` and let the binding site's type drive the decode, as rusqlite does,
+so porting a query no longer means rewriting every field of its closure into a
+named getter — which was both tedious and a chance to pair the wrong column with
+the wrong type.
+
+Still unmodelled: **transactions**. `admin.rs` has two writes inside a
+`rusqlite::Transaction` (client creation plus its tenant binding, which must be
+atomic together). `AnyConn` has no transaction equivalent, so those two sites
+stay on rusqlite until it grows one. That is the next primitive to add, not more
+call-site work.
 
 Things to watch that `agent.rs` added:
 

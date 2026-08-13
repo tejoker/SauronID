@@ -273,6 +273,67 @@ pub enum AnyConn<'a> {
     Postgres(&'a mut postgres::Client),
 }
 
+/// A column type readable from either backend's row.
+///
+/// This exists so row closures can keep saying `row.get(3)?` and let the binding
+/// site's type drive the decode, exactly as rusqlite does. Without it, porting a
+/// query means rewriting every field of its closure into a named getter
+/// (`get_string`, `get_i64`, …), which is per-site work with a per-site chance
+/// of pairing the wrong column with the wrong type.
+pub trait FromAnyRow: Sized {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String>;
+}
+
+impl FromAnyRow for String {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_string(idx)
+    }
+}
+impl FromAnyRow for i64 {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_i64(idx)
+    }
+}
+impl FromAnyRow for bool {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_bool(idx)
+    }
+}
+impl FromAnyRow for f64 {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_f64(idx)
+    }
+}
+impl FromAnyRow for Vec<u8> {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_blob(idx)
+    }
+}
+impl FromAnyRow for Option<String> {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_opt_string(idx)
+    }
+}
+impl FromAnyRow for Option<i64> {
+    fn from_any_row(row: &dyn AnyRow, idx: usize) -> Result<Self, String> {
+        row.get_opt_i64(idx)
+    }
+}
+
+/// Inference-driven column access, mirroring `rusqlite::Row::get`.
+///
+/// Kept off [`AnyRow`] itself because a generic method would make the trait
+/// non-object-safe, and the query helpers hand closures a `&dyn AnyRow`.
+pub trait AnyRowGet {
+    fn get<T: FromAnyRow>(&self, idx: usize) -> Result<T, String>;
+}
+
+impl AnyRowGet for dyn AnyRow + '_ {
+    fn get<T: FromAnyRow>(&self, idx: usize) -> Result<T, String> {
+        T::from_any_row(self, idx)
+    }
+}
+
 /// Borrow a connection as an [`AnyConn`].
 ///
 /// The call-site sweep replaced `db.query_row(..)` with
