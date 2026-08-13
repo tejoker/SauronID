@@ -42,11 +42,12 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 
+use crate::any_db::{AsAnyConn, SqlValue};
 use crate::db::DbHandle;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::tenancy::TenantId;
 
@@ -379,14 +380,8 @@ fn write_db_sink(record: &AuditRecord) {
     // checkout (not a global mutex), so the head-read → insert must be serialised
     // explicitly to keep `seq` monotonic and gap-free.
     let _chain = AUDIT_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (last_seq, last_hash): (i64, String) = conn
-        .query_row(
-            "SELECT seq, entry_hash FROM security_audit_log
-             WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1",
-            [],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-        )
-        .unwrap_or((0, "genesis".to_string()));
+    let (last_seq, last_hash): (i64, String) =
+        chain_head_raw(&conn).unwrap_or((0, "genesis".to_string()));
     let seq = last_seq + 1;
     let key = audit_hmac_key();
     let entry_hash = compute_entry_hash(
@@ -399,19 +394,19 @@ fn write_db_sink(record: &AuditRecord) {
         &event_json,
         record.timestamp,
     );
-    if let Err(e) = conn.execute(
+    if let Err(e) = conn.any_conn().execute(
         "INSERT INTO security_audit_log
          (audit_id, tenant_id, event_type, event_json, timestamp, seq, prev_hash, entry_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            record.audit_id,
-            record.tenant_id,
-            record.event_type,
-            event_json,
+        sql_params![
+            &record.audit_id,
+            &record.tenant_id,
+            &record.event_type,
+            &event_json,
             record.timestamp,
             seq,
-            last_hash,
-            entry_hash
+            &last_hash,
+            &entry_hash
         ],
     ) {
         record_audit_sink_failure("db", &format!("insert: {e}"));
@@ -431,44 +426,55 @@ fn write_db_sink(record: &AuditRecord) {
 /// at time T cannot be changed after T, so any later rewrite contradicts a
 /// commitment the operator does not control.
 pub fn audit_chain_head(conn: &rusqlite::Connection) -> Option<(i64, String)> {
-    conn.query_row(
-        "SELECT seq, entry_hash FROM security_audit_log
+    chain_head_raw(conn).filter(|(_, hash)| !hash.is_empty())
+}
+
+/// The raw head row, shared by the append path and [`audit_chain_head`].
+///
+/// These were two copies of the same query with different fallbacks. They must
+/// agree — the appender links to whatever this returns, and an anchor commits
+/// it — so one of them drifting would break the chain silently.
+fn chain_head_raw(conn: &rusqlite::Connection) -> Option<(i64, String)> {
+    conn.any_conn()
+        .query_row(
+            "SELECT seq, entry_hash FROM security_audit_log
          WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1",
-        [],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-    )
-    .ok()
-    .filter(|(_, hash)| !hash.is_empty())
+            sql_params![],
+            |r| Ok((r.get_i64(0)?, r.get_string(1)?)),
+        )
+        .ok()
+        .flatten()
 }
 
 pub fn verify_audit_chain(conn: &rusqlite::Connection) -> Result<u64, String> {
     let key = audit_hmac_key();
-    let mut stmt = conn
-        .prepare(
+    let rows = conn
+        .any_conn()
+        .query_map(
             "SELECT seq, prev_hash, entry_hash, audit_id, tenant_id, event_type, event_json, timestamp
              FROM security_audit_log WHERE seq IS NOT NULL ORDER BY seq ASC",
+            sql_params![],
+            |r| {
+                Ok((
+                    r.get_i64(0)?,
+                    r.get_string(1)?,
+                    r.get_string(2)?,
+                    r.get_string(3)?,
+                    r.get_string(4)?,
+                    r.get_string(5)?,
+                    r.get_string(6)?,
+                    r.get_i64(7)?,
+                ))
+            },
         )
-        .map_err(|e| format!("prepare: {e}"))?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, i64>(7)?,
-            ))
-        })
         .map_err(|e| format!("query: {e}"))?;
     let mut expected_seq = 1i64;
     let mut prev = "genesis".to_string();
     let mut count = 0u64;
-    for row in rows {
-        let (seq, prev_hash, entry_hash, audit_id, tenant_id, event_type, event_json, ts) =
-            row.map_err(|e| format!("row: {e}"))?;
+    // query_map already collected and propagated decode failures, so a row that
+    // cannot be read aborts verification instead of being skipped — which for a
+    // tamper-evidence check is the whole point.
+    for (seq, prev_hash, entry_hash, audit_id, tenant_id, event_type, event_json, ts) in rows {
         if seq != expected_seq {
             return Err(format!(
                 "seq gap: expected {expected_seq}, got {seq} (row deleted/reordered)"
@@ -549,64 +555,40 @@ pub fn query_audit_events(
     let until = q.until.unwrap_or(i64::MAX);
     let event_type_filter = q.event_type.clone();
 
+    // Filters are optional, so the placeholder numbers depend on which ones are
+    // present. Building the argument list alongside the SQL numbers them from
+    // its length instead of by hand — the previous version wrote "?3" or "?4"
+    // for event_type depending on the tenant branch, and needed a four-arm match
+    // at the end purely because `params!` takes a fixed arity.
     let mut sql = String::from(
         "SELECT audit_id, tenant_id, event_type, event_json, timestamp \
          FROM security_audit_log WHERE timestamp >= ?1 AND timestamp <= ?2",
     );
+    let mut args: Vec<SqlValue> = vec![since.into(), until.into()];
     if tenant != "*" {
-        sql.push_str(" AND tenant_id = ?3");
+        args.push(tenant.into());
+        sql.push_str(&format!(" AND tenant_id = ?{}", args.len()));
     }
-    if event_type_filter.is_some() {
-        sql.push_str(if tenant != "*" {
-            " AND event_type = ?4"
-        } else {
-            " AND event_type = ?3"
-        });
+    if let Some(ref et) = event_type_filter {
+        args.push(et.as_str().into());
+        sql.push_str(&format!(" AND event_type = ?{}", args.len()));
     }
-    sql.push_str(" ORDER BY timestamp DESC LIMIT ");
-    sql.push_str(&limit.to_string());
+    args.push(limit.into());
+    sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT ?{}", args.len()));
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("audit query: prepare: {e}"))?;
-
-    let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<AuditRecord> {
-        let audit_id: String = row.get(0)?;
-        let tenant_id: String = row.get(1)?;
-        let event_type: String = row.get(2)?;
-        let event_json: String = row.get(3)?;
-        let timestamp: i64 = row.get(4)?;
-        let event: AuditEvent = serde_json::from_str(&event_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        Ok(AuditRecord {
-            audit_id,
-            tenant_id,
-            event_type,
-            event,
-            timestamp,
+    conn.any_conn()
+        .query_map(&sql, &args, |row| {
+            let event_json = row.get_string(3)?;
+            Ok(AuditRecord {
+                audit_id: row.get_string(0)?,
+                tenant_id: row.get_string(1)?,
+                event_type: row.get_string(2)?,
+                event: serde_json::from_str(&event_json)
+                    .map_err(|e| format!("event_json: {e}"))?,
+                timestamp: row.get_i64(4)?,
+            })
         })
-    };
-
-    let rows: Vec<AuditRecord> = match (tenant != "*", event_type_filter.as_deref()) {
-        (true, Some(et)) => stmt
-            .query_map(params![since, until, tenant, et], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-        (true, None) => stmt
-            .query_map(params![since, until, tenant], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-        (false, Some(et)) => stmt
-            .query_map(params![since, until, et], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-        (false, None) => stmt
-            .query_map(params![since, until], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-    };
-    Ok(rows)
+        .map_err(|e| format!("audit query: {e}"))
 }
 
 /// Axum middleware that records auth/policy failures after the handler

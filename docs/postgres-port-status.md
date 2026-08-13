@@ -65,7 +65,8 @@ acknowledgement.
 
 ## Sweep progress
 
-`agent_action.rs`, `agent_action_anchor.rs` and `agent.rs` are done (2026-08-13) — every
+`agent_action.rs`, `agent_action_anchor.rs`, `agent.rs` and
+`middleware/audit_log.rs` are done (2026-08-13) — every
 production statement in both now goes through `AnyConn`, and `rusqlite::params!`
 survives only in test fixtures. Together they cover the receipt write path, the
 receipt chain, the anon ring path, receipt verification, merkle batch
@@ -76,6 +77,13 @@ whose divergence would be most expensive, since they hold the audit evidence.
 active-key uniqueness checks, attestation-challenge issue and single-use consume,
 A-JWT issuance lookups, checksum rotation, agent read/list, revocation, and PoP
 challenge issuance.
+
+The sweep now has primitives rather than a repeated shape. `AsAnyConn::any_conn()`
+keeps the backend choice in one place — writing `AnyConn::Sqlite(&db)` at every
+call site would have meant editing them all again at the switch — and
+`AnyConn::require` / `AnyConn::scalar_or` name the two recurring read shapes
+(required-row, and deliberately-best-effort). Converted files came out shorter
+than they started.
 
 Things to watch that `agent.rs` added:
 
