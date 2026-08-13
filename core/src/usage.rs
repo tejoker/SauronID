@@ -321,7 +321,7 @@ pub fn verify_usage_report(
         sql_params![
             format!("usage|{key_image_hex}|{}", req.nonce),
             &req.receipt_id,
-            &now + 30 * 24 * 3600,
+            now + 30 * 24 * 3600,
             &now
         ],
     )

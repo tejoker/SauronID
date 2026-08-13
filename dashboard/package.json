@@ -31,7 +31,8 @@
   },
   "overrides": {
     "dompurify": "^3.4.12",
-    "postcss": "^8.5.19"
+    "postcss": "^8.5.19",
+    "nanoid": "^3.3.18"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.0",
@@ -45,7 +46,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "jsdom": "^25.0.1",
-    "puppeteer-core": "^23.11.1",
+    "puppeteer-core": "^25.6.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5",
     "vitest": "^4.1.10"
