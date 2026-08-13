@@ -66,7 +66,7 @@ acknowledgement.
 ## Sweep progress
 
 `agent_action.rs`, `agent_action_anchor.rs`, `agent.rs` and
-`middleware/audit_log.rs` and `admin.rs` are done (2026-08-13) — every
+`middleware/audit_log.rs`, `admin.rs` and `main.rs` are done (2026-08-13) — every
 production statement in both now goes through `AnyConn`, and `rusqlite::params!`
 survives only in test fixtures. Together they cover the receipt write path, the
 receipt chain, the anon ring path, receipt verification, merkle batch
@@ -91,11 +91,15 @@ so porting a query no longer means rewriting every field of its closure into a
 named getter — which was both tedious and a chance to pair the wrong column with
 the wrong type.
 
-Still unmodelled: **transactions**. `admin.rs` has two writes inside a
-`rusqlite::Transaction` (client creation plus its tenant binding, which must be
-atomic together). `AnyConn` has no transaction equivalent, so those two sites
-stay on rusqlite until it grows one. That is the next primitive to add, not more
-call-site work.
+`SqlValue` now converts from borrowed scalars and double references
+(`&&str`, `&&String`, `&i64`, …) as well as owned values. That exists purely so a
+mechanical `&x` can be applied to every parameter in a file without first knowing
+whether each one is owned or Copy — the alternative is a compile-fix cycle per
+call site, which is what the first three files cost.
+
+Previously unmodelled, now available: **transactions**. `AnyConn::transaction` issues BEGIN/COMMIT/ROLLBACK through the translated path,
+since `rusqlite::Connection::transaction()` needs `&mut Connection` and this
+handle only borrows one. Nesting is unsupported on purpose.
 
 Things to watch that `agent.rs` added:
 

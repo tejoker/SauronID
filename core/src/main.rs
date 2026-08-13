@@ -13,6 +13,8 @@ use curve25519_dalek::traits::Identity as _;
 use curve25519_dalek::{RistrettoPoint, Scalar};
 use hmac::{Hmac, Mac};
 use rusqlite::params;
+use sauron_core::any_db::{AnyRowGet, AsAnyConn};
+use sauron_core::sql_params;
 use sauron_core::compliance;
 use sauron_core::crypto_protocol::{partner_registration_payload, PartnerRegistrationInput};
 use sauron_core::issuer_runtime::IssuerVerifyError;
@@ -775,10 +777,10 @@ fn store_user_auth_credential(
     validate_user_auth_public_key(public_key_b64u)?;
     let st = state.read_or_recover();
     let db = st.db.lock().unwrap();
-    db.execute(
+    db.any_conn().execute(
         "INSERT OR IGNORE INTO user_auth_credentials
          (key_image_hex, ed25519_public_key_b64u, created_at) VALUES (?1, ?2, ?3)",
-        params![key_image_hex, public_key_b64u, now],
+        sql_params![&key_image_hex, &public_key_b64u, &now],
     )
     .map_err(|e| {
         (
@@ -786,13 +788,17 @@ fn store_user_auth_credential(
             format!("authentication credential conflict: {e}"),
         )
     })?;
-    let stored: String = db
-        .query_row(
-            "SELECT ed25519_public_key_b64u FROM user_auth_credentials WHERE key_image_hex = ?1",
-            params![key_image_hex],
-            |r| r.get(0),
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let stored: String = db.any_conn().require(
+        "SELECT ed25519_public_key_b64u FROM user_auth_credentials WHERE key_image_hex = ?1",
+        sql_params![&key_image_hex],
+        |r| r.get(0),
+        || {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stored credential unreadable".to_string(),
+            )
+        },
+    )?;
     if stored != public_key_b64u {
         return Err((
             StatusCode::CONFLICT,
@@ -800,10 +806,10 @@ fn store_user_auth_credential(
                 .into(),
         ));
     }
-    db.execute(
+    db.any_conn().execute(
         "INSERT OR IGNORE INTO user_auth_tenant_bindings
          (tenant_id, key_image_hex, created_at) VALUES (?1, ?2, ?3)",
-        params![tenant_id, key_image_hex, now],
+        sql_params![&tenant_id, &key_image_hex, &now],
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(())
@@ -867,15 +873,14 @@ async fn bank_register_user(
     {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let bank_exists: bool = db
-            .query_row(
+        let bank_exists: bool = db.any_conn()
+            .scalar_or(
                 "SELECT COUNT(*) FROM clients c
                  JOIN client_tenant_bindings b ON b.client_name = c.name
                  WHERE c.name = ?1 AND c.client_type = 'BANK' AND b.tenant_id = ?2",
-                params![payload.bank_client_name, tenant_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
+                sql_params![&payload.bank_client_name, &tenant_id],
+                |r| r.get::<i64>(0),
+                0)
             > 0;
         if !bank_exists {
             return Err((
@@ -961,10 +966,10 @@ async fn bank_register_user(
             .to_string();
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
-            db.execute(
+            db.any_conn().execute(
                 "INSERT OR REPLACE INTO bank_kyc_links (bank_customer_id, user_key_image, updated_at, metadata_json)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![bank_customer_id, payload.key_image_hex, now, metadata],
+                sql_params![&bank_customer_id, &payload.key_image_hex, &now, &metadata],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         }
@@ -1067,18 +1072,18 @@ async fn handle_register(
     let tenant_partner_ring: Vec<RistrettoPoint> = {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let mut stmt = db
-            .prepare(
+        let points = db
+            .any_conn()
+            .query_map(
                 "SELECT c.public_key_hex FROM clients c
                  JOIN client_tenant_bindings b ON b.client_name = c.name
                  WHERE b.tenant_id = ?1 AND c.client_type = 'FULL_KYC'
                  ORDER BY c.name",
+                sql_params![&tenant_id],
+                |r| r.get::<String>(0),
             )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let points = stmt
-            .query_map(params![tenant_id], |r| r.get::<_, String>(0))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .flatten()
+            .into_iter()
             .filter_map(|encoded| {
                 let bytes = hex::decode(encoded).ok()?;
                 let array: [u8; 32] = bytes.try_into().ok()?;
@@ -1363,9 +1368,9 @@ async fn dev_register_user(
             serde_json::json!({ "source": "dev", "site_name": payload.site_name }).to_string();
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.execute(
+        db.any_conn().execute(
             "INSERT OR IGNORE INTO bank_kyc_links (bank_customer_id, user_key_image, updated_at, metadata_json) VALUES (?1, ?2, ?3, ?4)",
-            params![bank_customer_id, identity.key_image_hex(), 1000000, metadata],
+            sql_params![&bank_customer_id, identity.key_image_hex(), 1000000, &metadata],
         ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
@@ -1400,18 +1405,17 @@ async fn dev_buy_tokens(
         return Err((StatusCode::FORBIDDEN, "Dev only".into()));
     }
     let db = state.read_or_recover().db.lock().unwrap();
-    db.execute(
+    db.any_conn().execute(
         "UPDATE clients SET tokens_b = tokens_b + ?1 WHERE name = ?2",
-        params![payload.amount, payload.site_name],
+        sql_params![&payload.amount, &payload.site_name],
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let new_tokens_b: i64 = db
-        .query_row(
-            "SELECT tokens_b FROM clients WHERE name = ?1",
-            params![payload.site_name],
-            |r| r.get(0),
-        )
-        .map_err(|_| (StatusCode::NOT_FOUND, "client not found".into()))?;
+    let new_tokens_b: i64 = db.any_conn().require(
+        "SELECT tokens_b FROM clients WHERE name = ?1",
+        sql_params![&payload.site_name],
+        |r| r.get(0),
+        || (StatusCode::NOT_FOUND, "client not found".to_string()),
+    )?;
     Ok(Json(DevBuyTokensResponse {
         message: "ok".into(),
         new_tokens_b,
@@ -1562,15 +1566,15 @@ async fn dev_leash_demo(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.execute(
+        db.any_conn().execute(
             "INSERT OR REPLACE INTO bank_kyc_links
              (bank_customer_id, user_key_image, updated_at, metadata_json)
              VALUES (?1, ?2, ?3, ?4)",
-            params![
-                format!("DEV-{}", human_key_image),
-                human_key_image,
-                now,
-                serde_json::json!({ "source": "dev_leash_demo" }).to_string()
+            sql_params![
+                format!("DEV-{}", &human_key_image),
+                &human_key_image,
+                &now,
+                &serde_json::json!({ "source": "dev_leash_demo" }).to_string()
             ],
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1578,20 +1582,20 @@ async fn dev_leash_demo(
             (&agent_id, &agent_checksum, &agent_identity),
             (&outsider_agent_id, &outsider_checksum, &outsider_identity),
         ] {
-            db.execute(
+            db.any_conn().execute(
                 "INSERT OR REPLACE INTO agents
                  (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u)
                  VALUES (?1, ?2, ?3, ?4, 'delegated_bank', ?5, ?6, ?7, ?8, 0, NULL, 0, ?9, 'dev-pop-public-key')",
-                params![
-                    row_agent_id,
-                    human_key_image,
-                    checksum,
-                    intent_json,
+                sql_params![
+                    &row_agent_id,
+                    &human_key_image,
+                    &checksum,
+                    &intent_json,
                     identity.public_hex(),
                     identity.key_image_hex(),
-                    now,
+                    &now,
                     now + 600,
-                    pop_jkt,
+                    &pop_jkt,
                 ],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1884,9 +1888,9 @@ async fn dev_leash_demo(
     {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        db.execute(
+        db.any_conn().execute(
             "UPDATE agents SET revoked = 1 WHERE agent_id = ?1",
-            params![agent_id],
+            sql_params![&agent_id],
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -1905,12 +1909,11 @@ async fn dev_leash_demo(
         let signature_valid = agent_action::verify_receipt_signature(&st.jwt_secret, &receipt);
         let stored = {
             let db = st.db.lock().unwrap();
-            db.query_row(
+            db.any_conn().scalar_or(
                 "SELECT COUNT(*) FROM agent_action_receipts WHERE receipt_id = ?1 AND action_hash = ?2 AND signature = ?3",
-                params![receipt.receipt_id, receipt.action_hash, receipt.signature],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
+                sql_params![&receipt.receipt_id, &receipt.action_hash, &receipt.signature],
+                |r| r.get::<i64>(0),
+                0)
                 > 0
         };
         serde_json::json!({
@@ -2216,12 +2219,12 @@ async fn delegated_agent_binding_middleware(
         ) = {
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
-            db.query_row(
+            db.any_conn().require(
                 "SELECT human_key_image, revoked, expires_at, public_key_hex, IFNULL(pop_jkt, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
-                params![tenant_id, claim_agent_id],
+                sql_params![&tenant_id, &claim_agent_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Agent not found".to_string()))?
+                || (StatusCode::UNAUTHORIZED, "Agent not found".to_string()),
+            )?
         };
 
         if revoked != 0 || expires_at < now || db_human != claim_human_key_image {
@@ -2359,13 +2362,12 @@ async fn kyc_request(
     {
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let exists: bool = db
-            .query_row(
+        let exists: bool = db.any_conn()
+            .scalar_or(
                 "SELECT COUNT(*) FROM clients WHERE name = ?1 AND client_type = 'ZKP_ONLY'",
-                params![payload.site_name],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
+                sql_params![&payload.site_name],
+                |r| r.get::<i64>(0),
+                0)
             > 0;
         if !exists {
             return Err((
@@ -2414,9 +2416,9 @@ async fn kyc_request(
             })?;
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
-        let _ = db.execute(
+        let _ = db.any_conn().execute(
             "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1,'KYC_REQUEST','PENDING',?2)",
-            params![ts, format!("site={} request_id={}", payload.site_name, request_id)],
+            sql_params![&ts, format!("site={} &request_id={}", &payload.site_name, &request_id)],
         );
     }
 
@@ -2579,9 +2581,9 @@ async fn kyc_consent(
         {
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
-            let _ = db.execute(
+            let _ = db.any_conn().execute(
                 "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1,'KYC_CONSENT','OK',?2)",
-                params![ts, format!("site={} user={}", site_name, &hex_ki[..16])],
+                sql_params![ts, format!("site={} user={}", site_name, &hex_ki[..16])],
             );
         }
     }
@@ -2832,10 +2834,10 @@ async fn kyc_retrieve(
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
 
-        let charged = db
+        let charged = db.any_conn()
             .execute(
                 "UPDATE clients SET tokens_b = tokens_b - 1 WHERE name = ?1 AND tokens_b > 0",
-                params![payload.site_name],
+                sql_params![&payload.site_name],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if charged == 0 {
@@ -2848,13 +2850,12 @@ async fn kyc_retrieve(
             ));
         }
 
-        let tokens_b_remaining: i64 = db
-            .query_row(
+        let tokens_b_remaining: i64 = db.any_conn()
+            .scalar_or(
                 "SELECT tokens_b FROM clients WHERE name = ?1",
-                params![payload.site_name],
+                sql_params![&payload.site_name],
                 |r| r.get(0),
-            )
-            .unwrap_or(0);
+                0);
 
         serde_json::json!({
             "charged": true,
@@ -2883,9 +2884,9 @@ async fn kyc_retrieve(
             } else {
                 "kyc_human"
             };
-            let _ = db.execute(
+            let _ = db.any_conn().execute(
                 "INSERT INTO api_usage (client_name, action, is_agent, timestamp) VALUES (?1,?2,?3,?4)",
-                params![payload.site_name, action, is_agent_int, ts],
+                sql_params![&payload.site_name, &action, &is_agent_int, &ts],
             );
         }
         st.log(
@@ -2951,11 +2952,15 @@ async fn kyc_retrieve(
 
         // If agent-issued consent, verify agent ring membership
         let (agent_in_ring, agent_hex, agent_assurance) = if let Some(ref aid) = issuing_agent_id {
-            let agent_row: Option<(String, String)> = db.query_row(
-                "SELECT public_key_hex, assurance_level FROM agents WHERE tenant_id = ?1 AND agent_id = ?2 AND revoked = 0",
-                params![tenant_id, aid],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            ).ok();
+            let agent_row: Option<(String, String)> = db
+                .any_conn()
+                .query_row(
+                    "SELECT public_key_hex, assurance_level FROM agents WHERE tenant_id = ?1 AND agent_id = ?2 AND revoked = 0",
+                    sql_params![&tenant_id, aid],
+                    |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?)),
+                )
+                .ok()
+                .flatten();
             let in_ring = if let Some((ref hex, _)) = agent_row {
                 if !hex.is_empty() {
                     if let Ok(bytes) = hex::decode(hex) {

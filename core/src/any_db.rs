@@ -65,6 +65,45 @@ impl From<String> for SqlValue {
         SqlValue::Text(v)
     }
 }
+/// Borrowed scalars, for the same reason as `&&str` below: a mechanical `&x`
+/// over every parameter must not have to know whether `x` is owned or Copy.
+impl From<&i64> for SqlValue {
+    fn from(v: &i64) -> Self {
+        SqlValue::Int(*v)
+    }
+}
+impl From<&i32> for SqlValue {
+    fn from(v: &i32) -> Self {
+        SqlValue::Int(*v as i64)
+    }
+}
+impl From<&f64> for SqlValue {
+    fn from(v: &f64) -> Self {
+        SqlValue::Real(*v)
+    }
+}
+impl From<&bool> for SqlValue {
+    fn from(v: &bool) -> Self {
+        SqlValue::Bool(*v)
+    }
+}
+
+/// Accepting a reference-to-reference matters for the call-site sweep: it lets a
+/// mechanical `&x` be applied to every parameter without first knowing whether
+/// `x` is a `String` (where the borrow is required, since `SqlValue` takes
+/// ownership) or a `&str` (where it would otherwise become `&&str` and fail).
+impl From<&&str> for SqlValue {
+    fn from(v: &&str) -> Self {
+        SqlValue::Text((*v).to_string())
+    }
+}
+
+impl From<&&String> for SqlValue {
+    fn from(v: &&String) -> Self {
+        SqlValue::Text((*v).clone())
+    }
+}
+
 impl From<&String> for SqlValue {
     fn from(v: &String) -> Self {
         SqlValue::Text(v.clone())
