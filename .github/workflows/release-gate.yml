@@ -60,11 +60,23 @@ jobs:
       - name: JavaScript dependency audits
         run: bash scripts/ci/audit-npm.sh
 
+      # Downloads toolchains from RISC Zero's servers, so it fails on a bad
+      # network minute rather than a bad commit — it passed on the previous run
+      # and failed on the next with no relevant change. Retried rather than left
+      # to chance, because a flaky gate teaches people to ignore red.
       - name: Install pinned RISC Zero guest toolchain
         run: |
           cargo install rzup --version 0.5.2 --locked --no-default-features --features cli,install
-          rzup install rust 1.97.0
-          rzup install cargo-risczero 3.0.6
+          for target in "rust 1.97.0" "cargo-risczero 3.0.6"; do
+            ok=0
+            for attempt in 1 2 3; do
+              # shellcheck disable=SC2086
+              if rzup install $target; then ok=1; break; fi
+              echo "rzup install $target failed (attempt $attempt/3); retrying in $((attempt * 15))s" >&2
+              sleep $((attempt * 15))
+            done
+            [ "$ok" = 1 ] || { echo "rzup install $target failed after 3 attempts" >&2; exit 1; }
+          done
 
       - name: Reproduce transparent guests and test customer verifier
         env:

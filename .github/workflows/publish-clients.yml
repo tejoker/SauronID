@@ -31,6 +31,11 @@ on:
 
 permissions:
   contents: read
+  # npm provenance: publishes a signed, verifiable link from the package on the
+  # registry back to the exact workflow run and commit that built it. Same
+  # property the released images get from keyless signing, and it shows on the
+  # npm page as a "Built and signed on GitHub Actions" badge.
+  id-token: write
 
 jobs:
   # The full gate, same as a release: clippy, fmt, the Rust suite, both SDK
@@ -70,5 +75,5 @@ jobs:
             exit 1
           }
           npm pack
-          npm publish ./*.tgz --access public --tag "$DIST_TAG"
+          npm publish ./*.tgz --access public --provenance --tag "$DIST_TAG"
           echo "published @sauronid/mcp-server to dist-tag $DIST_TAG"
