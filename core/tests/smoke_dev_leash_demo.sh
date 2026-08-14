@@ -32,7 +32,11 @@ SERVER_PID="$!"
 
 ready=0
 for _ in $(seq 1 90); do
-  if curl -sf "${API_URL}/admin/stats" -H "x-admin-key: ${SAURON_ADMIN_KEY}" >/dev/null 2>&1; then
+  # /healthz, not /admin/stats. The latter is a deployment-global view that
+  # answers 401 to a tenant-scoped admin key, so it can never be a liveness
+  # probe here — the loop just burned its retries on 401s and reported "core did
+  # not become ready" while the core was up and healthy the whole time.
+  if curl -sf "${API_URL}/healthz" >/dev/null 2>&1; then
     ready=1
     break
   fi
