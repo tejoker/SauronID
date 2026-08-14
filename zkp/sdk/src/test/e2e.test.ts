@@ -27,6 +27,27 @@ import {
     verifyCredentialProof,
     CredentialClaims,
 } from "../index";
+import * as fs from "fs";
+import * as path from "path";
+
+/**
+ * Groth16 proving artifacts (`*.wasm`, `*_final.zkey`) are build outputs, not
+ * source: they are produced by zkp/scripts/compile.sh plus the dev ceremony, and
+ * they are gitignored. A checkout therefore has the circuits but not the keys,
+ * so the two proof tests below cannot run there.
+ *
+ * They are skipped ONLY when ZKP_ALLOW_MISSING_ARTIFACTS=1 is set explicitly, so
+ * a machine that is supposed to have the keys still fails loudly if they vanish.
+ * Everything that does not need proving keys — EdDSA, the Poseidon Merkle tree,
+ * credential construction — runs either way.
+ */
+function provingArtifactsPresent(): boolean {
+    const buildDir = path.resolve(__dirname, "../../../build");
+    return (
+        fs.existsSync(path.join(buildDir, "AgeVerification_js", "AgeVerification.wasm")) &&
+        fs.existsSync(path.join(buildDir, "keys", "AgeVerification_final.zkey"))
+    );
+}
 
 let passed = 0;
 let failed = 0;
@@ -243,8 +264,25 @@ async function main() {
         const { vc, claims } = await testCredential(issuerKeys);
 
         // ZK proof tests (require compiled circuits + trusted setup)
-        await testAgeProof(issuerKeys);
-        await testFullCredentialProof(issuerKeys);
+        if (provingArtifactsPresent()) {
+            await testAgeProof(issuerKeys);
+            await testFullCredentialProof(issuerKeys);
+        } else if (process.env.ZKP_ALLOW_MISSING_ARTIFACTS === "1") {
+            console.log("\n══════════════════════════════════════════════════");
+            console.log("  SKIPPED — Groth16 proving artifacts absent");
+            console.log("  Not covered by this run:");
+            console.log("    • age proof generation + verification");
+            console.log("    • full credential proof generation + verification");
+            console.log("  To cover them: zkp/scripts/compile.sh, then");
+            console.log("  zkp/ceremony/dev_setup.sh, then re-run.");
+            console.log("══════════════════════════════════════════════════");
+        } else {
+            throw new Error(
+                "Groth16 proving artifacts missing. Build them (zkp/scripts/compile.sh " +
+                    "+ zkp/ceremony/dev_setup.sh), or set ZKP_ALLOW_MISSING_ARTIFACTS=1 " +
+                    "to run only the key-free tests."
+            );
+        }
 
         console.log("\n══════════════════════════════════════════════════");
         console.log(`  Results: ${passed} passed, ${failed} failed`);
