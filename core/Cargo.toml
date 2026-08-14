@@ -66,6 +66,21 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["disabl
 # deny.toml sets `wildcards = "deny"`.
 sauron-transparent-types = { path = "../transparent-zk/types", version = "0.1.0" }
 
+[profile.release]
+# Strip the symbol table from shipped binaries. Cargo does not do this by
+# default: a release build carries no DWARF, but .symtab still names every
+# function, so `nm` on the published image listed 2,376 sauron_core symbols —
+# policy::invariants::daily_budget::DailyBudgetCheck,
+# policy::invariants::pii_detection::PiiDetectionCheck and the rest. That is not
+# source, but it is a labelled map of the engine's internals handed to anyone who
+# pulls the container.
+#
+# "symbols" removes the symbol table and any debug info. Panics still unwind and
+# the catch-panic middleware still works; only the symbolised backtrace is lost,
+# which is an acceptable trade for a binary distributed to customers — the
+# structured audit log, not a stack trace, is how failures are diagnosed here.
+strip = "symbols"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 
