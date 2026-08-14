@@ -60,7 +60,10 @@ mkdir -p "$repo/transparent-zk"
 tar -c -C "$ROOT" \
   --exclude='target' --exclude='target-*' --exclude='.git' \
   transparent-zk | tar -x -C "$repo" --strip-components=0
-cp "$ROOT/LICENSE" "$repo/LICENSE"
+# The root LICENSE is now a map that marks most of the repository proprietary.
+# The mirror must carry the Apache text itself, or the published guest source
+# would ship under terms that contradict the whole point of publishing it.
+cp "$ROOT/LICENSE-APACHE-2.0" "$repo/LICENSE"
 sed "s/@@VERSION@@/${VERSION}/g" "$ROOT/scripts/release/mirror-README.md" \
   >"$repo/README.md"
 

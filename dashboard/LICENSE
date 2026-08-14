@@ -1,0 +1,22 @@
+SauronID Dashboard — proprietary
+================================
+
+Copyright (c) 2025-2026 Nicolas Bigeard. All rights reserved.
+
+This directory contains the SauronID operator console (Mandate Console). No licence is
+granted to use, copy, modify, merge, publish, distribute, sublicense or sell it,
+in source or binary form, except under a separate written agreement.
+
+Possession of a copy — including a container image, a compiled binary or source
+obtained from any source — grants no rights by itself.
+
+Contact: nicolas@eurotech-federation.com
+
+Not Apache-2.0
+--------------
+
+This component was distributed under Apache-2.0 until 2026-08-14, and copies
+obtained before that date keep that grant, which is irrevocable by its own terms.
+This version and every subsequent version are proprietary. See ../LICENSE for the
+repository-wide map and ../LICENSE-APACHE-2.0 for the components that remain
+open.

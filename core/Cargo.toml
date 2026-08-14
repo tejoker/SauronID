@@ -2,7 +2,12 @@
 name = "sauron-core"
 version = "0.2.0"
 edition = "2021"
-license = "Apache-2.0"
+# Proprietary: the gateway is the product. See core/LICENSE and the map in
+# ../LICENSE. `publish = false` is not just hygiene — cargo-deny's licence check
+# walks workspace members too, and [licenses.private] ignore lets it skip crates
+# that are never published rather than demanding a licence from its allowlist.
+license-file = "LICENSE"
+publish = false
 default-run = "sauron-core"
 
 [dependencies]

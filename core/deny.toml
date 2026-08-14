@@ -55,6 +55,12 @@ allow = [
 confidence-threshold = 0.8
 exceptions = []
 
+# The allowlist above governs DEPENDENCIES. sauron-core itself is proprietary
+# (core/LICENSE) and never published to a registry, so it is skipped rather than
+# being forced to declare one of the permissive licences a dependency must use.
+[licenses.private]
+ignore = true
+
 [[licenses.clarify]]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
