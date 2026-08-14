@@ -1536,6 +1536,13 @@ async fn dev_leash_demo(
         h.update(agent_id.as_bytes());
         hex::encode(h.finalize())
     };
+    let decoy_agent_id = format!("dev_decoy_{}", sauron_core::ajwt_support::random_hex_32());
+    let decoy_checksum = {
+        let mut h = Sha256::new();
+        h.update(b"dev-leash-demo-decoy|");
+        h.update(decoy_agent_id.as_bytes());
+        hex::encode(h.finalize())
+    };
     let outsider_checksum = {
         let mut h = Sha256::new();
         h.update(b"dev-leash-demo-outsider|");
@@ -1552,7 +1559,20 @@ async fn dev_leash_demo(
     })
     .to_string();
     let pop_jkt = "dev-leash-pop-thumbprint";
-    let ring_members = vec![agent_identity.public, decoy_identity.public];
+    // The server rebuilds this ring from the database with `ORDER BY agent_id`,
+    // and an LSAG signature is order-sensitive — a ring with the same members in
+    // a different order does not verify. Derive both the ring and the signer's
+    // index from that same ordering instead of assuming the agent comes first.
+    let mut ring_entries = [
+        (agent_id.clone(), agent_identity.public),
+        (decoy_agent_id.clone(), decoy_identity.public),
+    ];
+    ring_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let ring_members: Vec<_> = ring_entries.iter().map(|(_, point)| *point).collect();
+    let signer_index = ring_entries
+        .iter()
+        .position(|(id, _)| id == &agent_id)
+        .expect("demo agent is a ring member");
     {
         let repo = state.read_or_recover().repo.clone();
         repo.upsert_user(
@@ -1581,24 +1601,63 @@ async fn dev_leash_demo(
                 ],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        for (row_agent_id, checksum, identity) in [
-            (&agent_id, &agent_checksum, &agent_identity),
-            (&outsider_agent_id, &outsider_checksum, &outsider_identity),
+        // The authoritative ring is rebuilt from the database by
+        // agent_action::validate_agent_action — every active agent of the tenant
+        // with a non-empty public_key_hex. So the rows here MUST reproduce the
+        // ring these proofs are signed against, `[agent, decoy]`:
+        //
+        //  * the decoy was never inserted, so the reconstructed ring was missing
+        //    a member and every valid signature failed to verify;
+        //  * the outsider was inserted as fully active, so it was IN the
+        //    reconstructed ring — the one thing the out-of-ring case needs it not
+        //    to be.
+        //
+        // The outsider therefore registers with an empty public_key_hex: still a
+        // real agent record, deliberately without a ring key. That is exactly
+        // what "not in the ring" means once the ring is defined by registration.
+        for (row_agent_id, checksum, public_key_hex, ring_key_image_hex) in [
+            (
+                &agent_id,
+                &agent_checksum,
+                agent_identity.public_hex(),
+                agent_identity.key_image_hex(),
+            ),
+            (
+                &decoy_agent_id,
+                &decoy_checksum,
+                decoy_identity.public_hex(),
+                decoy_identity.key_image_hex(),
+            ),
+            (
+                &outsider_agent_id,
+                &outsider_checksum,
+                String::new(),
+                outsider_identity.key_image_hex(),
+            ),
         ] {
             db.any_conn().execute(
+                // pop_public_key_b64u must differ per agent: there is a partial
+                // unique index on (tenant_id, pop_public_key_b64u) for active
+                // rows, so two demo agents sharing one literal key made the
+                // second INSERT OR REPLACE delete the first. The demo then
+                // validated against an agent that no longer existed and reported
+                // "Agent not found" for its own happy path, while every negative
+                // case still passed — a leash that denies everything looks
+                // healthy until you check what it allows.
                 "INSERT OR REPLACE INTO agents
                  (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u)
-                 VALUES (?1, ?2, ?3, ?4, 'delegated_bank', ?5, ?6, ?7, ?8, 0, NULL, 0, ?9, 'dev-pop-public-key')",
+                 VALUES (?1, ?2, ?3, ?4, 'delegated_bank', ?5, ?6, ?7, ?8, 0, NULL, 0, ?9, ?10)",
                 sql_params![
                     &row_agent_id,
                     &human_key_image,
                     &checksum,
                     &intent_json,
-                    identity.public_hex(),
-                    identity.key_image_hex(),
+                    &public_key_hex,
+                    &ring_key_image_hex,
                     &now,
                     now + 600,
                     &pop_jkt,
+                    format!("dev-pop-public-key-{row_agent_id}"),
                 ],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1651,7 +1710,7 @@ async fn dev_leash_demo(
     let valid_proof = dev_action_proof(
         &agent_identity,
         &ring_members,
-        0,
+        signer_index,
         &agent_id,
         &human_key_image,
         &valid_token,
@@ -1669,6 +1728,16 @@ async fn dev_leash_demo(
         "demo_merchant",
         4200,
     );
+    // Surface WHY the happy path failed. Swallowing it with `.ok()` made the
+    // demo report `valid_leash_passes: false` with no way to tell whether the
+    // signature, the ring, the policy or the DB write rejected it.
+    let valid_error = valid_result
+        .as_ref()
+        .err()
+        .map(|(c, m)| format!("{c}: {m}"));
+    if let Some(ref why) = valid_error {
+        tracing::error!(target: "sauron::dev_leash", error = %why, "valid leash path was rejected");
+    }
     let valid_receipt = valid_result.ok().map(|v| v.receipt);
     let valid_leash_passes = valid_receipt.is_some();
 
@@ -1688,7 +1757,7 @@ async fn dev_leash_demo(
     let mut bad_sig_proof = dev_action_proof(
         &agent_identity,
         &ring_members,
-        0,
+        signer_index,
         &agent_id,
         &human_key_image,
         &bad_sig_token,
@@ -1720,7 +1789,7 @@ async fn dev_leash_demo(
     let mut tampered_amount_proof = dev_action_proof(
         &agent_identity,
         &ring_members,
-        0,
+        signer_index,
         &agent_id,
         &human_key_image,
         &tamper_token,
@@ -1752,7 +1821,7 @@ async fn dev_leash_demo(
     let wrong_merchant_proof = dev_action_proof(
         &agent_identity,
         &ring_members,
-        0,
+        signer_index,
         &agent_id,
         &human_key_image,
         &wrong_merchant_token,
@@ -1783,7 +1852,7 @@ async fn dev_leash_demo(
     let replay_proof = dev_action_proof(
         &agent_identity,
         &ring_members,
-        0,
+        signer_index,
         &agent_id,
         &human_key_image,
         &replay_token,
@@ -1878,7 +1947,7 @@ async fn dev_leash_demo(
     let revoked_proof = dev_action_proof(
         &agent_identity,
         &ring_members,
-        0,
+        signer_index,
         &agent_id,
         &human_key_image,
         &revoked_token,
@@ -1933,6 +2002,7 @@ async fn dev_leash_demo(
 
     Ok(Json(serde_json::json!({
         "valid_leash_passes": valid_leash_passes,
+        "valid_leash_error": valid_error,
         "missing_signature_fails": missing_signature_fails,
         "bad_signature_fails": bad_signature_fails,
         "tampered_amount_fails": tampered_amount_fails,
