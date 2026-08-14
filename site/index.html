@@ -57,6 +57,9 @@
   footer { padding: 48px 0 64px; text-align: center; font-size: 0.9rem; opacity: .7; }
   footer a { color: var(--ice); }
   a:focus-visible, .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .snippet{background:#0b0f14;border:1px solid #1b2733;border-radius:8px;
+    padding:.75rem .9rem;font-size:.78rem;line-height:1.5;overflow-x:auto;
+    color:#c9d6e2;margin-top:.75rem;white-space:pre;}
 </style>
 </head>
 <body>
@@ -68,8 +71,8 @@
     every call signed, every policy enforced server-side, every action in a
     tamper-evident receipt log you can prove things about.</p>
     <div class="cta-row">
-      <a class="btn btn-primary" href="https://github.com/tejoker/HackNation2026#quickstart">Build from source</a>
-      <a class="btn btn-ghost" href="https://github.com/tejoker/HackNation2026">GitHub</a>
+      <a class="btn btn-primary" href="#get">Get SauronID</a>
+      <a class="btn btn-ghost" href="https://github.com/tejoker/SauronID">GitHub</a>
     </div>
   </header>
 
@@ -84,6 +87,39 @@ agent.authorize_payment(amount_usd=4_800)
 agent.authorize_payment(amount_usd=120)
 <span class="ok">ALLOWED  authorization_id=auth_9f2c...  receipt anchored</span></pre>
     </div>
+  </section>
+
+
+  <section aria-label="Get SauronID" id="get">
+    <h2>Run it</h2>
+    <div class="cols">
+      <div class="card">
+        <h3>1 · Start the gateway</h3>
+        <p>Pull the signed image and run it. Verify what you pulled before you
+        run it &mdash; the digest is signed by the release workflow.</p>
+<pre class="snippet">docker run -p 3001:3001 \
+  ghcr.io/tejoker/sauronid/core:VERSION</pre>
+      </div>
+      <div class="card">
+        <h3>2 · Point your agent at it</h3>
+        <p>One MCP server covers Claude, Codex, Gemini, Cursor and anything else
+        that speaks MCP. Same three lines in each client's config.</p>
+<pre class="snippet">{"mcpServers":{"sauronid":{
+  "command":"npx",
+  "args":["-y","@sauronid/mcp-server"],
+  "env":{"SAURONID_URL":"http://localhost:3001"}}}}</pre>
+      </div>
+      <div class="card">
+        <h3>Or use an SDK</h3>
+        <p>Same signed-call flow in three languages, plus adapters for LangChain,
+        LlamaIndex, CrewAI, AutoGen, OpenAI and Anthropic tool use.</p>
+<pre class="snippet">pip install sauronid-client
+npm i @sauronid/agentic</pre>
+      </div>
+    </div>
+    <p class="sub" style="margin-top:1.5rem">Verify the image before running it,
+    and reproduce the zero-knowledge guest IDs from published source:
+    <a href="https://github.com/tejoker/SauronID/blob/main/docs/verifying-what-you-run.md" style="color:var(--ice)">verification guide</a>.</p>
   </section>
 
   <section aria-label="How it works">
@@ -127,9 +163,9 @@ python examples/python-quickstart/main.py</pre>
   </section>
 
   <footer>
-    <a href="https://github.com/tejoker/HackNation2026">Source</a> ·
-    <a href="https://github.com/tejoker/HackNation2026/blob/main/docs/threat-model.md">Threat model</a> ·
-    <a href="https://github.com/tejoker/HackNation2026/blob/main/SECURITY.md">Security policy</a>
+    <a href="https://github.com/tejoker/SauronID">Source</a> ·
+    <a href="https://github.com/tejoker/SauronID/blob/main/docs/threat-model.md">Threat model</a> ·
+    <a href="https://github.com/tejoker/SauronID/blob/main/SECURITY.md">Security policy</a>
   </footer>
 </main>
 </body>

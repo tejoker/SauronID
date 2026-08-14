@@ -2,7 +2,7 @@
 set -euo pipefail
 
 OWNER="${OWNER:-tejoker}"
-REPO="${REPO:-HackNation2026}"
+REPO="${REPO:-SauronID}"
 # confidence-gate is gone: it ran core/tests/run_confidence_suite.sh, which is
 # untracked with the rest of the ZKP issuer-dependent e2e surface.
 CHECKS="${CHECKS:-release-gate,test-sqlite,test-postgres,kya-e2e}"

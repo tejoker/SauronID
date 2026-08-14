@@ -1,0 +1,74 @@
+name: Publish clients
+
+# Why this is separate from release-publish.yml.
+#
+# Every job in release-publish depends on `independent-signoff`, which requires a
+# signed external assessment whose scope is "crypto_protocols" plus
+# "deployment_penetration_test" — that is, the GATEWAY. Until that assessment
+# exists, nothing can be published at all, which also blocks the client packages
+# people need in order to try SauronID.
+#
+# The clients are not the audited surface. `@sauronid/mcp-server` is a thin stdio
+# process: all seven of its tools issue HTTP calls to SAURONID_URL, and it holds
+# no keys, evaluates no policy and enforces nothing. It is inert without a
+# gateway. Gating its publication on a gateway penetration test buys no safety
+# and blocks adoption.
+#
+# So: clients publish from a green Release Gate. Images, workstation binaries and
+# anything that carries enforcement still publish only from release-publish.yml,
+# behind the assessment. Do not move gateway artefacts into this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: 'npm dist-tag (use "next" for pre-1.0 or unproven builds)'
+        required: true
+        default: next
+        type: string
+  push:
+    tags: ['clients-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # The full gate, same as a release: clippy, fmt, the Rust suite, both SDK
+  # suites, the transparent-guest reproduction and the empirical attack suite.
+  # A client package is never published from a tree that cannot pass it.
+  gate:
+    uses: ./.github/workflows/release-gate.yml
+
+  mcp-server:
+    name: Publish @sauronid/mcp-server
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Build and test
+        working-directory: mcp-server
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Publish
+        working-directory: mcp-server
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # A manual run picks its own dist-tag; a clients-v* tag publishes to
+          # `next` rather than `latest`, so `npm i @sauronid/mcp-server` cannot
+          # silently resolve to an unaudited build.
+          DIST_TAG: ${{ inputs.dist_tag || 'next' }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || {
+            echo "NPM_TOKEN is not set — add it as a repository secret" >&2
+            exit 1
+          }
+          npm pack
+          npm publish ./*.tgz --access public --tag "$DIST_TAG"
+          echo "published @sauronid/mcp-server to dist-tag $DIST_TAG"

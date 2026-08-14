@@ -74,7 +74,7 @@ const results = await dispatchToolUseBlocks(toolUseBlocks, hostTools, { enforcer
 
 ## Docs
 
-- Repository: https://github.com/tejoker/HackNation2026 (`agentic/`)
+- Repository: https://github.com/tejoker/SauronID (`agentic/`)
 - Threat model, multi-tenancy, and stats submission: `docs/` in the repo
 - Python client with identical wire semantics: `clients/python/`
 

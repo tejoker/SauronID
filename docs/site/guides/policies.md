@@ -4,7 +4,7 @@ The Policy DSL is a declarative YAML/JSON document describing what an agent
 may do: tool allowlist, budget cap, rate limit, time window, data scope,
 required signatures. This page is the operational bridge — upload, bind,
 evaluate, enforce. The full language reference lives in
-[`docs/policy-dsl.md`](https://github.com/tejoker/HackNation2026/blob/main/docs/policy-dsl.md).
+[`docs/policy-dsl.md`](https://github.com/tejoker/SauronID/blob/main/docs/policy-dsl.md).
 
 ## Write
 
