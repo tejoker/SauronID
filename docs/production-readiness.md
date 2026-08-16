@@ -69,34 +69,68 @@ by nothing.
 
 Setting `SAURON_DB_BACKEND=postgres` does **not** move the deployment off
 SQLite, and the single-node acknowledgement is required with or without it.
-Measure it from the source rather than from intent:
 
-```bash
-# Call sites that work against either backend
-grep -rc '\.any_conn()' core/src --include='*.rs' | awk -F: '{n+=$2} END {print "dual-backend:", n}'
-# Call sites still bound to rusqlite
-grep -rcE '\b(db|conn|tx)\.(query_row|execute|prepare|query_map|execute_batch)\(' core/src --include='*.rs' \
-  | awk -F: '{n+=$2} END {print "sqlite-only: ", n}'
+The gap is **not** where you would guess, and counting call sites by eye gets it
+wrong — an earlier revision of this document said "59% converted" on exactly
+that mistake. The SQL itself is essentially done. What is missing is dispatch.
+
+**Writing portable SQL and reaching Postgres are two different things.** There
+are two ways to obtain an `AnyConn`, they look identical at the call site, and
+only one of them can ever produce a Postgres connection:
+
+```rust
+// Dispatches. Yields AnyConn::Postgres when the pg pool exists.
+st.db.any(|conn| { conn.query_row(...) })?;
+
+// Does NOT dispatch. `impl AsAnyConn for rusqlite::Connection` hard-returns
+// AnyConn::Sqlite, so this is SQLite regardless of SAURON_DB_BACKEND.
+let db = st.db.lock().unwrap();
+db.any_conn().query_row(...)?;
 ```
 
-At the time of writing that is 189 dual-backend against 131 SQLite-only —
-roughly 59% converted. Schema parity is already complete: all 55 tables exist
-in `migrations/postgres/`, so the gap is entirely in which call sites use the
-abstraction, not in what Postgres can store.
+The real number is the caller count of `DbHandle::any`, and **it is zero.**
+Verified the only way that cannot be argued with: rename the function and see
+whether anything fails to compile. Nothing does.
 
-**The receipts and anchors subsystem has to move as one unit.**
+```
+189  statements using any_conn()  → all AnyConn::Sqlite, by construction
+  0  callers of DbHandle::any()   → the sole constructor of AnyConn::Postgres
+```
+
+So the dual-backend work is *finished and unplugged*. `sql_translate.rs`
+rewrites the dialect, `AnyConn` abstracts the rows and parameters, all 55 tables
+exist in `migrations/postgres/` — and none of it is reachable, because nothing
+ever asks the handle for a Postgres connection. Outside `repository.rs`, which
+carries its own pool and its own explicit Postgres branches, no part of the core
+touches Postgres at all.
+
+`core/tests/postgres_dispatch_coverage.rs` pins these numbers so the claim in
+this document cannot drift away from the code again.
+
+This is worth stating plainly because the code sets the trap: a reviewer reads
+`db.any_conn().query_row(...)` as backend-agnostic, and it is not.
+
+The good news is that it makes the remaining task one repeated edit rather than
+189 separate ports. Each site becomes `st.db.any(|conn| ...)`, the SQL is
+unchanged, and the only real wrinkle is that the Postgres variant borrows a
+pooled client mutably — which is why `any()` takes a closure instead of handing
+back a guard. The order that matters is below.
+
+`core/tests/postgres_backend_drift.sh` is the empirical check, and its passing
+is the proof the gap is real: it registers an agent, sees the row in SQLite, and
+sees the Postgres `agents` table still empty.
+
+**The receipts and anchors subsystem must move as one unit.**
 `agent_action_receipts` plus `bitcoin_merkle_anchors` / `solana_merkle_anchors`
-are written by synchronous `&Connection` helpers
-(`validate_agent_action`, `validate_anon_action`, the egress gateway) and read
-from roughly thirteen places across six modules — including the anchor batcher,
-which seals receipts into Bitcoin and Solana. Porting the writes alone puts the
-readers on an empty Postgres table while the real rows stay in the SQLite
-sidecar, and the failure is silent: anchoring simply stops finding anything to
-anchor. That port was attempted once and reverted for exactly this reason.
+are written in `agent_action.rs` and read from roughly thirteen places across
+six modules — including the anchor batcher, which seals receipts into Bitcoin
+and Solana. Converting the writes alone points the readers at an empty Postgres
+table while the real rows stay in SQLite, and the failure is silent: anchoring
+simply stops finding anything to anchor.
 
-Until it lands, the honest answer to "can we run this multi-AZ" is no, and the
-honest answer to "when" is: after that subsystem moves. Full detail and the
-per-table sweep is in [postgres-port-status.md](postgres-port-status.md).
+Until dispatch lands, the honest answer to "can we run this multi-AZ" is no.
+Full detail and the per-table sweep is in
+[postgres-port-status.md](postgres-port-status.md).
 
 ## Proof and authentication boundary
 
