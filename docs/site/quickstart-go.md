@@ -14,7 +14,7 @@ Register an agent and make a signed call. Requires Go 1.22+.
 ## Install
 
 ```bash
-go get github.com/sauronid/go-sdk
+go get github.com/tejoker/SauronID/clients/go/sauronid
 ```
 
 ## Register and call
@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"log"
 
-	sauronid "github.com/sauronid/go-sdk"
+	sauronid "github.com/tejoker/SauronID/clients/go/sauronid"
 )
 
 func main() {

@@ -2,8 +2,9 @@ SauronID — licence map
 ======================
 
 This repository is not under a single licence. Which terms apply depends on
-which component you are looking at, because the clients are meant to be free and
-the gateway is the product.
+which component you are looking at, because the clients are meant to be free,
+the proofs must be inspectable to be worth anything, and the gateway is the
+product.
 
 Apache License 2.0 — full text in LICENSE-APACHE-2.0
 ----------------------------------------------------
@@ -21,15 +22,47 @@ customer has to rebuild the guest programs from source to reproduce the image ID
 committed in every proof. A proof whose program nobody can inspect is not
 evidence.
 
-Proprietary — all rights reserved
----------------------------------
+Business Source License 1.1 — full text in LICENSE-BUSL-1.1
+------------------------------------------------------------
 
     core/                   the authorization gateway
     dashboard/              the operator console
-    everything else in this repository
 
-No licence is granted to use, copy, modify or distribute these components except
-under a separate written agreement. Copyright in them is reserved in full.
+Read it, build it, modify it, run it in development — always, by anyone, at no
+cost. **Production use is free while your organisation's annual revenue is below
+EUR 1,000,000**, and requires a commercial licence above that. Offering it to
+third parties as a hosted or managed service is not permitted at any size.
+
+On 2030-08-16 these components become Apache-2.0 automatically. That date is
+fixed and does not move.
+
+The reasoning, since a licence that is not understood is not respected: a
+security gateway you cannot read is a gateway you have to take on trust, which
+is the opposite of what this project claims to offer. So the source is public.
+But the work is funded by the organisations large enough to need it, so those
+organisations pay. Small teams and evaluators cost nothing to serve and are
+welcome.
+
+Everything else
+---------------
+
+    examples/, redteam/, scripts/, deploy/, docs/, schemas/, site/, branding/,
+    contracts/, migrations/, zkp/, archive/
+
+Supporting material for the above. Not separately licensed: treat it as
+Apache-2.0 where it accompanies an Apache-2.0 component, and as BUSL-1.1 where
+it accompanies the gateway. `branding/` is excluded — see Trademarks.
+
+Trademarks
+----------
+
+No licence is granted to any SauronID name, wordmark, eye logo, or brand asset
+under `branding/`. Neither the Apache grant nor the BUSL grant conveys trademark
+rights: BUSL says so explicitly, and Apache-2.0 section 6 does the same. You may
+run and modify the software; you may not distribute it under our name.
+
+Commercial licensing
+--------------------
 
 Contact: nicolas@eurotech-federation.com
 

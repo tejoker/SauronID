@@ -80,12 +80,12 @@ digest, so you can confirm it came from the release workflow rather than from
 anyone who obtained a registry token.
 
 ```sh
-DIGEST=$(crane digest ghcr.io/OWNER/REPO/core:@@VERSION@@)
+DIGEST=$(crane digest ghcr.io/@@REPO@@/core:@@VERSION@@)
 
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/OWNER/REPO/\.github/workflows/' \
-  "ghcr.io/OWNER/REPO/core@${DIGEST}"
+  --certificate-identity-regexp '^https://github.com/@@REPO@@/\.github/workflows/' \
+  "ghcr.io/@@REPO@@/core@${DIGEST}"
 ```
 
 Then deploy that digest, not the tag — a tag can be repointed between the moment

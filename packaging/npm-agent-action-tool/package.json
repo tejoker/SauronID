@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tejoker/Colosseum2026.git",
+    "url": "https://github.com/tejoker/SauronID.git",
     "directory": "packaging/npm-agent-action-tool"
   },
   "main": "index.js",

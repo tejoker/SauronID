@@ -55,9 +55,11 @@ allow = [
 confidence-threshold = 0.8
 exceptions = []
 
-# The allowlist above governs DEPENDENCIES. sauron-core itself is proprietary
+# The allowlist above governs DEPENDENCIES. sauron-core itself is BUSL-1.1
 # (core/LICENSE) and never published to a registry, so it is skipped rather than
 # being forced to declare one of the permissive licences a dependency must use.
+# BUSL is not on the allowlist by design: it is the right licence for the thing
+# we sell and the wrong one to inherit from a dependency.
 [licenses.private]
 ignore = true
 

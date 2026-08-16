@@ -7,7 +7,7 @@ in `clients/python/sauronid_client/`.
 ## Install
 
 ```bash
-go get github.com/sauronid/go-sdk
+go get github.com/tejoker/SauronID/clients/go/sauronid
 ```
 
 Requires Go 1.22+.
@@ -53,7 +53,7 @@ import (
 	"errors"
 	"log"
 
-	"github.com/sauronid/go-sdk"
+	"github.com/tejoker/SauronID/clients/go/sauronid"
 )
 
 func main() {
@@ -113,7 +113,7 @@ For the one-shot wiring use `sauronid.CreateEnforcer(ctx, opts)`.
 - `SignCall`, `GeneratePopKeyPair`, `SignPopChallenge` — call-signing + PoP key helpers.
 - `SubmitStats` — POST a pre-computed stats proof to the core.
 
-Full reference: `go doc github.com/sauronid/go-sdk`.
+Full reference: `go doc github.com/tejoker/SauronID/clients/go/sauronid`.
 
 ## Cross-impl parity
 

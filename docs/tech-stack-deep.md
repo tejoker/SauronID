@@ -1544,7 +1544,7 @@ The minimum steps to stand up SauronID from a fresh clone:
 ### 21.1 Clone and toolchain
 
 ```bash
-git clone https://github.com/your-org/sauronid.git
+git clone https://github.com/tejoker/SauronID.git
 cd sauronid
 rustup install stable
 node --version       # ≥ 20

@@ -1,22 +1,44 @@
-SauronID Core — proprietary
-===========================
+SauronID Core — Business Source License 1.1
+===========================================
 
-Copyright (c) 2025-2026 Nicolas Bigeard. All rights reserved.
+Copyright (c) 2025-2026 Nicolas Bigeard.
 
-This directory contains the SauronID authorization gateway. No licence is
-granted to use, copy, modify, merge, publish, distribute, sublicense or sell it,
-in source or binary form, except under a separate written agreement.
+This directory contains the SauronID authorization gateway. It is licensed under
+the Business Source License 1.1 — full text and parameters in
+../LICENSE-BUSL-1.1.
 
-Possession of a copy — including a container image, a compiled binary or source
-obtained from any source — grants no rights by itself.
+What you may do, at no cost and without asking
+----------------------------------------------
+
+Read it, build it, modify it, redistribute it, and run it for evaluation,
+development, testing, research or teaching. Always, by anyone.
+
+You may also run it in production free of charge if your organisation's total
+annual revenue is below EUR 1,000,000.
+
+What requires a commercial licence
+----------------------------------
+
+Production use at or above EUR 1,000,000 annual revenue. "Production use" means
+operating this gateway to authorize, deny, or record real actions that you or
+your customers rely on.
+
+Offering this software to third parties as a hosted or managed service is not
+permitted at any revenue, with or without a commercial licence.
 
 Contact: nicolas@eurotech-federation.com
 
-Not Apache-2.0
---------------
+It becomes Apache-2.0 on 2030-08-16
+-----------------------------------
+
+That date is fixed by the licence and does not move. On it, this version becomes
+available under Apache License 2.0 automatically.
+
+Not currently Apache-2.0
+------------------------
 
 This component was distributed under Apache-2.0 until 2026-08-14, and copies
 obtained before that date keep that grant, which is irrevocable by its own terms.
-This version and every subsequent version are proprietary. See ../LICENSE for the
-repository-wide map and ../LICENSE-APACHE-2.0 for the components that remain
-open.
+This version and every subsequent version are BUSL-1.1 until the Change Date.
+See ../LICENSE for the repository-wide map and ../LICENSE-APACHE-2.0 for the
+components that are open today.

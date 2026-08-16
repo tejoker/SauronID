@@ -64,8 +64,18 @@ tar -c -C "$ROOT" \
 # The mirror must carry the Apache text itself, or the published guest source
 # would ship under terms that contradict the whole point of publishing it.
 cp "$ROOT/LICENSE-APACHE-2.0" "$repo/LICENSE"
-sed "s/@@VERSION@@/${VERSION}/g" "$ROOT/scripts/release/mirror-README.md" \
-  >"$repo/README.md"
+# @@REPO@@ matters as much as @@VERSION@@: the README carries the cosign
+# command a customer runs to check the image was built by us. Left as a
+# literal "OWNER/REPO" it shipped verification instructions that cannot be
+# copied — the one artifact where that is least acceptable.
+SOURCE_REPO="${GITHUB_REPOSITORY:-tejoker/SauronID}"
+sed -e "s/@@VERSION@@/${VERSION}/g" -e "s#@@REPO@@#${SOURCE_REPO}#g" \
+  "$ROOT/scripts/release/mirror-README.md" >"$repo/README.md"
+if grep -q "@@" "$repo/README.md"; then
+  echo "[FATAL] unsubstituted placeholder left in the mirror README:" >&2
+  grep -n "@@" "$repo/README.md" >&2
+  exit 1
+fi
 
 # Fail loudly if the snapshot is missing anything a customer needs, rather than
 # publishing a mirror that cannot reproduce the pins.

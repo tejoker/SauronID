@@ -40,5 +40,28 @@ Before opening a PR, run `make verify`. It is the same bar CI applies.
 
 ## Contribution model
 
-No CLA, no DCO sign-off: submitting a PR means you license your contribution
-under the repository's Apache-2.0 license (see `LICENSE`, section 5).
+No CLA and no DCO sign-off. Opening a pull request means you agree to the terms
+below, which exist because this repository is not under one licence (see
+`LICENSE`).
+
+1. **You license your contribution under the licence of the component you are
+   contributing to** — Apache-2.0 for the SDKs, the MCP server and
+   `transparent-zk/`; Business Source License 1.1 for `core/` and `dashboard/`.
+
+2. **You grant Nicolas Bigeard a perpetual, worldwide, irrevocable, royalty-free
+   licence to use, modify, sublicense and relicense your contribution**,
+   including under commercial terms.
+
+   This second grant is what makes the project's own licensing possible. The
+   gateway is sold commercially and converts to Apache-2.0 on its Change Date;
+   both require the right to place contributed code under a licence other than
+   the one it arrived under. Without it, a single contributed patch would be
+   unsellable and unconvertible, and the only remedy afterwards is tracking down
+   every past contributor for permission.
+
+3. **You confirm you have the right to make that grant** — the work is yours, or
+   your employer has authorised it.
+
+If you would rather not grant clause 2, say so in the pull request. Small fixes
+can usually be reimplemented independently, and it is much easier to sort out
+before a merge than after.

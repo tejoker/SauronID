@@ -19,7 +19,7 @@ import (
 	"net/http/httptest"
 	"time"
 
-	"github.com/sauronid/go-sdk"
+	"github.com/tejoker/SauronID/clients/go/sauronid"
 )
 
 func main() {
