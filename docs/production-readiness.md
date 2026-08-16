@@ -97,9 +97,22 @@ whether anything fails to compile. Nothing does.
   5  DbHandle::conn() sites → dispatch, each verified against a real PostgreSQL
   0  callers of DbHandle::any()  → the closure-based dispatcher, still unused
 
-Converted so far: audit/store.rs, agent_checksum.rs (both helpers now take
-&mut AnyConn), and the agent-registration block in agent.rs — which is the path
-postgres_backend_drift.sh uses to demonstrate the split.
+Converted so far: audit/store.rs, agent_checksum.rs, the agent-registration
+block in agent.rs (the path postgres_backend_drift.sh uses to demonstrate the
+split), and risk.rs — the global rate limiter, whose eight call sites across
+agent.rs, egress_gateway.rs and main.rs now pass a dispatching connection.
+
+**The first conversion to run against Postgres found a dialect bug.** The
+limiter's upsert said `DO UPDATE SET cnt = cnt + 1`, which SQLite accepts and
+Postgres rejects as an ambiguous column reference — in a `DO UPDATE` the bare
+name could mean the target row or `excluded`. It had never failed because it had
+never executed against Postgres. Qualifying it as `risk_rate_counters.cnt + 1`
+satisfies both. Notably `Repo::risk_increment`'s Postgres branch already spelled
+it that way, so the knowledge existed; the shared path just never exercised it.
+
+That is the argument for the round-trip tests. Compiling, passing 643 unit tests
+and reading correctly all held while the statement was invalid on the backend it
+claimed to support.
 ```
 
 So the dual-backend work is *finished and unplugged*. `sql_translate.rs`

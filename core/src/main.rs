@@ -2783,7 +2783,7 @@ async fn kyc_retrieve(
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
             risk::check_and_increment(
-                &db,
+                &mut db.any_conn(),
                 &risk::bucket_kyc_retrieve(&tenant_id, &payload.site_name, &user_ki),
                 now,
                 risk::limit_kyc_retrieve(),
@@ -3939,7 +3939,7 @@ async fn agent_payment_authorize(
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
             risk::check_and_increment(
-                &db,
+                &mut db.any_conn(),
                 &risk::bucket_payment_authorize(&tenant_id, &agent_id),
                 now,
                 risk::limit_payment_authorize(),
@@ -4969,7 +4969,7 @@ async fn agent_kyc_consent(
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
             risk::check_and_increment(
-                &db,
+                &mut db.any_conn(),
                 &risk::bucket_agent_kyc_consent(&tenant_id, &payload.site_name, &human_key_image),
                 consent_guard_ts,
                 risk::limit_agent_kyc_consent(),
@@ -5414,7 +5414,7 @@ async fn agent_vc_issue(
             let st = state.read_or_recover();
             let db = st.db.lock().unwrap();
             risk::check_and_increment(
-                &db,
+                &mut db.any_conn(),
                 &risk::bucket_agent_vc_issue(&tenant_id, &human_key_image),
                 vc_issue_ts,
                 risk::limit_agent_vc_issue(),

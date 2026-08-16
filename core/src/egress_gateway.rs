@@ -653,7 +653,7 @@ pub async fn issue_egress_capability(
         let st = state.read_or_recover();
         let db = st.db.lock().unwrap();
         crate::risk::check_and_increment(
-            &db,
+            &mut db.any_conn(),
             &crate::risk::bucket_egress_capability(&tenant_id, &req.agent_id),
             crate::agent_action::now_secs(),
             crate::risk::limit_egress_capability(),

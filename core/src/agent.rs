@@ -685,7 +685,7 @@ pub async fn register_agent(
         let db = st.db.lock().unwrap();
         let now = crate::ajwt_support::now_secs();
         risk::check_and_increment(
-            &db,
+            &mut db.any_conn(),
             &risk::bucket_agent_register(&tenant_id, &human_key_image),
             now,
             risk::limit_agent_register(),
@@ -1712,7 +1712,7 @@ pub async fn verify_agent_token(
         let db = st.db.lock().unwrap();
         let now = crate::ajwt_support::now_secs();
         if risk::check_and_increment(
-            &db,
+            &mut db.any_conn(),
             &risk::bucket_agent_verify(&tenant_id, aid),
             now,
             risk::limit_agent_verify(),

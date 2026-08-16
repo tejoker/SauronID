@@ -203,3 +203,61 @@ fn agent_checksum_inputs_land_in_postgres_not_the_sidecar() {
     std::env::remove_var("DATABASE_URL");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn the_rate_limiter_counts_and_enforces_against_postgres() {
+    // risk::check_and_increment used to hand-roll BEGIN IMMEDIATE on a raw
+    // SQLite connection. It now runs through AnyConn::transaction, and on
+    // Postgres that is a plain BEGIN — READ COMMITTED, not SERIALIZABLE.
+    //
+    // That is safe here only because the arithmetic lives inside the upsert
+    // (`cnt = cnt + 1`), so concurrent callers serialise on the row lock. This
+    // test exists to hold that property: it asserts the limiter actually trips
+    // at the boundary when the counter is in Postgres, which a lost increment
+    // would break.
+    let Some(url) = pg_url() else {
+        eprintln!("skipped: set SAURON_TEST_PG_URL to run");
+        return;
+    };
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let path = temp_sqlite_path("risk");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("SAURON_DB_BACKEND", "postgres");
+    std::env::set_var("DATABASE_URL", &url);
+    let db = sauron_core::db::open_db_at(path.to_str().unwrap(), 4);
+    assert!(db.is_postgres());
+
+    let bucket = format!("slice-test-{}", std::process::id());
+    let now = 1_700_000_000i64;
+    let limit = 3i64;
+
+    for i in 1..=limit {
+        let mut conn = db.conn().expect("connection");
+        sauron_core::risk::check_and_increment(&mut conn.any_conn(), &bucket, now, limit)
+            .unwrap_or_else(|e| panic!("call {i} within the limit should pass: {e}"));
+    }
+
+    // One past the limit must be refused — proof the count survived in Postgres.
+    let mut conn = db.conn().expect("connection");
+    let over = sauron_core::risk::check_and_increment(&mut conn.any_conn(), &bucket, now, limit);
+    assert!(
+        over.is_err(),
+        "limiter did not trip — increments are being lost in Postgres"
+    );
+
+    // And the counter is in Postgres, not the sidecar.
+    let sqlite = rusqlite::Connection::open(&path).expect("open sidecar");
+    let leaked: i64 = sqlite
+        .query_row(
+            "SELECT COUNT(*) FROM risk_rate_counters WHERE bucket = ?1",
+            rusqlite::params![&bucket],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(leaked, 0, "counter went to the SQLite sidecar");
+
+    std::env::remove_var("SAURON_DB_BACKEND");
+    std::env::remove_var("DATABASE_URL");
+    let _ = std::fs::remove_file(&path);
+}
