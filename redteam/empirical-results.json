@@ -6,7 +6,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=200 valid=false",
-      "latency_ms": 79,
+      "latency_ms": 36,
       "pass": true,
       "dynamic": true
     },
@@ -16,7 +16,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=true second=false err=A-JWT jti replay (token already used)",
-      "latency_ms": 4,
+      "latency_ms": 6,
       "pass": true,
       "dynamic": true
     },
@@ -26,7 +26,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=422 second=409",
-      "latency_ms": 2,
+      "latency_ms": 1,
       "pass": true,
       "dynamic": true
     },
@@ -36,7 +36,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 2,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -46,7 +46,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 3,
+      "latency_ms": 6,
       "pass": true,
       "dynamic": true
     },
@@ -56,7 +56,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 2,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -66,7 +66,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 3,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -76,7 +76,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 1,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true
     },
@@ -85,8 +85,8 @@
       "description": "Revoked agent's tokens denied at /agent/verify",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "valid=false err=Agent has been revoked",
-      "latency_ms": 2,
+      "detail": "valid=false err=Agent requires PoP: provide pop_challenge_id and pop_jws (see POST /agent/pop/challenge)",
+      "latency_ms": 1,
       "pass": true,
       "dynamic": true
     },
@@ -96,7 +96,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=400",
-      "latency_ms": 4,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -106,54 +106,54 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "N=20 winners=1 already_used=19",
-      "latency_ms": 122,
+      "latency_ms": 54,
       "pass": true,
       "dynamic": true,
       "evidence": "Promise.all(20) → 1 claim + 19 × HTTP 409 \"Consent token already used\""
     },
     {
       "id": "A12",
-      "description": "Rate limit on /agent/register: burst 65 requests against limit=60",
+      "description": "Rate limit on /agent/register: burst 125 requests against limit=60",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "limit=60 sent=65 status_200=60 status_429=5",
-      "latency_ms": 2166,
+      "detail": "limit=60 sent=125 status_200=60 status_429=65",
+      "latency_ms": 12842,
       "pass": true,
       "dynamic": true,
-      "evidence": "5/65 requests returned HTTP 429 (risk::check_and_increment denied)"
+      "evidence": "65/125 requests returned HTTP 429 (risk::check_and_increment denied)"
     },
     {
       "id": "A13",
       "description": "CORS hard-fail: disallowed Origin not reflected in ACAO (preflight + actual)",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "preflight_status=200 preflight_ACAO=\"\" actual_status=200 actual_ACAO=\"\"",
-      "latency_ms": 3,
+      "detail": "allowed_ACAO=\"http://localhost:3000\" preflight_status=200 evil_preflight_ACAO=\"\" actual_status=200 evil_actual_ACAO=\"\"",
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true,
-      "evidence": "Origin: http://attacker.example.com → ACAO absent / not echoed → browser would block (CorsLayer.allow_origin allowlist)"
+      "evidence": "positive control http://localhost:3000 → ACAO echoed; evil http://attacker.example.com → ACAO absent / not echoed"
     },
     {
       "id": "A14",
       "description": "Audit-log integrity: tampered receipt leaf invalidates merkle inclusion proof",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "receipt_id=ar_ed1cddfaf… orig_match=true tampered_match=false root_diff=true",
+      "detail": "receipt_id=ar_1f75f1b2c… orig_match=false tampered_match=false root_diff=true",
       "latency_ms": 1,
       "pass": true,
       "dynamic": true,
-      "evidence": "tree_size=1 leaf_index=0 batch_root=78c2ba031aae2b45… flipped first nibble → root mismatch"
+      "evidence": "tree_size=1 leaf_index=0 batch_root=6b1f0e7b60975b65… flipped first nibble → root mismatch"
     },
     {
       "id": "A15",
       "description": "HMAC compare timing oracle: 2000 iters early-diff vs late-diff session sig",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "early_mean=1279.77µs σ=276.22 | late_mean=1276.08µs σ=273.48 | Δ=3.68µs t=0.40",
-      "latency_ms": 7944,
+      "detail": "early_mean=4485.12µs σ=311.03 | late_mean=4489.40µs σ=315.60 | paired Δ=-3.58µs σ=303.72 n=1800 t=0.50 | detector_control_t=2032.59",
+      "latency_ms": 18601,
       "pass": true,
       "dynamic": true,
-      "evidence": "Welch-style |t|=0.40 (<3 ⇒ no oracle); subtle::ConstantTimeEq walks full sig regardless of first mismatch"
+      "evidence": "paired |t|=0.50 over 1800 back-to-back pairs (<3 ⇒ no oracle), mean Δ=-3.58µs; subtle::ConstantTimeEq walks full sig regardless of first mismatch"
     },
     {
       "id": "A16",
@@ -161,7 +161,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401 body={\"error\":{\"code\":\"call_sig_config_digest_mismatch\",\"fix\":\"runtime config drifted",
-      "latency_ms": 1,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true,
       "evidence": "call-sig accepted, but x-sauron-agent-config-digest mismatched registered checksum → HTTP 401 \"config drift\""
@@ -170,5 +170,12 @@
   "passed": 16,
   "total": 16,
   "skipped": 0,
-  "generated_at": "2026-07-19T19:14:31.830Z"
+  "dynamic": 16,
+  "generated_at": "2026-08-16T12:50:35.160Z",
+  "provenance": {
+    "commit": "65d0b55b4ed412cc56ac9ca1a151e71f96b337b2",
+    "enforce_mode": true,
+    "db_backend": "sqlite",
+    "base_url": "http://127.0.0.1:3101"
+  }
 }
