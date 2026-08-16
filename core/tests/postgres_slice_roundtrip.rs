@@ -141,3 +141,65 @@ fn the_same_slice_still_works_on_sqlite() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn agent_checksum_inputs_land_in_postgres_not_the_sidecar() {
+    // `agent_checksum_inputs` is written during agent registration, which is
+    // the path `postgres_backend_drift.sh` uses to demonstrate the split. The
+    // helpers now take `&mut AnyConn` instead of `&rusqlite::Connection`, so
+    // they follow whichever backend the caller acquired.
+    let Some(url) = pg_url() else {
+        eprintln!("skipped: set SAURON_TEST_PG_URL to run");
+        return;
+    };
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let path = temp_sqlite_path("checksum");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("SAURON_DB_BACKEND", "postgres");
+    std::env::set_var("DATABASE_URL", &url);
+    let db = sauron_core::db::open_db_at(path.to_str().unwrap(), 4);
+    assert!(db.is_postgres());
+
+    let agent_id = format!("agt_slice_{}", std::process::id());
+    {
+        let mut conn = db.conn().expect("pooled connection");
+        sauron_core::agent_checksum::persist_inputs(
+            &mut conn.any_conn(),
+            &agent_id,
+            "llm_agent",
+            "{\"canonical\":true}",
+            "sha256:deadbeef",
+            1_700_000_000,
+        )
+        .expect("persist through the configured backend");
+    }
+
+    // Present in Postgres...
+    let mut conn = db.conn().expect("pooled connection");
+    let found: i64 = conn
+        .any_conn()
+        .query_row(
+            "SELECT COUNT(*) FROM agent_checksum_inputs WHERE agent_id = ?1",
+            sauron_core::sql_params![&agent_id],
+            |r| r.get_i64(0),
+        )
+        .expect("count query")
+        .unwrap_or(0);
+    assert_eq!(found, 1, "row missing from Postgres");
+
+    // ...and absent from the SQLite sidecar, which is the whole claim.
+    let sqlite = rusqlite::Connection::open(&path).expect("open sidecar");
+    let leaked: i64 = sqlite
+        .query_row(
+            "SELECT COUNT(*) FROM agent_checksum_inputs WHERE agent_id = ?1",
+            rusqlite::params![&agent_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(leaked, 0, "row went to the SQLite sidecar — still pinned");
+
+    std::env::remove_var("SAURON_DB_BACKEND");
+    std::env::remove_var("DATABASE_URL");
+    let _ = std::fs::remove_file(&path);
+}

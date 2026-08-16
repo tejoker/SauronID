@@ -93,9 +93,13 @@ Verified the only way that cannot be argued with: rename the function and see
 whether anything fails to compile. Nothing does.
 
 ```
-186  statements using a lock()ed connection → AnyConn::Sqlite, by construction
-  0  callers of DbHandle::any()             → the closure-based dispatcher
-  3  converted to DbHandle::conn()          → dispatch, verified against real PG
+186  any_conn() statements  → still resolved against whatever the caller holds
+  5  DbHandle::conn() sites → dispatch, each verified against a real PostgreSQL
+  0  callers of DbHandle::any()  → the closure-based dispatcher, still unused
+
+Converted so far: audit/store.rs, agent_checksum.rs (both helpers now take
+&mut AnyConn), and the agent-registration block in agent.rs — which is the path
+postgres_backend_drift.sh uses to demonstrate the split.
 ```
 
 So the dual-backend work is *finished and unplugged*. `sql_translate.rs`

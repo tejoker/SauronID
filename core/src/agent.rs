@@ -1265,7 +1265,10 @@ pub async fn register_agent(
     // Persist agent in DB
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st
+            .db
+            .conn()
+            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
         // M1 of TPM2 PoP roadmap: persist the new hardware-attestation columns
         // alongside the legacy blob+kind. They are NULL for non-TPM2 kinds.
         let attestation_pubkey_b64u = payload
@@ -1329,7 +1332,7 @@ pub async fn register_agent(
         if let Some((kind, canonical, _)) = computed_checksum_pair.as_ref() {
             let stored = crate::agent_checksum::storage_payload(canonical, &payload.agent_checksum);
             crate::agent_checksum::persist_inputs(
-                &db,
+                &mut db.any_conn(),
                 &agent_id,
                 kind,
                 &stored,
@@ -1540,12 +1543,15 @@ pub async fn update_agent_checksum(
     let now = ajwt_support::now_secs();
     let new_version = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st
+            .db
+            .conn()
+            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
         // Honour the storage-privacy mode on rotation too, otherwise hash_only
         // would leak the plaintext config via a later checksum update.
         let stored = crate::agent_checksum::storage_payload(&canonical, &new_checksum);
         crate::agent_checksum::rotate_inputs(
-            &db,
+            &mut db.any_conn(),
             &agent_id,
             &payload.agent_type,
             &stored,
