@@ -512,6 +512,76 @@ pub async fn members_handler(
     ))
 }
 
+/// GET /agent/rings/{ring_id}/members — the signing set, without an admin key.
+///
+/// This is what makes the anonymous path usable. To produce an LSAG signature a
+/// signer needs every member's public key, because the signature is computed
+/// across the whole ring; and until this existed the only way to obtain that set
+/// was `GET /admin/rings/{id}/members`, behind operator authentication. An agent
+/// holding an admin key is not an agent, and could enumerate the ring anyway, so
+/// the feature had no reachable client — the endpoints to *use* a ring existed
+/// while the read they depend on did not.
+///
+/// **Why this is safe to serve without proving membership.** The rows are
+/// per-ring stealth pseudonyms `P_R = A + h_R·G`, not identities. Recovering the
+/// master key `A` behind one, or linking two pseudonyms of the same agent across
+/// rings, requires the operator trapdoor `t`; without it the set is a bag of
+/// unlinkable curve points. What it does reveal is the ring's size, which is the
+/// anonymity-set size — information a signer must have anyway to judge whether
+/// signing is worth anything.
+///
+/// This mirrors how ring signatures work everywhere they are deployed: Monero's
+/// ring members are read off a public chain. Secrecy of the ring was never the
+/// property; unforgeability and unlinkability of the *signature* are, and
+/// neither depends on hiding the members.
+///
+/// Deliberately **not** call-signature protected. A per-call signature carries
+/// `x-sauron-agent-id`, so requiring one would make every agent announce which
+/// rings it is about to sign for — the exact correlation the pseudonym scheme
+/// exists to prevent. The route is listed in `CALL_SIG_EXEMPT_PATHS`' shape rule
+/// for that reason.
+///
+/// The rule and version travel with the members so a client can check its action
+/// will be admitted before spending the work of signing, and can stamp the
+/// matching `ring:{id}:v{n}` policy version on the envelope.
+pub async fn agent_members_handler(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    Path(ring_id): Path<String>,
+    Extension(tenant): Extension<crate::tenancy::TenantId>,
+) -> HandlerResult {
+    require_enabled()?;
+    let st = state.read_or_recover();
+    let db = st.db.lock().unwrap();
+
+    // 404 rather than an empty set: signing against a ring that does not exist
+    // produces a signature nothing will ever verify, and the client should find
+    // that out here instead of after the work.
+    let (rule, version) = get_ring(&db, tenant.as_str(), &ring_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "ring not found".to_string()))?;
+
+    let points = list_member_points(&db, tenant.as_str(), &ring_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let members: Vec<String> = points
+        .iter()
+        .map(|p| hex::encode(p.compress().as_bytes()))
+        .collect();
+
+    Ok(Json(json!({
+        "ring_id": ring_id,
+        "policy_version": format!("ring:{ring_id}:v{version}"),
+        "rule": rule,
+        // Ordering is load-bearing, not incidental. An LSAG is computed across
+        // the ring in sequence, so a signer that orders members differently
+        // from the verifier produces a signature that fails for no visible
+        // reason. `list_member_points` sorts by the point hex, and verification
+        // reads the same function — so this array is the exact sequence to sign
+        // over. Do not re-sort it client-side.
+        "members": members,
+        "count": members.len(),
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

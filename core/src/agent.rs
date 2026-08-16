@@ -2555,6 +2555,22 @@ fn call_sig_required_for(method: &Method, path: &str) -> bool {
         return false;
     }
     let rest = &path["/agent/".len()..];
+
+    // GET /agent/rings/{id}/members — the signing set for an anonymous ring.
+    //
+    // Matched by shape rather than added to CALL_SIG_EXEMPT_PATHS because the
+    // path carries an id and that list is exact-match. Deliberately narrow: the
+    // verb is pinned and both literal segments are checked, so a future
+    // `POST /agent/rings/{id}/subscribe` is still protected. A bare
+    // `starts_with("/agent/rings/")` would have exempted the whole subtree —
+    // the same blunt-prefix mistake the single-segment rule below once made.
+    if method == Method::GET {
+        let segs: Vec<&str> = rest.split('/').collect();
+        if segs.len() == 3 && segs[0] == "rings" && segs[2] == "members" && !segs[1].is_empty() {
+            return false;
+        }
+    }
+
     let single_segment = !rest.is_empty() && !rest.contains('/');
     if single_segment && (method == Method::GET || method == Method::HEAD) {
         return false;
@@ -2687,6 +2703,31 @@ mod call_sig_default_deny_tests {
                  CALL_SIG_EXEMPT_PATHS — add it to the exempt list with a reason, \
                  or leave it protected"
             );
+        }
+    }
+
+    #[test]
+    fn the_ring_member_read_is_exempt_but_only_that_exact_shape() {
+        // The one read an anonymous signer cannot do without: an LSAG covers
+        // every member key, so this must be reachable without announcing an
+        // agent id. Exempt.
+        assert!(!call_sig_required_for(
+            &Method::GET,
+            "/agent/rings/r_payments/members"
+        ));
+        // Everything adjacent stays protected. A prefix rule would have let all
+        // of these through, which is how the single-segment carve-out below
+        // went wrong in the first place.
+        for (m, p) in [
+            (Method::POST, "/agent/rings/r_payments/members"),
+            (Method::DELETE, "/agent/rings/r_payments/members"),
+            (Method::GET, "/agent/rings/r_payments/subscribe"),
+            (Method::POST, "/agent/rings/r_payments/subscribe"),
+            (Method::GET, "/agent/rings/r_payments"),
+            (Method::GET, "/agent/rings/r_payments/members/extra"),
+            (Method::GET, "/agent/rings//members"),
+        ] {
+            assert!(call_sig_required_for(&m, p), "{m} {p} must still be signed");
         }
     }
 

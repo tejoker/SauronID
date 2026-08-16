@@ -330,6 +330,16 @@ async fn main() {
         // Anonymous ring-policy action path (phase 3; gated by SAURON_ANON_RINGS).
         // The ring signature is the auth, so no per-call-signature layer here.
         .route("/agent/action/anon", post(agent_action::submit_anon_action))
+        // The signing set. An LSAG is computed across every member's key, so
+        // without this read no agent could produce a signature the anon path
+        // would accept — the only other source was behind the admin key, and an
+        // agent holding that could enumerate the ring anyway. Members are
+        // unlinkable pseudonyms; see rings::agent_members_handler for why
+        // serving them needs no proof of membership.
+        .route(
+            "/agent/rings/{ring_id}/members",
+            get(sauron_core::rings::agent_members_handler),
+        )
         // Phase 4: report token usage for a prior anon receipt (gated likewise).
         .route("/agent/usage", post(usage::record_usage_handler))
         .route("/agent/payment/authorize", post(agent_payment_authorize))
