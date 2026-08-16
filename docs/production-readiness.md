@@ -93,8 +93,9 @@ Verified the only way that cannot be argued with: rename the function and see
 whether anything fails to compile. Nothing does.
 
 ```
-189  statements using any_conn()  → all AnyConn::Sqlite, by construction
-  0  callers of DbHandle::any()   → the sole constructor of AnyConn::Postgres
+186  statements using a lock()ed connection → AnyConn::Sqlite, by construction
+  0  callers of DbHandle::any()             → the closure-based dispatcher
+  3  converted to DbHandle::conn()          → dispatch, verified against real PG
 ```
 
 So the dual-backend work is *finished and unplugged*. `sql_translate.rs`
@@ -111,10 +112,25 @@ This is worth stating plainly because the code sets the trap: a reviewer reads
 `db.any_conn().query_row(...)` as backend-agnostic, and it is not.
 
 The good news is that it makes the remaining task one repeated edit rather than
-189 separate ports. Each site becomes `st.db.any(|conn| ...)`, the SQL is
-unchanged, and the only real wrinkle is that the Postgres variant borrows a
-pooled client mutably — which is why `any()` takes a closure instead of handing
-back a guard. The order that matters is below.
+186 separate ports. `DbHandle::conn()` returns a `DbConn` guard whose
+`any_conn()` dispatches, so a call site changes only where it acquires the
+connection:
+
+```rust
+let db = st.db.lock().unwrap();     →   let mut db = st.db.conn()?;
+db.any_conn().query_row(..)         →   db.any_conn().query_row(..)   // unchanged
+```
+
+The SQL, the row closures and the parameter binding are all untouched. Two
+things are not mechanical and set the order: 45 helpers still typed on
+`&rusqlite::Connection` have to take `&mut AnyConn` instead, and schema DDL
+stays on the SQLite path because Postgres gets its schema from
+`migrations/postgres/`.
+
+**Compiling proves nothing here.** The unconverted code compiles too, and reads
+identically. `core/tests/postgres_slice_roundtrip.rs` is the real check: it
+writes through a converted path against a live PostgreSQL and asserts the row is
+in Postgres *and absent from the SQLite sidecar*. Every converted slice gets one.
 
 `core/tests/postgres_backend_drift.sh` is the empirical check, and its passing
 is the proof the gap is real: it registers an agent, sees the row in SQLite, and

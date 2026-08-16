@@ -80,6 +80,80 @@ impl DbHandle {
             }
         }
     }
+
+    /// An owned connection to whichever backend is configured.
+    ///
+    /// This is what `lock()` should have been. `lock()` hands back a SQLite
+    /// connection, and every call site that then says `.any_conn()` gets
+    /// `AnyConn::Sqlite` from `impl AsAnyConn for rusqlite::Connection` — so the
+    /// portable idiom reads as backend-agnostic while being pinned to SQLite.
+    /// That is why `DbHandle::any()` had no callers and the whole dual-backend
+    /// layer was unreachable.
+    ///
+    /// [`any()`] solves it with a closure, which is correct but requires every
+    /// call site to be restructured around one. This returns a guard instead:
+    /// the caller keeps its existing shape and only the acquisition line
+    /// changes, because `DbConn::any_conn()` dispatches where the trait impl
+    /// could not.
+    ///
+    /// The guard owns its pooled connection, so the pool lifetime stays here
+    /// rather than leaking outward — the objection that motivated the closure.
+    /// The cost is that callers need `let mut`, since the Postgres variant is
+    /// borrowed mutably.
+    pub fn conn(&self) -> Result<DbConn, PoolTimeout> {
+        match &self.pg_pool {
+            Some(pool) => Ok(DbConn::Postgres(Box::new(pool.get().map_err(PoolTimeout)?))),
+            None => Ok(DbConn::Sqlite(self.lock()?)),
+        }
+    }
+}
+
+/// An owned pooled connection to whichever backend is configured.
+///
+/// Obtained from [`DbHandle::conn`]. Call [`DbConn::any_conn`] to get the
+/// portable query surface; unlike the same-named method on
+/// `rusqlite::Connection`, this one actually dispatches.
+///
+/// The Postgres client is boxed because it is roughly twice the size of the
+/// SQLite guard, and every caller of [`DbHandle::conn`] would otherwise pay for
+/// the larger variant on the stack — including the SQLite deployments, which
+/// are all of them today.
+pub enum DbConn {
+    Sqlite(PooledConnection<SqliteConnectionManager>),
+    Postgres(Box<PooledConnection<PostgresConnectionManager<postgres::NoTls>>>),
+}
+
+impl DbConn {
+    /// Portable query surface over the configured backend.
+    ///
+    /// `&mut self` because `AnyConn::Postgres` borrows the client mutably;
+    /// the SQLite arm does not need it but the signature must cover both.
+    pub fn any_conn(&mut self) -> AnyConn<'_> {
+        match self {
+            DbConn::Sqlite(c) => AnyConn::Sqlite(c),
+            DbConn::Postgres(c) => AnyConn::Postgres(c),
+        }
+    }
+
+    /// The underlying SQLite connection, when that is the configured backend.
+    ///
+    /// An escape hatch for the paths not yet converted — schema initialisation,
+    /// and the helpers still typed on `&rusqlite::Connection`. Returns `None`
+    /// under Postgres rather than panicking, so a caller that still needs
+    /// rusqlite has to say what it does about the other backend.
+    pub fn sqlite(&self) -> Option<&rusqlite::Connection> {
+        match self {
+            DbConn::Sqlite(c) => Some(c),
+            DbConn::Postgres(_) => None,
+        }
+    }
+
+    pub fn backend(&self) -> crate::any_db::Backend {
+        match self {
+            DbConn::Sqlite(_) => crate::any_db::Backend::Sqlite,
+            DbConn::Postgres(_) => crate::any_db::Backend::Postgres,
+        }
+    }
 }
 
 /// Build the Postgres pool when the deployment asks for it.

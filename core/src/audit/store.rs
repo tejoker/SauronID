@@ -3,7 +3,7 @@
 //! Stores the report JSON + HMAC signature into the `audit_reports`
 //! table. Tenant-scoped by primary index for cheap list queries.
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use serde_json;
 
@@ -62,7 +62,7 @@ pub fn store_report(
     signature: &str,
 ) -> Result<(), StoreError> {
     ensure_audit_reports_schema(db)?;
-    let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+    let mut conn = db.conn().map_err(|e| StoreError::Db(e.to_string()))?;
     let agent_ids_json =
         serde_json::to_string(&report.agent_ids).map_err(|e| StoreError::Decode(e.to_string()))?;
     let report_json =
@@ -95,7 +95,7 @@ pub fn get_report(
     tenant_id: &str,
     report_id: &str,
 ) -> Result<Option<AuditReport>, StoreError> {
-    let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+    let mut conn = db.conn().map_err(|e| StoreError::Db(e.to_string()))?;
     let row: Option<String> = conn
         .any_conn()
         .query_row(
@@ -120,7 +120,7 @@ pub fn list_reports(
     tenant_id: &str,
     limit: u32,
 ) -> Result<Vec<AuditReport>, StoreError> {
-    let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+    let mut conn = db.conn().map_err(|e| StoreError::Db(e.to_string()))?;
     let capped = limit.clamp(1, 1000) as i64;
     let rows = conn
         .any_conn()

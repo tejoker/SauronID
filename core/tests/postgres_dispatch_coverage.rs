@@ -16,23 +16,26 @@
 //! db.any_conn().query_row(..)?;            // never dispatches — always SQLite
 //! ```
 //!
-//! At the time of writing `DbHandle::any()` has **zero callers** — verified by
-//! renaming it and observing that nothing fails to compile. So outside
-//! `repository.rs`, which holds its own Postgres pool, no part of the core
-//! reaches Postgres at all. The abstraction is finished and unplugged.
+//! `DbHandle::any()` had **zero callers** — verified by renaming it and watching
+//! nothing fail to compile — so for its whole life the layer was unreachable and
+//! only `repository.rs`, with its own pool, ever spoke Postgres.
+//!
+//! `DbHandle::conn()` is the way out. It returns an owned `DbConn` guard whose
+//! `any_conn()` dispatches, so converting a call site is a one-line change to
+//! the acquisition rather than a rewrite around a closure. Sites still holding a
+//! `lock()`ed SQLite connection remain pinned, and this counts them.
 //!
 //! An audit of this repository initially reported "59% ported" by counting the
 //! portable idiom as evidence of portability. These tests exist so the number
-//! comes from the build rather than from reading, and so the day someone wires
-//! dispatch up, the claim in `docs/production-readiness.md` is forced to move
-//! with it.
+//! comes from the build rather than from reading, and so converting call sites
+//! forces the claim in `docs/production-readiness.md` to move with the code.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Statements written in the portable idiom but pinned to SQLite.
 /// Update together with the figure in docs/production-readiness.md.
-const EXPECTED_PINNED: usize = 189;
+const EXPECTED_PINNED: usize = 186;
 /// Tolerance for incidental refactors; a real sweep moves this far more.
 const SLACK: usize = 5;
 
@@ -124,39 +127,39 @@ fn the_pinned_form_cannot_reach_postgres() {
 }
 
 #[test]
-fn the_only_dispatcher_is_still_the_one_we_think_it_is() {
-    // `DbHandle::any` is the sole constructor of AnyConn::Postgres outside
-    // repository.rs. Its caller count is the real Postgres coverage number, and
-    // today it is zero. This asserts the constructor still exists and is still
-    // the only one, so "wire up dispatch" remains a single well-defined task.
+fn both_dispatch_paths_exist_and_live_in_db_rs() {
+    // Two ways to reach Postgres, and both must stay in db.rs so "can this
+    // possibly touch Postgres?" is answerable by reading one file:
+    //
+    //   DbHandle::any(closure)  — the original; correct, but requires the call
+    //                             site to be restructured around a closure.
+    //   DbHandle::conn()        — returns a DbConn guard whose any_conn()
+    //                             dispatches; the sweep converts to this.
     let db = std::fs::read_to_string(core_src().join("db.rs")).expect("db.rs");
+    assert!(db.contains("pub fn any<T>"), "DbHandle::any is gone");
+    assert!(db.contains("pub fn conn(&self)"), "DbHandle::conn is gone");
     assert!(
-        db.contains("pub fn any<T>"),
-        "DbHandle::any is gone — if dispatch moved elsewhere, update these tests"
-    );
-    assert!(
-        db.contains("AnyConn::Postgres"),
-        "DbHandle::any no longer constructs the Postgres variant"
+        db.contains("pub enum DbConn"),
+        "the dispatching guard is gone"
     );
 
-    // Count constructions, not match arms. `AnyConn::Postgres(client) => {` in
-    // any_db.rs is a pattern binding; the construction passes a borrow of a
-    // pooled client, so `&mut` inside the parentheses is the discriminator.
+    // Nowhere outside db.rs may construct the Postgres variant: a call site
+    // that built one itself would be a third dispatch path nobody is counting.
     let mut files = Vec::new();
     rust_files(&core_src(), &mut files);
-    let constructors: usize = files
+    let stray: Vec<String> = files
         .iter()
-        .map(|f| {
+        .filter(|f| f.file_name().unwrap() != "db.rs" && f.file_name().unwrap() != "any_db.rs")
+        .filter(|f| {
             std::fs::read_to_string(f)
                 .unwrap_or_default()
-                .matches("AnyConn::Postgres(&mut")
-                .count()
+                .contains("AnyConn::Postgres(&mut")
         })
-        .sum();
-    assert_eq!(
-        constructors, 1,
-        "expected exactly one place to construct AnyConn::Postgres (DbHandle::any); \
-         found {constructors}. More than one means Postgres reach is no longer a \
-         single switch and this test needs rewriting."
+        .map(|f| f.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "AnyConn::Postgres constructed outside db.rs, so Postgres reach is no \
+         longer a property of one file: {stray:?}"
     );
 }
