@@ -496,9 +496,9 @@ pub async fn add_client(
         db.any_conn()
             .transaction(|tx| {
                 tx.execute(
-                    "INSERT INTO clients (name, public_key_hex, private_key_hex, key_image_hex, client_type)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-                    sql_params![&payload.name, &pub_hex, "EXTERNAL_CUSTODY", &ki_hex, type_str],
+                    "INSERT INTO clients (name, public_key_hex, key_image_hex, client_type)
+             VALUES (?1, ?2, ?3, ?4)",
+                    sql_params![&payload.name, &pub_hex, &ki_hex, type_str],
                 )?;
                 tx.execute(
                     "INSERT INTO client_tenant_bindings (client_name, tenant_id) VALUES (?1, ?2)",

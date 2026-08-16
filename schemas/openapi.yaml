@@ -2289,6 +2289,65 @@ paths:
 
   # ── Admin (x-admin-key or admin JWT on every route) ──
 
+  /admin/keys/issue:
+    post:
+      tags: [admin]
+      summary: Mint a scoped, tenant-locked admin JWT
+      description: |
+        Issues a short-lived admin JWT carrying an explicit scope set and tenant
+        allowlist, so an integration can hold least privilege instead of the
+        global `x-admin-key`.
+
+        Super-operator only, and issuance cannot escalate past the caller's own
+        grant: `admin:super` is refused in `scopes`, and `tenants` must be
+        non-empty, so every issued token is tenant-locked. Returns `503` until
+        `SAURON_ADMIN_JWT_HS256_SECRET` is configured.
+
+        The token is shown once and is not persisted server-side. Issuance is
+        recorded in the security audit log under the same event family as an
+        admin-key rotation, identified by a fingerprint rather than the secret.
+      operationId: adminIssueKey
+      security: [{ adminKey: [] }, { adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/TenantId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopes, tenants]
+              properties:
+                scopes:
+                  type: array
+                  items: { type: string, enum: [admin:read, admin:write] }
+                  description: "Subset of admin:read / admin:write. admin:super is refused."
+                tenants:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                  description: Tenant allowlist baked into the token's `tnt` claim.
+                ttl_secs:
+                  type: [integer, "null"]
+                  format: int64
+                  description: Requested lifetime, clamped to the server's min/max.
+      responses:
+        '200':
+          description: Token issued. Shown once; not recoverable afterwards.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, scopes, tenants, expires_at]
+                properties:
+                  token: { type: string, description: Bearer token. Returned once at issuance only. }
+                  scopes: { type: array, items: { type: string } }
+                  tenants: { type: array, items: { type: string } }
+                  expires_at: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller is not a cross-tenant super operator. }
+        '503': { description: SAURON_ADMIN_JWT_HS256_SECRET is not configured. }
+
   /admin/clients:
     post:
       tags: [admin]

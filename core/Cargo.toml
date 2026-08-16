@@ -88,6 +88,9 @@ strip = "symbols"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Collecting a response body in tests. axum re-exports the trait but not the
+# crate, and `tests/pool_exhaustion_503.rs` asserts on the error envelope.
+http-body-util = "0.1"
 
 [features]
 # Hardware-attestation features. M1 ships parsing skeletons only; full TPM2

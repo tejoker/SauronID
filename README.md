@@ -5,7 +5,7 @@
 [![Tests](https://github.com/tejoker/SauronID/actions/workflows/test.yml/badge.svg)](https://github.com/tejoker/SauronID/actions/workflows/test.yml)
 [![Security scans](https://github.com/tejoker/SauronID/actions/workflows/security.yml/badge.svg)](https://github.com/tejoker/SauronID/actions/workflows/security.yml)
 [![Release gate](https://github.com/tejoker/SauronID/actions/workflows/release-gate.yml/badge.svg)](https://github.com/tejoker/SauronID/actions/workflows/release-gate.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: clients Apache-2.0, gateway proprietary](https://img.shields.io/badge/license-clients%20Apache--2.0%20%7C%20gateway%20proprietary-blue.svg)](LICENSE)
 
 ## Build and try the source release
 

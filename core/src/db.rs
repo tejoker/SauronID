@@ -1,9 +1,42 @@
+use std::time::Duration;
+
 use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::PostgresConnectionManager;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 
 use crate::any_db::AnyConn;
+
+/// Marker embedded in the `Debug` form of [`PoolTimeout`], and matched by the
+/// HTTP panic handler in `main.rs` to answer 503 instead of 500.
+///
+/// It has to live in `Debug` rather than `Display` because `Result::unwrap`
+/// formats with `Debug`, and the ~90 call sites that take a connection do so
+/// with `.unwrap()`. r2d2's own error is no help here: it `Debug`-prints as
+/// `Error(None)`, which is indistinguishable from any other panic.
+pub const POOL_TIMEOUT_MARKER: &str = "sauron_db_pool_timeout";
+
+/// Failure to take a pooled SQLite connection.
+///
+/// There is exactly one cause: every connection was busy for longer than
+/// r2d2's connection timeout. That is load, not a fault — the correct answer
+/// is "come back shortly", not "the server is broken". Wrapping r2d2's opaque
+/// error gives the panic payload something the HTTP layer can recognise.
+pub struct PoolTimeout(pub r2d2::Error);
+
+impl std::fmt::Debug for PoolTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{POOL_TIMEOUT_MARKER}: {}", self.0)
+    }
+}
+
+impl std::fmt::Display for PoolTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "database connection pool exhausted: {}", self.0)
+    }
+}
+
+impl std::error::Error for PoolTimeout {}
 
 pub struct DbHandle {
     pool: Pool<SqliteConnectionManager>,
@@ -18,8 +51,8 @@ pub struct DbHandle {
 
 impl DbHandle {
     /// Pooled SQLite connection. The un-migrated path.
-    pub fn lock(&self) -> Result<PooledConnection<SqliteConnectionManager>, r2d2::Error> {
-        self.pool.get()
+    pub fn lock(&self) -> Result<PooledConnection<SqliteConnectionManager>, PoolTimeout> {
+        self.pool.get().map_err(PoolTimeout)
     }
 
     /// True when a Postgres pool is configured and `any()` will use it.
@@ -98,12 +131,37 @@ pub fn open_db() -> DbHandle {
         .and_then(|v| v.parse::<u32>().ok())
         .map(|v| v.clamp(1, 64))
         .unwrap_or(16);
-    open_db_at(&path, pool_size)
+    open_db_at_with_timeout(&path, pool_size, pool_timeout())
+}
+
+/// How long a caller waits for a free connection before the request is shed.
+///
+/// r2d2's own default is 30 seconds, which is the wrong shape for a request
+/// path: by the time a client has queued for half a minute it has usually given
+/// up, and the queue behind it has grown the whole time. Shedding early with a
+/// 503 and `Retry-After` is what lets load drain. The default stays 30s so this
+/// change alters no existing deployment; lower it deliberately.
+fn pool_timeout() -> Duration {
+    let ms = std::env::var("SAURON_DB_POOL_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(30_000)
+        .clamp(100, 60_000);
+    Duration::from_millis(ms)
 }
 
 /// Opens a SQLite database at the given path with the given pool size.
 /// Exposed for tests + tooling that want to bypass the `DATABASE_PATH` env var.
 pub fn open_db_at(path: &str, pool_size: u32) -> DbHandle {
+    open_db_at_with_timeout(path, pool_size, pool_timeout())
+}
+
+/// As [`open_db_at`], with an explicit connection-acquisition timeout.
+///
+/// Separate entry point because the 503 load-shedding path is only reachable
+/// once the pool is saturated, and a test that had to wait out the production
+/// default would take 30 seconds to assert one status code.
+pub fn open_db_at_with_timeout(path: &str, pool_size: u32, timeout: Duration) -> DbHandle {
     let manager = SqliteConnectionManager::file(path).with_init(|conn| {
         conn.execute_batch(
             "
@@ -120,6 +178,7 @@ pub fn open_db_at(path: &str, pool_size: u32) -> DbHandle {
 
     let pool = Pool::builder()
         .max_size(pool_size)
+        .connection_timeout(timeout)
         .build(manager)
         .unwrap_or_else(|e| panic!("cannot open SQLite pool at '{}': {}", path, e));
 
@@ -142,12 +201,18 @@ pub fn open_db_at(path: &str, pool_size: u32) -> DbHandle {
 pub fn init_schema(conn: &Connection) {
     conn.execute_batch(
         r#"
-        -- Partner sites (banks + retail)
+        -- Partner sites (banks + retail).
+        --
+        -- There is deliberately no private-key column. Partners generate and
+        -- retain their own ring key; the server receives a public key and a key
+        -- image and never holds custody. The column that used to sit here only
+        -- ever stored the constant "EXTERNAL_CUSTODY" and was never read back —
+        -- dead storage whose name misdescribed the trust model to anyone
+        -- reading the schema. Dropped for existing databases below.
         CREATE TABLE IF NOT EXISTS clients (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             name            TEXT    UNIQUE NOT NULL,
             public_key_hex  TEXT    NOT NULL,
-            private_key_hex TEXT    NOT NULL,
             key_image_hex   TEXT    NOT NULL,
             tokens_b        INTEGER NOT NULL DEFAULT 0,
             client_type     TEXT    NOT NULL CHECK(client_type IN ('FULL_KYC', 'ZKP_ONLY', 'BANK'))
@@ -867,6 +932,13 @@ pub fn init_schema(conn: &Connection) {
         "ALTER TABLE clients ADD COLUMN tokens_b INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // Drop the write-only clients.private_key_hex column. It held the literal
+    // "EXTERNAL_CUSTODY" and nothing ever read it, but a NOT NULL column of
+    // that name is what a security reviewer sees first, and the INSERT no
+    // longer supplies it — so on a database created before this change the
+    // insert would fail until the column goes. Ignoring the error is the
+    // idempotency: on a fresh database there is nothing to drop.
+    let _ = conn.execute("ALTER TABLE clients DROP COLUMN private_key_hex", []);
     let _ = conn.execute(
         "ALTER TABLE consent_log ADD COLUMN requested_claims_json TEXT NOT NULL DEFAULT '[]'",
         [],
@@ -1212,6 +1284,73 @@ pub fn init_schema(conn: &Connection) {
          VALUES (1, CAST(strftime('%s','now') AS INTEGER));",
     )
     .expect("schema version migration failed");
+}
+
+#[cfg(test)]
+mod pool_timeout_tests {
+    use super::*;
+
+    /// The HTTP layer answers 503 by looking for [`POOL_TIMEOUT_MARKER`] in the
+    /// panic payload, and `Result::unwrap` builds that payload with `Debug`. So
+    /// the marker has to survive the round trip through an actual panic — not
+    /// just be present in a `format!("{:?}")` we write ourselves.
+    ///
+    /// This is also the guard against r2d2: its own error `Debug`-prints as
+    /// `Error(None)`, which carries nothing to match on. If someone "simplifies"
+    /// `lock()` back to returning `r2d2::Error`, overload starts answering 500
+    /// again with no other test noticing. This one fails.
+    #[test]
+    fn an_exhausted_pool_panics_with_the_marker_the_http_layer_matches() {
+        let pool = Pool::builder()
+            .max_size(1)
+            .connection_timeout(std::time::Duration::from_millis(50))
+            .build(SqliteConnectionManager::memory())
+            .expect("pool builds");
+        let handle = DbHandle {
+            pool,
+            pg_pool: None,
+        };
+
+        // Hold the only connection, so the next caller can only time out.
+        let _held = handle.lock().expect("first connection is free");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = handle.lock().unwrap();
+        }))
+        .expect_err("a saturated pool must fail");
+
+        let payload = panicked
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panicked.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        assert!(
+            payload.contains(POOL_TIMEOUT_MARKER),
+            "panic payload must carry the marker so overload answers 503, got: {payload}"
+        );
+    }
+
+    /// Display is what the `.map_err(|e| e.to_string())` call sites surface, so
+    /// it should read as load rather than as a marker string.
+    #[test]
+    fn display_explains_the_condition_without_leaking_the_marker() {
+        let pool = Pool::builder()
+            .max_size(1)
+            .connection_timeout(std::time::Duration::from_millis(50))
+            .build(SqliteConnectionManager::memory())
+            .expect("pool builds");
+        let handle = DbHandle {
+            pool,
+            pg_pool: None,
+        };
+        let _held = handle.lock().expect("first connection is free");
+
+        let err = handle.lock().expect_err("a saturated pool must fail");
+        let shown = err.to_string();
+        assert!(shown.contains("pool exhausted"), "got: {shown}");
+        assert!(!shown.contains(POOL_TIMEOUT_MARKER), "got: {shown}");
+    }
 }
 
 #[cfg(test)]

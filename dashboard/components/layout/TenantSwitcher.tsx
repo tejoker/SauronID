@@ -155,7 +155,11 @@ export function TenantSwitcher() {
         <ul
           role="listbox"
           aria-label="Available tenants"
-          aria-activedescendant={`tenant-option-${activeIndex}`}
+          // No aria-activedescendant: this listbox uses roving focus (the
+          // effect above calls .focus() on the active option's button), and the
+          // two patterns are alternatives, not complements. Declaring both
+          // pointed assistive tech at the <li> while real focus sat on the
+          // <button> inside it — two different answers to "what is focused".
           onKeyDown={onListKeyDown}
           className="absolute right-0 mt-1 min-w-[14rem] max-h-72 overflow-y-auto z-50 rounded border border-[var(--border)] bg-[var(--bg)] shadow-lg"
           data-testid="tenant-switcher-menu"

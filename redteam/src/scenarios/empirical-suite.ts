@@ -13,8 +13,43 @@
 
 import { generateKeyPairSync, randomBytes, createHash, sign as edSign } from "crypto";
 import { writeFileSync } from "fs";
+import { execFileSync } from "child_process";
 import { CoreApi, randSuffix, createPopKeyPair, signPopJws } from "../core-api";
 import { signCallV2 } from "../call-sig-v2";
+
+/**
+ * Revision the suite ran against, for the report's provenance block.
+ *
+ * Prefers the CI-supplied SHA so a container without a `.git` directory still
+ * records one. Returns "unknown" rather than throwing: a missing commit should
+ * weaken the evidence, never fail the run that produced it.
+ *
+ * A dirty tree gets a `-dirty` suffix, and that suffix is the point. A bare SHA
+ * on a run whose binary included uncommitted edits is not merely imprecise, it
+ * is wrong in the direction that matters: a reader checks out that commit,
+ * cannot reproduce the result, and has no way to tell whether the difference is
+ * their environment or a diff that was never published.
+ */
+function git(args: string[]): string | null {
+    try {
+        return execFileSync("git", args, {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+    } catch {
+        return null;
+    }
+}
+
+function gitCommit(): string {
+    const fromCi = process.env.GITHUB_SHA || process.env.CI_COMMIT_SHA;
+    // CI checks out a clean tree at a known ref, so its SHA needs no suffix.
+    if (fromCi) return fromCi;
+    const head = git(["rev-parse", "HEAD"]);
+    if (!head) return "unknown";
+    const dirty = git(["status", "--porcelain"]);
+    return dirty ? `${head}-dirty` : head;
+}
 
 interface TestResult {
     id: string;
@@ -1323,7 +1358,32 @@ async function main() {
     console.log(`empirical: ${passed}/${total} pass (${skipped} skipped due to env config)`);
 
     const reportPath = "empirical-results.json";
-    writeFileSync(reportPath, JSON.stringify({ results, passed, total, skipped, generated_at: new Date().toISOString() }, null, 2));
+    // Provenance, not decoration: this file is cited as release evidence, and a
+    // result set with no commit and no enforcement mode cannot demonstrate the
+    // one property that makes it evidence ("produced in fail-closed mode, at
+    // this revision"). A reader who cannot reproduce the conditions is being
+    // asked to take the numbers on trust.
+    writeFileSync(
+        reportPath,
+        JSON.stringify(
+            {
+                results,
+                passed,
+                total,
+                skipped,
+                dynamic,
+                generated_at: new Date().toISOString(),
+                provenance: {
+                    commit: gitCommit(),
+                    enforce_mode: enforceMode,
+                    db_backend: process.env.SAURON_DB_BACKEND ?? "sqlite",
+                    base_url: baseUrl,
+                },
+            },
+            null,
+            2
+        )
+    );
     console.log(`report → ${reportPath}`);
 
     // Missing dynamic evidence is a release failure, not a passing skip.

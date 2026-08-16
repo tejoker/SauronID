@@ -11,6 +11,85 @@ Minimum requirements for the reverse proxy:
 - Strict `Host` header validation matching `SAURON_ALLOWED_ORIGINS`
 - Forward `X-Forwarded-For` so the rate limiter sees real client IPs (read by `risk.rs`)
 - Connection timeout ≤30s (per-call signature window is 60s; longer connections add no value)
+- **Must not rewrite the request line** — see below. This is the one that bites.
+
+## Reverse proxy requirements
+
+Read this before you put anything in front of the core. It is the most common
+cause of a deployment that worked locally and returns `401 call_sig_invalid`
+the moment it goes behind a proxy.
+
+The call-signature payload binds `target_uri` as the **exact bytes** of the
+request line's path and query, with no normalisation on either side. That is
+deliberate: canonicalising a URI is a notorious source of client/server
+disagreement, and a signature over the literal bytes cannot disagree. The cost
+is that any intermediary which *rewrites* those bytes invalidates the signature
+the client computed over the original.
+
+Rewrites that break every signed call:
+
+| Rewrite | Example | Who does it by default |
+|---|---|---|
+| Collapsing duplicate slashes | `/agent//egress/log` → `/agent/egress/log` | nginx (`merge_slashes on`) |
+| Decoding percent-escapes in the path | `/agent/a%2Fb` → `/agent/a/b` | nginx, Apache |
+| Re-encoding unreserved characters | `/agent/a~b` → `/agent/a%7Eb` | some CDNs and WAFs |
+| Resolving dot segments | `/agent/x/../egress/log` → `/agent/egress/log` | nginx, Envoy |
+| Sorting, deduplicating or stripping query parameters | `?b=2&a=1` → `?a=1&b=2` | caching CDNs |
+| Appending or removing a trailing slash | `/agent/token` → `/agent/token/` | many ingress controllers |
+
+TLS termination, header addition, and load balancing are all fine. Only the
+request line is sensitive.
+
+### nginx
+
+```nginx
+# Off, so nginx forwards the path exactly as received.
+merge_slashes off;
+
+location / {
+    # $request_uri is the raw, un-decoded original. Using $uri here instead
+    # would forward nginx's normalised copy and break every signature.
+    proxy_pass http://127.0.0.1:3001$request_uri;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+### Caddy
+
+Caddy's `reverse_proxy` preserves the request line as received, so the default
+is already correct. Do not add `uri strip_prefix`, `uri replace`, or
+`rewrite` on the proxied route — each of those edits the signed bytes.
+
+```caddy
+core.example.com {
+    reverse_proxy 127.0.0.1:3001
+}
+```
+
+### Envoy / Istio
+
+Set `normalize_path: false` and `merge_slashes: false` on the HTTP connection
+manager. Both default to normalising.
+
+### AWS ALB, Cloudflare, other managed edges
+
+Managed edges vary by configuration and change behaviour between versions, so
+verify rather than assume. The check takes one command against a deployed
+instance — a signed call whose path contains a character a normaliser would
+touch:
+
+```bash
+# Should return the same status as the same call without the %2F.
+# A 401 with code "call_sig_invalid" here means the edge is rewriting the path.
+curl -i "https://core.example.com/agent/egress/log?probe=a%2Fb"   # + your signed headers
+```
+
+If you cannot stop an edge from normalising, terminate TLS at something that
+does not (Caddy, or nginx configured as above) and put that between the edge
+and the core.
 
 ## Deployment profiles
 

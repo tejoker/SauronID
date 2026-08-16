@@ -10,16 +10,46 @@ WORKDIR /app
 # `dockerfile: core/Dockerfile`; keep them in step with this file.
 COPY core/Cargo.toml core/Cargo.lock ./core/
 COPY transparent-zk/types ./transparent-zk/types
-# src/ must be in place before any cargo invocation: with only a manifest,
-# cargo aborts with "no targets specified in the manifest", so the old
-# manifest-only `cargo fetch` dependency-cache layer could never have worked.
-COPY core/src ./core/src
+
+# ── Dependency layer ──
+#
+# Roughly 600 crates compile here, and they change only when Cargo.lock does.
+# Keeping them in a layer that does not mention core/src means editing a
+# handler no longer recompiles the entire dependency graph.
+#
+# The stubs exist because cargo refuses a manifest with no targets ("no targets
+# specified in the manifest"), which is why an earlier manifest-only `cargo
+# fetch` layer here could never have worked. A stub lib and a stub main are
+# enough: every dependency comes from the one [dependencies] table, so they all
+# build without a single line of real source. The binaries under src/bin are
+# deliberately not stubbed — they add no dependencies, and listing them here
+# would be a second copy of the target list to keep in sync.
+RUN mkdir -p core/src && \
+    printf 'fn main() {}\n' > core/src/main.rs && \
+    : > core/src/lib.rs
 
 WORKDIR /app/core
 
 # --locked: build exactly the dependency graph committed for this release. A
 # missing or stale lockfile is a hard build failure.
 RUN cargo build --locked --release
+
+# ── Source layer ──
+#
+# From here down, a code change invalidates the build but not the dependencies.
+WORKDIR /app
+COPY core/src ./core/src
+
+WORKDIR /app/core
+# Cargo decides freshness by mtime, and COPY preserves the mtimes from the
+# build context — which are the checkout times, i.e. OLDER than the stubs
+# written above. Verified: cargo treats a source older than the last build as
+# fresh and skips it, so without this touch the image would ship the stub
+# `fn main() {}` and start a server that does nothing. Making every source
+# newer than the dependency layer is what forces the real compile.
+RUN find src -name '*.rs' -exec touch {} + && \
+    cargo build --locked --release && \
+    test -x target/release/sauron-core
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241

@@ -217,6 +217,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
+          # The Dockerfile splits dependencies into their own layer, but on an
+          # ephemeral runner that layer is rebuilt from nothing every time
+          # unless it is exported somewhere. GitHub's cache backend is that
+          # somewhere: with it, a release whose Cargo.lock is unchanged reuses
+          # the ~600-crate dependency layer instead of recompiling it.
+          #
+          # Safe for a release artifact because the cache keys on layer content,
+          # not on a tag — a changed lockfile changes the layer and misses the
+          # cache. The final `cargo build --locked` still pins the exact
+          # dependency graph either way.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
 
       # Provenance and an SBOM were already attached, but nothing bound them to
       # this repository: an attacker who can push to the registry can attach

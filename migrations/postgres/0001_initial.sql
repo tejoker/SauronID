@@ -20,12 +20,13 @@
 
 BEGIN;
 
--- Partner sites (banks + retail)
+-- Partner sites (banks + retail). No private-key column by design: partners
+-- generate and retain their own ring key, and the server holds no custody.
+-- Databases created before 0019 still have one; that migration drops it.
 CREATE TABLE IF NOT EXISTS clients (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT     UNIQUE NOT NULL,
     public_key_hex  TEXT     NOT NULL,
-    private_key_hex TEXT     NOT NULL,
     key_image_hex   TEXT     NOT NULL,
     tokens_b        BIGINT   NOT NULL DEFAULT 0,
     client_type     TEXT     NOT NULL CHECK (client_type IN ('FULL_KYC', 'ZKP_ONLY', 'BANK'))

@@ -1,0 +1,16 @@
+-- Drop the write-only clients.private_key_hex column.
+--
+-- Partners generate and retain their own ring key; the server receives only a
+-- public key and a key image. The column existed from the pre-pivot bank flow,
+-- and by the time external custody became mandatory the insert was writing the
+-- literal string 'EXTERNAL_CUSTODY' into it. Nothing has ever read it back.
+--
+-- It goes for two reasons. The insert in core/src/admin.rs no longer names the
+-- column, so on an existing database a NOT NULL column with no default would
+-- reject every new client. And a column called private_key_hex in the schema
+-- of a product whose claim is that the operator holds no partner key costs a
+-- paragraph of explanation in every security review it survives into.
+--
+-- IF EXISTS keeps this replayable and keeps it working against a database
+-- initialised after the column was removed from 0001_initial.sql.
+ALTER TABLE clients DROP COLUMN IF EXISTS private_key_hex;

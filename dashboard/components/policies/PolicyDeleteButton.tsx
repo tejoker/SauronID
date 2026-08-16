@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { deletePolicy } from "@/lib/api";
 
@@ -15,6 +15,17 @@ export function PolicyDeleteButton({ policyId, agent }: PolicyDeleteButtonProps)
   const [typed, setTyped] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+
+  // Focus the confirmation field when the confirm step opens.
+  //
+  // `autoFocus` did this on mount, which is a focus steal: it moves the caret
+  // without the user having asked, and a screen-reader user loses their place.
+  // Focusing in response to `confirming` flipping is a move the user just
+  // requested by pressing Delete, which is the case where it is welcome.
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus();
+  }, [confirming]);
 
   async function onConfirm() {
     setPending(true);
@@ -48,7 +59,7 @@ export function PolicyDeleteButton({ policyId, agent }: PolicyDeleteButtonProps)
   return (
     <div className="flex items-center gap-3 flex-wrap">
       <input
-        autoFocus
+        ref={confirmRef}
         value={typed}
         onChange={(e) => setTyped(e.target.value)}
         placeholder={`Type "${agent}" to confirm`}

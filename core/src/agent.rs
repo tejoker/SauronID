@@ -26,7 +26,7 @@ use crate::sync_recover::RwLockRecover;
 use crate::tenancy::TenantId;
 use axum::{
     extract::{Extension, Json, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use curve25519_dalek::traits::Identity as _;
@@ -2395,7 +2395,12 @@ async fn try_verify_call_sig(
             StatusCode::UNAUTHORIZED,
             "call_sig_invalid",
             "call signature verification failed",
-            "sign the sauron.call.v2 canonical payload with the registered Ed25519 PoP key; verify body_sha256 matches the exact bytes sent",
+            "sign the sauron.call.v2 canonical payload with the registered Ed25519 PoP key; \
+             verify body_sha256 matches the exact bytes sent. If the client is correct and \
+             this started when you put the core behind a reverse proxy, the proxy is almost \
+             certainly rewriting the request line: target_uri is signed byte-for-byte, so \
+             collapsing //, decoding %2F, or reordering the query invalidates it — see \
+             docs/operations.md 'Reverse proxy requirements'",
         )
     })?;
 
@@ -2517,20 +2522,35 @@ pub const CALL_SIG_EXEMPT_PATHS: &[&str] = &[
     // them without agent credentials.
     "/agent/verify",
     "/agent/action/receipt/verify",
+    // Anonymous ring-policy surface. A per-call signature carries the
+    // `x-sauron-agent-id` of the signer, which is precisely the identity the
+    // ring signature exists to withhold — requiring both would deanonymise the
+    // path it protects. Authentication is not skipped here, it is different:
+    // both handlers verify a linkable ring signature over a canonical envelope
+    // and consume a single-use nonce, and both are inert unless
+    // SAURON_ANON_RINGS is on.
+    "/agent/action/anon",
+    "/agent/usage",
 ];
 
-/// True when `path` is on the agent surface and not explicitly exempt.
-fn call_sig_required_for(path: &str) -> bool {
+/// True when a request on the agent surface must carry a call signature.
+///
+/// The method matters. The single-segment carve-out below exists for
+/// `GET /agent/{id}`, a read of a record the caller already holds; applied to
+/// every verb it would silently exempt any future one-word route
+/// (`POST /agent/spend`, `DELETE /agent/keys`, …). Those are exactly the routes
+/// that carry authority, and nothing fails when a check is merely absent — so
+/// the carve-out is pinned to the verb it was written for.
+fn call_sig_required_for(method: &Method, path: &str) -> bool {
     if !path.starts_with("/agent/") {
         return false;
     }
     if CALL_SIG_EXEMPT_PATHS.contains(&path) {
         return false;
     }
-    // GET /agent/{id} is a read of a record the owner already holds; it carries
-    // no authority and predates the signing layer.
     let rest = &path["/agent/".len()..];
-    if !rest.is_empty() && !rest.contains('/') {
+    let single_segment = !rest.is_empty() && !rest.contains('/');
+    if single_segment && (method == Method::GET || method == Method::HEAD) {
         return false;
     }
     true
@@ -2547,7 +2567,7 @@ pub async fn require_call_signature_default_deny(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, AppError> {
-    if !call_sig_required_for(req.uri().path()) {
+    if !call_sig_required_for(req.method(), req.uri().path()) {
         return Ok(next.run(req).await);
     }
     require_call_signature(state, req, next).await
@@ -2610,11 +2630,77 @@ pub async fn require_call_signature(
 
 #[cfg(test)]
 mod call_sig_default_deny_tests {
-    use super::{call_sig_required_for, CALL_SIG_EXEMPT_PATHS};
+    use super::{call_sig_required_for, Method, CALL_SIG_EXEMPT_PATHS};
+
+    /// Every `/agent/...` path the binary actually mounts, read out of the
+    /// router source at compile time.
+    ///
+    /// The previous version of this module tested a list someone typed here by
+    /// hand, which can only ever assert what its author already knew about. A
+    /// route added to `main.rs` and forgotten here was invisible — the exact
+    /// failure the default-deny layer exists to prevent. Embedding the router
+    /// source means the test's input is the router itself.
+    fn mounted_agent_paths() -> Vec<String> {
+        const ROUTER_SRC: &str = include_str!("main.rs");
+        let mut out = Vec::new();
+        for piece in ROUTER_SRC.split(".route(").skip(1) {
+            let Some(open) = piece.find('"') else {
+                continue;
+            };
+            let rest = &piece[open + 1..];
+            let Some(close) = rest.find('"') else {
+                continue;
+            };
+            let path = &rest[..close];
+            if path.starts_with("/agent/") && !out.iter().any(|p| p == path) {
+                out.push(path.to_string());
+            }
+        }
+        assert!(
+            out.len() >= 15,
+            "expected to parse the agent surface out of main.rs, found {}: has the router moved?",
+            out.len()
+        );
+        out
+    }
 
     #[test]
-    fn every_agent_route_is_signed_unless_explicitly_exempt() {
-        // The eight routes that used to opt in by hand.
+    fn every_mounted_agent_route_is_signed_or_explicitly_exempt() {
+        for path in mounted_agent_paths() {
+            // Axum path params never reach the predicate as literals; a
+            // concrete id exercises the same branch.
+            let concrete = path.replace("{agent_id}", "agt_abc123").replace(
+                "{human_key_image}",
+                "0011223344556677889900112233445566778899001122334455667788990011",
+            );
+            let exempt = CALL_SIG_EXEMPT_PATHS.contains(&concrete.as_str());
+            let required = call_sig_required_for(&Method::POST, &concrete);
+            assert!(
+                required || exempt,
+                "{path} is mounted, takes writes, and is neither protected nor on \
+                 CALL_SIG_EXEMPT_PATHS — add it to the exempt list with a reason, \
+                 or leave it protected"
+            );
+        }
+    }
+
+    #[test]
+    fn the_single_segment_carve_out_is_read_only() {
+        // What it was written for: a read of a record the caller already holds.
+        assert!(!call_sig_required_for(&Method::GET, "/agent/agt_abc123"));
+        assert!(!call_sig_required_for(&Method::HEAD, "/agent/agt_abc123"));
+        // What it must never cover. Before the method check, every one of these
+        // was silently unprotected purely for having no second slash.
+        for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+            assert!(
+                call_sig_required_for(&method, "/agent/spend"),
+                "{method} on a one-word agent route must still be signed"
+            );
+        }
+    }
+
+    #[test]
+    fn known_authority_bearing_routes_stay_protected() {
         for p in [
             "/agent/action/challenge",
             "/agent/payment/authorize",
@@ -2623,27 +2709,28 @@ mod call_sig_default_deny_tests {
             "/agent/egress/proxy",
             "/agent/kyc/consent",
             "/agent/vc/issue",
+            // A route nobody has written yet.
+            "/agent/action/submit",
         ] {
-            assert!(call_sig_required_for(p), "{p} must stay protected");
+            assert!(
+                call_sig_required_for(&Method::POST, p),
+                "{p} must stay protected"
+            );
         }
-        // And the point of the change: a route nobody has written yet.
-        assert!(
-            call_sig_required_for("/agent/action/submit"),
-            "a new agent route must be protected by default, not by remembering"
-        );
     }
 
     #[test]
     fn exempt_paths_are_exempt_and_nothing_else_is() {
         for p in CALL_SIG_EXEMPT_PATHS {
-            assert!(!call_sig_required_for(p), "{p} is on the exempt list");
+            assert!(
+                !call_sig_required_for(&Method::POST, p),
+                "{p} is on the exempt list"
+            );
         }
-        // Reads of a single agent record carry no authority.
-        assert!(!call_sig_required_for("/agent/agt_abc123"));
         // Non-agent surfaces are governed by their own auth layers.
-        assert!(!call_sig_required_for("/admin/stats"));
-        assert!(!call_sig_required_for("/healthz"));
-        assert!(!call_sig_required_for("/user/auth"));
+        for p in ["/admin/stats", "/healthz", "/user/auth"] {
+            assert!(!call_sig_required_for(&Method::POST, p));
+        }
     }
 
     #[test]
@@ -2652,7 +2739,7 @@ mod call_sig_default_deny_tests {
         // a visible diff here as well as in the constant.
         assert_eq!(
             CALL_SIG_EXEMPT_PATHS.len(),
-            6,
+            8,
             "exempt list changed — is the new entry genuinely unable to carry a signature?"
         );
     }

@@ -60,7 +60,43 @@ startup warning deliberately says SQLite is still load-bearing.
 
 Partner private keys must be generated and retained by the partner/HSM. The
 production registration API accepts only public material and does not return
-or persist a generated private key.
+or persist a generated private key. There is no column for one: the `clients`
+table's `private_key_hex` was dropped in `migrations/postgres/0019` after it
+had spent its whole life storing the constant `EXTERNAL_CUSTODY` and being read
+by nothing.
+
+### How far the Postgres port actually is
+
+Setting `SAURON_DB_BACKEND=postgres` does **not** move the deployment off
+SQLite, and the single-node acknowledgement is required with or without it.
+Measure it from the source rather than from intent:
+
+```bash
+# Call sites that work against either backend
+grep -rc '\.any_conn()' core/src --include='*.rs' | awk -F: '{n+=$2} END {print "dual-backend:", n}'
+# Call sites still bound to rusqlite
+grep -rcE '\b(db|conn|tx)\.(query_row|execute|prepare|query_map|execute_batch)\(' core/src --include='*.rs' \
+  | awk -F: '{n+=$2} END {print "sqlite-only: ", n}'
+```
+
+At the time of writing that is 189 dual-backend against 131 SQLite-only —
+roughly 59% converted. Schema parity is already complete: all 55 tables exist
+in `migrations/postgres/`, so the gap is entirely in which call sites use the
+abstraction, not in what Postgres can store.
+
+**The receipts and anchors subsystem has to move as one unit.**
+`agent_action_receipts` plus `bitcoin_merkle_anchors` / `solana_merkle_anchors`
+are written by synchronous `&Connection` helpers
+(`validate_agent_action`, `validate_anon_action`, the egress gateway) and read
+from roughly thirteen places across six modules — including the anchor batcher,
+which seals receipts into Bitcoin and Solana. Porting the writes alone puts the
+readers on an empty Postgres table while the real rows stay in the SQLite
+sidecar, and the failure is silent: anchoring simply stops finding anything to
+anchor. That port was attempted once and reverted for exactly this reason.
+
+Until it lands, the honest answer to "can we run this multi-AZ" is no, and the
+honest answer to "when" is: after that subsystem moves. Full detail and the
+per-table sweep is in [postgres-port-status.md](postgres-port-status.md).
 
 ## Proof and authentication boundary
 

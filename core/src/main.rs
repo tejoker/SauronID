@@ -18,7 +18,7 @@ use sauron_core::compliance;
 use sauron_core::crypto_protocol::{partner_registration_payload, PartnerRegistrationInput};
 use sauron_core::issuer_runtime::IssuerVerifyError;
 use sauron_core::middleware::{
-    audit_log_middleware, global_rate_limit_middleware, init_audit_sink,
+    audit_log_middleware, global_rate_limit_middleware, handle_request_panic, init_audit_sink,
     security_headers_middleware, GlobalRateLimitConfig, GlobalRateLimiter,
 };
 use sauron_core::policy::{self, AssuranceLevel};
@@ -453,7 +453,7 @@ async fn main() {
         // Last-resort request isolation. Request paths must still avoid
         // panicking while holding shared locks because poisoning can outlive
         // the recovered HTTP response.
-        .layer(CatchPanicLayer::new())
+        .layer(CatchPanicLayer::custom(handle_request_panic))
         .layer({
             let allowed_origins: Vec<axum::http::HeaderValue> =
                 std::env::var("SAURON_ALLOWED_ORIGINS")

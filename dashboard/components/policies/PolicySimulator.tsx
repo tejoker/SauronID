@@ -76,11 +76,11 @@ export function PolicySimulator({ policyId }: PolicySimulatorProps) {
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
+        <label htmlFor="policy-sim-action" className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
           Action JSON
         </label>
         <textarea
-          aria-label="Action JSON payload"
+          id="policy-sim-action"
           value={actionText}
           onChange={(e) => setActionText(e.target.value)}
           rows={10}

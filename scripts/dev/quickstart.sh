@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# SauronID quickstart — cold clone to running 16-attack-suite-passing in ~60s.
+# SauronID quickstart — cold clone to a running, 16-attack-suite-passing core.
+#
+# No time estimate here on purpose. A cold build compiles several hundred
+# crates and takes roughly 15-45 minutes depending on hardware and cache state,
+# which is what README.md says; the "~60s" this line used to claim was the warm
+# rerun and set an expectation the first run could never meet.
 #
 # Default mode: development, advisory call-sig (existing scenarios pass).
 # Set SAURON_REQUIRE_CALL_SIG=1 in env to run fail-closed empirical suite.
@@ -37,7 +42,13 @@ export ENV="${ENV:-development}"
 # shellcheck source=scripts/lib/dev_secrets.sh
 source "$ROOT/scripts/lib/dev_secrets.sh"
 load_dev_admin_key
-export SAURON_CORE_URL="${SAURON_CORE_URL:-http://127.0.0.1:3001}"
+# The core binds $PORT, so the port belongs in one variable rather than being
+# spelled 3001 in three places. Overridable so this can run beside an existing
+# stack (a `docker compose up` already publishing 3001) instead of fighting it
+# for the port — the previous version killed whatever held 3001 and then bound
+# it, which is a rude default on a developer's own machine.
+export PORT="${PORT:-3001}"
+export SAURON_CORE_URL="${SAURON_CORE_URL:-http://127.0.0.1:$PORT}"
 export SAURON_URL="${SAURON_URL:-$SAURON_CORE_URL}"
 export RUST_LOG="${RUST_LOG:-warn}"
 
@@ -64,9 +75,32 @@ if ! command -v node >/dev/null 2>&1; then
     fail "node not found — install Node 18+ from https://nodejs.org"
     exit 1
 fi
+# A Rust toolchain is not enough: several dependencies build C and every
+# binary needs a linker. Without one the build dies minutes later, deep inside
+# a build script, as "error: linker `cc` not found" — check it here instead.
+if ! command -v cc >/dev/null 2>&1; then
+    fail "no C linker on PATH (cc) — cargo cannot link any binary"
+    echo "      Debian/Ubuntu : sudo apt-get install build-essential pkg-config"
+    echo "      Fedora/RHEL   : sudo dnf install gcc gcc-c++ make pkgconf"
+    echo "      macOS         : xcode-select --install"
+    exit 1
+fi
 
-# Free any lingering server on the target port
-fuser -k 3001/tcp 2>/dev/null || true
+# Free any lingering server on the target port. fuser (psmisc) is absent on
+# macOS and on slim Linux images, so fall back through what is actually there.
+free_port() {
+    local port="$1"
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k "${port}/tcp" 2>/dev/null || true
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill 2>/dev/null || true
+    else
+        # Nothing to enumerate with: a stale listener surfaces as a bind error
+        # at startup, which names the port clearly enough to act on.
+        return 0
+    fi
+}
+free_port "$PORT"
 sleep 1
 ok "ports clear, toolchain present"
 
@@ -112,9 +146,18 @@ export SAURON_ENABLE_DEV_ENDPOINTS=1
 # default per-IP limiter (200 rps, burst 50) throttles it into 429s.
 export SAURON_GLOBAL_RATE_LIMIT_RPS=5000
 export SAURON_GLOBAL_RATE_LIMIT_BURST=2000
-./target/release/sauron-core > /tmp/sauron-quickstart.log 2>&1 &
+# Cargo writes to $CARGO_TARGET_DIR when it is set, which is common (a shared
+# target dir, sccache, or simply a checkout whose own target/ is not writable).
+# Hardcoding ./target/release meant the build succeeded and the launch then
+# failed with "no such file or directory" pointing at a path cargo never used.
+CORE_BIN="${CARGO_TARGET_DIR:-$ROOT/core/target}/release/sauron-core"
+if [ ! -x "$CORE_BIN" ]; then
+    fail "built core binary not found at $CORE_BIN"
+    exit 1
+fi
+"$CORE_BIN" > /tmp/sauron-quickstart.log 2>&1 &
 CORE_PID=$!
-trap 'kill $CORE_PID 2>/dev/null || true; fuser -k 3001/tcp 2>/dev/null || true' EXIT
+trap 'kill $CORE_PID 2>/dev/null || true; free_port "$PORT"' EXIT
 
 # Wait for readiness (liveness endpoint; authz-free)
 for i in $(seq 1 30); do

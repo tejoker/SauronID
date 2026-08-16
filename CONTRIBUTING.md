@@ -2,7 +2,14 @@
 
 ## Prerequisites
 
-- Rust 1.88+ (stable toolchain with `rustfmt` and `clippy`)
+- Rust 1.91.1 — pinned exactly by `rust-toolchain.toml`, so rustup installs it
+  for you on first `cargo` invocation. `rustfmt` and `clippy` come with the pin.
+- A C toolchain. Several dependencies compile C, and every binary needs a
+  linker; without `cc` on `PATH` the build fails inside a build script rather
+  than at the start.
+  - Debian/Ubuntu: `sudo apt-get install build-essential pkg-config`
+  - Fedora/RHEL: `sudo dnf install gcc gcc-c++ make pkgconf`
+  - macOS: `xcode-select --install`
 - Node.js 20+
 - Python 3.12+ recommended for development (the Python SDK itself supports >=3.9)
 

@@ -1139,12 +1139,30 @@ pub fn validate_anon_action(
 /// POST /agent/action/anon — anonymous ring-policy action submission.
 pub async fn submit_anon_action(
     State(state): State<Arc<RwLock<ServerState>>>,
+    Extension(tenant): Extension<TenantId>,
     Json(proof): Json<AnonActionProof>,
 ) -> Result<Json<ActionReceipt>, (StatusCode, String)> {
     if !crate::rings::anon_rings_enabled() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "anonymous rings are disabled (set SAURON_ANON_RINGS=1)".into(),
+        ));
+    }
+    // The envelope names its own tenant, and that name is inside the signed
+    // bytes, so it cannot be swapped after signing. It still has to agree with
+    // the tenant the middleware resolved for this request: every other handler
+    // derives its tenant from request context, and a handler that trusts the
+    // body alone is one that sits outside tenant routing, rate limiting and
+    // audit scoping. Checking both keeps the signature binding AND the context.
+    if proof.envelope.tenant_id != tenant.as_str() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "envelope tenant '{}' does not match the request tenant '{}' — \
+                 send x-sauron-tenant-id matching the signed envelope",
+                proof.envelope.tenant_id,
+                tenant.as_str()
+            ),
         ));
     }
     let now = now_secs();

@@ -2882,6 +2882,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac 0.12.1",
+ "http-body-util",
  "jsonwebtoken",
  "num-bigint",
  "num-integer",
