@@ -532,7 +532,10 @@ fn map_agg_err(e: AggError) -> AppError {
         AggError::Invalid(m) => AppError::BadRequest(m),
         AggError::KeyNotFound(m) => AppError::NotFound(m),
         AggError::VerifierFailed(m) => AppError::Internal(m),
-        AggError::Storage(m) => AppError::Internal(m),
+        // Storage failures are flattened to a String well before they get here,
+        // so contention has to be recognised from the message. A write that
+        // lost a race is 503 + retry, not 500.
+        AggError::Storage(m) => crate::error::from_db_message("storage", m),
     }
 }
 

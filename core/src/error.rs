@@ -150,8 +150,134 @@ impl IntoResponse for AppError {
     }
 }
 
+/// Hint returned whenever a request loses a race for the database.
+const CONTENTION_FIX: &str =
+    "the database was busy with another write; retry after a short delay. If this is \
+     frequent, the single-writer SQLite tier is saturated — see docs/production-readiness.md";
+
+/// True when a database error message describes write contention rather than a
+/// fault.
+///
+/// String matching is a last resort, used only on the paths where the typed
+/// error has already been flattened — `AnyConn::transaction` returns `String`
+/// because it spans two backends. Where the `rusqlite::Error` survives, the
+/// conversion below matches on the error code instead, which is exact.
+pub fn is_db_contention(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("database is locked")     // SQLITE_BUSY
+        || m.contains("database table is locked") // SQLITE_LOCKED
+        || m.contains("deadlock detected")   // Postgres 40P01
+        || m.contains("could not serialize access") // Postgres 40001
+}
+
+/// Map a flattened database error string to a response.
+///
+/// Contention is `503` with a retry hint; everything else stays `500`. The two
+/// look identical to a client otherwise, and they call for opposite reactions —
+/// retry shortly, versus stop and page someone.
+pub fn from_db_message(context: &str, message: impl std::fmt::Display) -> AppError {
+    let message = message.to_string();
+    if is_db_contention(&message) {
+        return AppError::with_hint(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "db_contention",
+            format!("{context}: {message}"),
+            CONTENTION_FIX,
+        );
+    }
+    AppError::Internal(format!("{context}: {message}"))
+}
+
 impl From<rusqlite::Error> for AppError {
     fn from(e: rusqlite::Error) -> Self {
+        // Losing a race for the write lock is load, not a fault. Reported as
+        // 500 it tells the caller to stop retrying the one thing that would
+        // have succeeded a moment later.
+        if let rusqlite::Error::SqliteFailure(inner, _) = &e {
+            if matches!(
+                inner.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) {
+                return AppError::with_hint(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "db_contention",
+                    format!("sqlite: {e}"),
+                    CONTENTION_FIX,
+                );
+            }
+        }
         AppError::Internal(format!("sqlite: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod contention_tests {
+    use super::*;
+
+    /// The distinction this module exists to make: a client that gets 500 stops
+    /// retrying, and contention is precisely the case where it should.
+    #[test]
+    fn sqlite_busy_is_service_unavailable_not_internal() {
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                extended_code: 5,
+            },
+            Some("database is locked".into()),
+        );
+        match AppError::from(busy) {
+            AppError::Detailed { status, code, .. } => {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(code, "db_contention");
+            }
+            other => panic!("expected a 503 contention error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_real_sqlite_fault_stays_internal() {
+        let corrupt = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseCorrupt,
+                extended_code: 11,
+            },
+            Some("database disk image is malformed".into()),
+        );
+        assert!(matches!(AppError::from(corrupt), AppError::Internal(_)));
+    }
+
+    #[test]
+    fn flattened_messages_are_classified_for_both_backends() {
+        // SQLite, and the two Postgres serialization failures.
+        for m in [
+            "begin: database is locked",
+            "database table is locked",
+            "deadlock detected",
+            "could not serialize access due to concurrent update",
+        ] {
+            assert!(is_db_contention(m), "{m} should be contention");
+        }
+        for m in [
+            "no such table: agents",
+            "UNIQUE constraint failed: clients.name",
+            "disk I/O error",
+        ] {
+            assert!(!is_db_contention(m), "{m} is a fault, not contention");
+        }
+    }
+
+    #[test]
+    fn from_db_message_keeps_the_context_and_the_cause() {
+        let e = from_db_message("begin", "database is locked");
+        match e {
+            AppError::Detailed {
+                status, message, ..
+            } => {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                assert!(message.contains("begin"), "context lost: {message}");
+                assert!(message.contains("locked"), "cause lost: {message}");
+            }
+            other => panic!("expected 503, got {other:?}"),
+        }
     }
 }

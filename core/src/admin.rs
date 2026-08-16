@@ -507,13 +507,19 @@ pub async fn add_client(
                 Ok(())
             })
             .map_err(|e| {
-                // A duplicate client name is a 409, anything else a 500. Each
+                // A duplicate client name is a 409; losing the write lock is a
+                // 503 the caller should retry; anything else is a 500. Each
                 // backend spells the violation differently.
                 let msg = e.to_lowercase();
                 if msg.contains("unique") || msg.contains("duplicate key") {
                     (
                         StatusCode::CONFLICT,
                         format!("Client already exists or DB error: {e}"),
+                    )
+                } else if crate::error::is_db_contention(&e) {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("database busy, retry shortly: {e}"),
                     )
                 } else {
                     (StatusCode::INTERNAL_SERVER_ERROR, e)
