@@ -1265,10 +1265,15 @@ pub async fn register_agent(
     // Persist agent in DB
     {
         let st = state.read_or_recover();
-        let mut db = st
-            .db
-            .conn()
-            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+        // Deliberately NOT st.db.conn(). The `agents` table is touched from 40
+        // places, all still on the SQLite connection — including the
+        // call-signature lookup in try_verify_call_sig. Dispatching this write
+        // alone put registrations in Postgres while every later lookup read
+        // SQLite, so under SAURON_DB_BACKEND=postgres an agent registered
+        // successfully and then failed every signed call with 401
+        // call_sig_unknown_agent. `agents` converts as one unit — writes and
+        // reads together — or not at all.
+        let db = st.db.lock().unwrap();
         // M1 of TPM2 PoP roadmap: persist the new hardware-attestation columns
         // alongside the legacy blob+kind. They are NULL for non-TPM2 kinds.
         let attestation_pubkey_b64u = payload
@@ -1543,10 +1548,9 @@ pub async fn update_agent_checksum(
     let now = ajwt_support::now_secs();
     let new_version = {
         let st = state.read_or_recover();
-        let mut db = st
-            .db
-            .conn()
-            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+        // Same reason as agent registration above: rotate_inputs also runs
+        // `UPDATE agents SET agent_checksum`, and `agents` is not converted.
+        let db = st.db.lock().unwrap();
         // Honour the storage-privacy mode on rotation too, otherwise hash_only
         // would leak the plaintext config via a later checksum update.
         let stored = crate::agent_checksum::storage_payload(&canonical, &new_checksum);

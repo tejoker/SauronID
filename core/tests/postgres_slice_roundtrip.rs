@@ -144,10 +144,15 @@ fn the_same_slice_still_works_on_sqlite() {
 
 #[test]
 fn agent_checksum_inputs_land_in_postgres_not_the_sidecar() {
-    // `agent_checksum_inputs` is written during agent registration, which is
-    // the path `postgres_backend_drift.sh` uses to demonstrate the split. The
-    // helpers now take `&mut AnyConn` instead of `&rusqlite::Connection`, so
-    // they follow whichever backend the caller acquired.
+    // This proves the HELPER dispatches, not that agent registration does.
+    //
+    // `persist_inputs` now takes `&mut AnyConn`, so it follows whichever backend
+    // its caller acquired — which is what this exercises. The registration
+    // handler deliberately still passes a SQLite connection: `agents` is read
+    // from 40 places that are all still SQLite, and dispatching the write alone
+    // made registration succeed into Postgres while every later call-signature
+    // lookup missed in SQLite. Converting the helper is safe; converting its
+    // caller is only safe once `agents` moves as a whole.
     let Some(url) = pg_url() else {
         eprintln!("skipped: set SAURON_TEST_PG_URL to run");
         return;
