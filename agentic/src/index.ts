@@ -137,16 +137,3 @@ export {
     type TransparentStatsClientOptions,
 } from "./stats/transparent";
 
-// Sprint 13-14 Tier 2 — Paillier homomorphic-encryption client (thin wrapper).
-// NEEDS_CRYPTO_REVIEW: see `src/he-encrypt.ts` for the full disclaimer.
-export {
-    encrypt as paillierEncrypt,
-    add as paillierAdd,
-    mul_scalar as paillierMulScalar,
-    rerandomize as paillierRerandomize,
-    modPow as paillierModPow,
-    ciphertextToB64,
-    ciphertextFromB64,
-    type PaillierPublicKey,
-    type Ciphertext,
-} from "./he-encrypt";

@@ -50,8 +50,25 @@ pub struct DbHandle {
 }
 
 impl DbHandle {
-    /// Pooled SQLite connection. The un-migrated path.
-    pub fn lock(&self) -> Result<PooledConnection<SqliteConnectionManager>, PoolTimeout> {
+    /// A pooled connection to the configured backend.
+    ///
+    /// Was the SQLite-only accessor; it is now an alias for [`conn`], which is
+    /// what made the port atomic. Every call site acquires here, so pointing
+    /// this one function at the dispatching guard moved all of them at once —
+    /// and the compiler then found each site that still spoke rusqlite
+    /// directly, because `DbConn` has no `query_row`/`execute` of its own.
+    pub fn lock(&self) -> Result<DbConn, PoolTimeout> {
+        self.conn()
+    }
+
+    /// A pooled *SQLite* connection, whatever backend is configured.
+    ///
+    /// Using this asserts "this does not work on Postgres and is not meant
+    /// to". There are two such cases, both deliberate: schema initialisation
+    /// (Postgres takes its schema from `migrations/postgres/`, not from
+    /// `init_schema`) and SQLite's online backup API, which has no Postgres
+    /// equivalent. Every caller says which one it is at the site.
+    pub fn lock_sqlite(&self) -> Result<PooledConnection<SqliteConnectionManager>, PoolTimeout> {
         self.pool.get().map_err(PoolTimeout)
     }
 
@@ -75,7 +92,7 @@ impl DbHandle {
                 f(&mut AnyConn::Postgres(&mut client))
             }
             None => {
-                let conn = self.lock().map_err(|e| e.to_string())?;
+                let conn = self.lock_sqlite().map_err(|e| e.to_string())?;
                 f(&mut AnyConn::Sqlite(&conn))
             }
         }
@@ -102,8 +119,24 @@ impl DbHandle {
     /// borrowed mutably.
     pub fn conn(&self) -> Result<DbConn, PoolTimeout> {
         match &self.pg_pool {
-            Some(pool) => Ok(DbConn::Postgres(Box::new(pool.get().map_err(PoolTimeout)?))),
-            None => Ok(DbConn::Sqlite(self.lock()?)),
+            // `pool.get()` may open a connection or reap a broken one, and both
+            // run the blocking driver — so the acquisition needs the same
+            // treatment as a query.
+            Some(pool) => Ok(DbConn::Postgres(Some(Box::new(
+                crate::any_db::blocking(|| pool.get()).map_err(PoolTimeout)?,
+            )))),
+            None => Ok(DbConn::Sqlite(self.lock_sqlite()?)),
+        }
+    }
+}
+
+impl Drop for DbHandle {
+    fn drop(&mut self) {
+        // Dropping the r2d2 pool closes every idle Postgres client, and each
+        // close runs the blocking driver. At process shutdown that happens on a
+        // runtime thread, so it needs the same guard as a query.
+        if let Some(pool) = self.pg_pool.take() {
+            crate::any_db::blocking(move || drop(pool));
         }
     }
 }
@@ -120,7 +153,25 @@ impl DbHandle {
 /// are all of them today.
 pub enum DbConn {
     Sqlite(PooledConnection<SqliteConnectionManager>),
-    Postgres(Box<PooledConnection<PostgresConnectionManager<postgres::NoTls>>>),
+    /// `Option` only so [`Drop`] can take the client out and release it from a
+    /// context where blocking is allowed; it is `Some` for the guard's whole
+    /// usable life.
+    Postgres(Option<Box<PooledConnection<PostgresConnectionManager<postgres::NoTls>>>>),
+}
+
+impl Drop for DbConn {
+    fn drop(&mut self) {
+        // Returning a pooled Postgres client can close it, and closing runs the
+        // blocking driver's `block_on`. Dropping a guard at the end of an async
+        // handler would then panic — the same failure as an unwrapped query,
+        // arriving during unwind. Only the Postgres arm needs this; the SQLite
+        // guard's drop is pure bookkeeping.
+        if let DbConn::Postgres(slot) = self {
+            if let Some(client) = slot.take() {
+                crate::any_db::blocking(move || drop(client));
+            }
+        }
+    }
 }
 
 impl DbConn {
@@ -131,7 +182,9 @@ impl DbConn {
     pub fn any_conn(&mut self) -> AnyConn<'_> {
         match self {
             DbConn::Sqlite(c) => AnyConn::Sqlite(c),
-            DbConn::Postgres(c) => AnyConn::Postgres(c),
+            DbConn::Postgres(c) => {
+                AnyConn::Postgres(c.as_mut().expect("guard used after its own Drop"))
+            }
         }
     }
 
@@ -936,18 +989,6 @@ pub fn init_schema(conn: &Connection) {
         -- a new aggregation row will corrupt the running sum. Operators
         -- MUST treat the (cohort, metric, period) tuple as bound to a
         -- single public key for the lifetime of the row.
-        CREATE TABLE IF NOT EXISTS he_aggregations (
-            aggregation_id    TEXT PRIMARY KEY,
-            cohort_id         TEXT NOT NULL,
-            metric_id         TEXT NOT NULL,
-            period_start      INTEGER NOT NULL,
-            pk_id             TEXT NOT NULL,
-            sum_ciphertext_b64 TEXT NOT NULL,
-            n_contributions   INTEGER NOT NULL DEFAULT 0,
-            last_updated      INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_he_agg_cohort
-            ON he_aggregations(cohort_id, period_start);
 
         -- S10: server-side agent → policy binding registry.
         -- One row per (tenant_id, agent_id); last-write-wins via UPSERT.
@@ -1418,9 +1459,11 @@ mod pool_timeout_tests {
             pool,
             pg_pool: None,
         };
-        let _held = handle.lock().expect("first connection is free");
+        let _held = handle.lock_sqlite().expect("first connection is free");
 
-        let err = handle.lock().expect_err("a saturated pool must fail");
+        let err = handle
+            .lock_sqlite()
+            .expect_err("a saturated pool must fail");
         let shown = err.to_string();
         assert!(shown.contains("pool exhausted"), "got: {shown}");
         assert!(!shown.contains(POOL_TIMEOUT_MARKER), "got: {shown}");
@@ -1439,7 +1482,7 @@ mod durability_tests {
             std::thread::current().name().unwrap_or("test")
         ));
         let db = open_db_at(path.to_str().unwrap(), 1);
-        let conn = db.lock().expect("connection");
+        let conn = db.lock_sqlite().expect("connection");
         let synchronous: i64 = conn
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .expect("read synchronous pragma");

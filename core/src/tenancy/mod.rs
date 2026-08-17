@@ -45,8 +45,6 @@
 //! the *registration* (`user_registrations`) and *consent* (`consent_log`)
 //! tables, both of which are tenant-scoped.
 
-use std::sync::Arc;
-
 use axum::{
     extract::Request,
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
@@ -231,63 +229,6 @@ pub async fn extract_tenant(mut request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-/// Helper for background tasks that need a tenant id without an HTTP request.
-/// The anchor batcher, GC, OTS upgrader, and Solana confirmer use this as a
-/// rendezvous point — for S11 they run in "all tenants" mode using the
-/// default tenant for legacy rows and per-tenant for new rows. We may
-/// upgrade to per-tenant batching in 11.5.
-pub fn tenant_id_for_background_job() -> TenantId {
-    TenantId::default_tenant()
-}
-
-/// First-seen registry of tenant ids. SauronID has no separate tenant
-/// CRUD API yet (Sprint 11.5); operators provision tenants out-of-band
-/// (rotating a JWT secret, distributing an x-sauron-tenant-id value to
-/// their tenant). This helper records the first time we see a tenant so
-/// admin tooling has a list to display.
-///
-/// Storage: an in-memory `Arc<Mutex<HashSet<String>>>` initialised at
-/// process startup. Persistence to a `tenants` SQL table is deferred.
-#[derive(Debug, Default, Clone)]
-pub struct TenantRegistry {
-    inner: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-}
-
-impl TenantRegistry {
-    /// Build an empty registry pre-populated with the default tenant.
-    pub fn new() -> Self {
-        let mut set = std::collections::HashSet::new();
-        set.insert(DEFAULT_TENANT.to_string());
-        Self {
-            inner: Arc::new(std::sync::Mutex::new(set)),
-        }
-    }
-
-    /// Record (or no-op) that we've seen this tenant id. Returns `true`
-    /// if the tenant is new (just registered).
-    pub fn ensure_tenant_exists(&self, tenant_id: &str) -> bool {
-        if !valid_tenant_id(tenant_id) {
-            return false;
-        }
-        let mut g = match self.inner.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(), // poisoned: recover; the data is a set.
-        };
-        g.insert(tenant_id.to_string())
-    }
-
-    /// Snapshot of known tenants, sorted for stable admin output.
-    pub fn list(&self) -> Vec<String> {
-        let g = match self.inner.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-        let mut out: Vec<String> = g.iter().cloned().collect();
-        out.sort();
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,25 +297,5 @@ mod tests {
         assert!(valid_tenant_id(&max));
         let over = "a".repeat(MAX_TENANT_ID_LEN + 1);
         assert!(!valid_tenant_id(&over));
-    }
-
-    #[test]
-    fn tenant_registry_inserts_and_lists() {
-        let r = TenantRegistry::new();
-        assert!(r.list().contains(&"default".to_string()));
-        assert!(r.ensure_tenant_exists("acme"));
-        // Idempotent: second insert returns false.
-        assert!(!r.ensure_tenant_exists("acme"));
-        let listed = r.list();
-        assert!(listed.contains(&"acme".to_string()));
-        assert!(listed.contains(&"default".to_string()));
-    }
-
-    #[test]
-    fn tenant_registry_rejects_malformed_ids() {
-        let r = TenantRegistry::new();
-        assert!(!r.ensure_tenant_exists("bad tenant"));
-        assert!(!r.ensure_tenant_exists(""));
-        assert!(!r.list().iter().any(|s| s == "bad tenant"));
     }
 }

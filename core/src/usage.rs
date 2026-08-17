@@ -23,11 +23,10 @@ use axum::{
     extract::{Extension, Json, Path, State},
     http::StatusCode,
 };
-use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::{AnyConn, AnyRowGet};
 use crate::rings::RingBudgets;
 use crate::sql_params;
 use crate::state::ServerState;
@@ -82,13 +81,12 @@ pub fn derive_usd(model_id: &str, in_tokens: i64, out_tokens: i64) -> f64 {
 
 /// Current lifetime totals for a ring pseudonym (zero when none recorded yet).
 pub fn get_usage(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
     key_image_hex: &str,
 ) -> Result<UsageTotals, String> {
     let row = db
-        .any_conn()
         .query_row(
             "SELECT input_tokens, output_tokens, usd FROM usage_ledger
              WHERE tenant_id = ?1 AND ring_id = ?2 AND key_image_hex = ?3",
@@ -137,7 +135,7 @@ pub fn budget_exceeded(totals: &UsageTotals, budgets: &RingBudgets) -> Option<St
 /// to `usage_log` and atomically accumulates `usage_ledger`. Returns the new
 /// totals. Requires an anon-ring receipt (legacy receipts have no `ring_id`).
 pub fn record_usage(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     receipt_id: &str,
     model_id: &str,
     in_tokens: i64,
@@ -147,14 +145,13 @@ pub fn record_usage(
     if in_tokens < 0 || out_tokens < 0 {
         return Err((StatusCode::BAD_REQUEST, "token counts must be >= 0".into()));
     }
-    let (tenant_id, ring_id_opt, key_image): (String, Option<String>, String) =
-        db.any_conn().require(
-            "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
+    let (tenant_id, ring_id_opt, key_image): (String, Option<String>, String) = db.require(
+        "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
              WHERE receipt_id = ?1",
-            sql_params![receipt_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            || (StatusCode::NOT_FOUND, "receipt not found".to_string()),
-        )?;
+        sql_params![receipt_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        || (StatusCode::NOT_FOUND, "receipt not found".to_string()),
+    )?;
     let ring_id = ring_id_opt.filter(|s| !s.is_empty()).ok_or((
         StatusCode::BAD_REQUEST,
         "usage recording requires an anon-ring receipt (ring_id missing)".to_string(),
@@ -162,16 +159,15 @@ pub fn record_usage(
 
     let usd = derive_usd(model_id, in_tokens, out_tokens);
     let log_id = format!("ul_{}", crate::ajwt_support::random_hex_32());
-    db.any_conn().execute(
+    db.execute(
         "INSERT INTO usage_log
          (log_id, tenant_id, ring_id, key_image_hex, model_id, input_tokens, output_tokens, usd, recorded_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         sql_params![&log_id, &tenant_id, &ring_id, &key_image, &model_id, &in_tokens, &out_tokens, &usd, &now],
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    db.any_conn()
-        .execute(
-            "INSERT INTO usage_ledger
+    db.execute(
+        "INSERT INTO usage_ledger
          (tenant_id, ring_id, key_image_hex, input_tokens, output_tokens, usd, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7)
          ON CONFLICT(tenant_id, ring_id, key_image_hex) DO UPDATE SET
@@ -179,17 +175,17 @@ pub fn record_usage(
             output_tokens = usage_ledger.output_tokens + excluded.output_tokens,
             usd           = usage_ledger.usd           + excluded.usd,
             updated_at    = excluded.updated_at",
-            sql_params![
-                &tenant_id,
-                &ring_id,
-                &key_image,
-                &in_tokens,
-                &out_tokens,
-                &usd,
-                &now
-            ],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        sql_params![
+            &tenant_id,
+            &ring_id,
+            &key_image,
+            &in_tokens,
+            &out_tokens,
+            &usd,
+            &now
+        ],
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let totals = get_usage(db, &tenant_id, &ring_id, &key_image)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -198,27 +194,26 @@ pub fn record_usage(
 
 /// Per-pseudonym totals for a whole ring (operator view).
 pub fn list_ring_usage(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
 ) -> Result<Vec<(String, UsageTotals)>, String> {
-    db.any_conn()
-        .query_map(
-            "SELECT key_image_hex, input_tokens, output_tokens, usd FROM usage_ledger
+    db.query_map(
+        "SELECT key_image_hex, input_tokens, output_tokens, usd FROM usage_ledger
              WHERE tenant_id = ?1 AND ring_id = ?2 ORDER BY key_image_hex",
-            sql_params![tenant_id, ring_id],
-            |r| {
-                Ok((
-                    r.get::<String>(0)?,
-                    UsageTotals {
-                        input_tokens: r.get(1)?,
-                        output_tokens: r.get(2)?,
-                        usd: r.get(3)?,
-                    },
-                ))
-            },
-        )
-        .map_err(|e| format!("query list_ring_usage: {e}"))
+        sql_params![tenant_id, ring_id],
+        |r| {
+            Ok((
+                r.get::<String>(0)?,
+                UsageTotals {
+                    input_tokens: r.get(1)?,
+                    output_tokens: r.get(2)?,
+                    usd: r.get(3)?,
+                },
+            ))
+        },
+    )
+    .map_err(|e| format!("query list_ring_usage: {e}"))
 }
 
 // ─── HTTP handlers ───────────────────────────────────────────────────────────
@@ -268,7 +263,7 @@ pub fn canonical_usage_report_json(
 /// Token counts stay host-reported (see the module honesty boundary) — this
 /// closes forgery and third-party ledger poisoning, not under-reporting.
 pub fn verify_usage_report(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     req: &RecordUsageRequest,
     now: i64,
 ) -> Result<(), (StatusCode, String)> {
@@ -278,14 +273,13 @@ pub fn verify_usage_report(
             "nonce must be 16..128 chars".into(),
         ));
     }
-    let (tenant_id, ring_id, receipt_key_image): (String, Option<String>, String) =
-        db.any_conn().require(
-            "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
+    let (tenant_id, ring_id, receipt_key_image): (String, Option<String>, String) = db.require(
+        "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
              WHERE receipt_id = ?1",
-            sql_params![&req.receipt_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            || (StatusCode::NOT_FOUND, "receipt not found".to_string()),
-        )?;
+        sql_params![&req.receipt_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        || (StatusCode::NOT_FOUND, "receipt not found".to_string()),
+    )?;
     let ring_id = ring_id.filter(|s| !s.is_empty()).ok_or((
         StatusCode::BAD_REQUEST,
         "usage recording requires an anon-ring receipt (ring_id missing)".to_string(),
@@ -325,24 +319,23 @@ pub fn verify_usage_report(
     // violation IS the check. Consumed only after the signature verifies.
     // ponytail: a 30-day window, not forever — long enough that a captured
     // report cannot be replayed once the row ages out of any realistic session.
-    db.any_conn()
-        .execute(
-            "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
+    db.execute(
+        "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
          VALUES (?1, '', ?2, ?3, ?4)",
-            sql_params![
-                format!("usage|{key_image_hex}|{}", req.nonce),
-                &req.receipt_id,
-                now + 30 * 24 * 3600,
-                &now
-            ],
-        )
-        .map_err(|e| {
-            if e.to_string().contains("UNIQUE") {
-                (StatusCode::UNAUTHORIZED, "usage report replay".to_string())
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-            }
-        })?;
+        sql_params![
+            format!("usage|{key_image_hex}|{}", req.nonce),
+            &req.receipt_id,
+            now + 30 * 24 * 3600,
+            &now
+        ],
+    )
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            (StatusCode::UNAUTHORIZED, "usage report replay".to_string())
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
+    })?;
     Ok(())
 }
 
@@ -359,10 +352,10 @@ pub async fn record_usage_handler(
     }
     let now = crate::agent_action::now_secs();
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    verify_usage_report(&db, &req, now)?;
+    let mut db = st.db.lock().unwrap();
+    verify_usage_report(&mut db.any_conn(), &req, now)?;
     let (ring_id, key_image, totals) = record_usage(
-        &db,
+        &mut db.any_conn(),
         &req.receipt_id,
         &req.model_id,
         req.input_tokens,
@@ -391,8 +384,8 @@ pub async fn ring_usage_handler(
         ));
     }
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    let rows = list_ring_usage(&db, tenant.as_str(), &ring_id)
+    let mut db = st.db.lock().unwrap();
+    let rows = list_ring_usage(&mut db.any_conn(), tenant.as_str(), &ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let out: Vec<Value> = rows
         .into_iter()
@@ -406,7 +399,9 @@ pub async fn ring_usage_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::any_db::AsAnyConn;
     use rusqlite::params;
+    use rusqlite::Connection;
 
     fn mem_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -442,11 +437,24 @@ mod tests {
         let pub_hex =
             |s: &Scalar| hex::encode((s * RISTRETTO_BASEPOINT_TABLE).compress().as_bytes());
         let (t, a) = (scalar(b"usage-trapdoor"), scalar(b"usage-agent"));
-        crate::rings::upsert_ring(db, "default", "r", &crate::rings::RingRule::default(), 1)
-            .unwrap();
-        crate::rings::subscribe(db, "default", &t, &pub_hex(&a), "r", 1).unwrap();
-        crate::rings::subscribe(db, "default", &t, &pub_hex(&scalar(b"usage-decoy")), "r", 1)
-            .unwrap();
+        crate::rings::upsert_ring(
+            &mut db.any_conn(),
+            "default",
+            "r",
+            &crate::rings::RingRule::default(),
+            1,
+        )
+        .unwrap();
+        crate::rings::subscribe(&mut db.any_conn(), "default", &t, &pub_hex(&a), "r", 1).unwrap();
+        crate::rings::subscribe(
+            &mut db.any_conn(),
+            "default",
+            &t,
+            &pub_hex(&scalar(b"usage-decoy")),
+            "r",
+            1,
+        )
+        .unwrap();
         let big_t = &t * RISTRETTO_BASEPOINT_TABLE;
         let shared = crate::ring_pseudonym::shared_secret_agent(&a, &big_t);
         let id = crate::ring_pseudonym::agent_ring_identity(&a, &shared, "r");
@@ -469,7 +477,7 @@ mod tests {
         let big_t = &t * RISTRETTO_BASEPOINT_TABLE;
         let shared = crate::ring_pseudonym::shared_secret_agent(a, &big_t);
         let id = crate::ring_pseudonym::agent_ring_identity(a, &shared, "r");
-        let members = crate::rings::list_member_points(db, "default", "r").unwrap();
+        let members = crate::rings::list_member_points(&mut db.any_conn(), "default", "r").unwrap();
         let idx = members.iter().position(|p| *p == id.public).unwrap();
         let canonical = canonical_usage_report_json(receipt_id, "local-model", in_tokens, 0, nonce);
         RecordUsageRequest {
@@ -490,17 +498,17 @@ mod tests {
 
         // Genuine holder of the receipt's per-ring key.
         let req = signed_report(&db, &a, "ar_signed", "nonce-usage-0000001", 100);
-        verify_usage_report(&db, &req, 1).expect("receipt pseudonym accepted");
+        verify_usage_report(&mut db.any_conn(), &req, 1).expect("receipt pseudonym accepted");
 
         // Same report again — replay refused.
-        let err = verify_usage_report(&db, &req, 1).unwrap_err();
+        let err = verify_usage_report(&mut db.any_conn(), &req, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
         assert!(err.1.contains("replay"), "got: {}", err.1);
 
         // Tampering with the counts after signing invalidates the report.
         let mut tampered = signed_report(&db, &a, "ar_signed", "nonce-usage-0000002", 100);
         tampered.input_tokens = 0;
-        let err = verify_usage_report(&db, &tampered, 1).unwrap_err();
+        let err = verify_usage_report(&mut db.any_conn(), &tampered, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
 
         // A third party who knows the receipt id cannot bill it: no signature.
@@ -508,7 +516,7 @@ mod tests {
         insert_anon_receipt(&db, "ar_other", Some("r"), "kimg_someone_else");
         let mut wrong_receipt = stranger;
         wrong_receipt.receipt_id = "ar_other".into();
-        let err = verify_usage_report(&db, &wrong_receipt, 1).unwrap_err();
+        let err = verify_usage_report(&mut db.any_conn(), &wrong_receipt, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
         assert!(err.1.contains("different ring pseudonym"), "got: {}", err.1);
     }
@@ -565,7 +573,8 @@ mod tests {
     fn record_usage_accumulates_and_keys_on_pseudonym() {
         let db = mem_db();
         insert_anon_receipt(&db, "ar_1", Some("ring:r"), "kimg_abc");
-        let (ring_id, ki, t1) = record_usage(&db, "ar_1", "local-model", 100, 50, 1).unwrap();
+        let (ring_id, ki, t1) =
+            record_usage(&mut db.any_conn(), "ar_1", "local-model", 100, 50, 1).unwrap();
         assert_eq!(ring_id, "ring:r");
         assert_eq!(ki, "kimg_abc");
         assert_eq!(
@@ -577,7 +586,7 @@ mod tests {
             }
         );
         // Second event accumulates on the same pseudonym.
-        let (_, _, t2) = record_usage(&db, "ar_1", "local-model", 10, 5, 2).unwrap();
+        let (_, _, t2) = record_usage(&mut db.any_conn(), "ar_1", "local-model", 10, 5, 2).unwrap();
         assert_eq!(
             t2,
             UsageTotals {
@@ -586,7 +595,10 @@ mod tests {
                 usd: 0.0
             }
         );
-        assert_eq!(get_usage(&db, "default", "ring:r", "kimg_abc").unwrap(), t2);
+        assert_eq!(
+            get_usage(&mut db.any_conn(), "default", "ring:r", "kimg_abc").unwrap(),
+            t2
+        );
     }
 
     #[test]
@@ -594,10 +606,10 @@ mod tests {
         let db = mem_db();
         // Legacy receipt: ring_id NULL.
         insert_anon_receipt(&db, "ar_legacy", None, "ki");
-        let err = record_usage(&db, "ar_legacy", "m", 1, 1, 1).unwrap_err();
+        let err = record_usage(&mut db.any_conn(), "ar_legacy", "m", 1, 1, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         // Unknown receipt.
-        let err = record_usage(&db, "ar_missing", "m", 1, 1, 1).unwrap_err();
+        let err = record_usage(&mut db.any_conn(), "ar_missing", "m", 1, 1, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::NOT_FOUND);
     }
 }

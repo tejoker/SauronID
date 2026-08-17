@@ -6,9 +6,8 @@
 //! producing a duplicate. This mirrors how the spend ledger handles its
 //! `(policy_id, agent_id, period_start)` key.
 
-use crate::any_db::{AnyRowGet, AsAnyConn, SqlValue};
+use crate::any_db::{AnyConn, AnyRowGet, SqlValue};
 use crate::sql_params;
-use rusqlite::Connection;
 
 use crate::aggregation::submission::{CohortRow, StatsSubmission};
 use crate::aggregation::verify::AggError;
@@ -20,19 +19,18 @@ pub fn upsert_submission(
     sub: &StatsSubmission,
     submitted_at: i64,
 ) -> Result<CohortRow, AggError> {
-    let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
-    upsert_submission_conn(&conn, sub, submitted_at)
+    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
+    upsert_submission_conn(&mut conn.any_conn(), sub, submitted_at)
 }
 
 fn upsert_submission_conn(
-    conn: &Connection,
+    conn: &mut AnyConn<'_>,
     sub: &StatsSubmission,
     submitted_at: i64,
 ) -> Result<CohortRow, AggError> {
     let agent_key = sub.agent_id_or_none.clone().unwrap_or_default();
-    conn.any_conn()
-        .execute(
-            r#"INSERT INTO customer_stats
+    conn.execute(
+        r#"INSERT INTO customer_stats
            (tenant_id, agent_id, metric_id, claimed_value, n_records,
             period_start, period_end, merkle_root, proof_b64, vk_id, checkpoint_id, submitted_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
@@ -46,22 +44,22 @@ fn upsert_submission_conn(
              vk_id         = excluded.vk_id,
              checkpoint_id = excluded.checkpoint_id,
              submitted_at  = excluded.submitted_at"#,
-            sql_params![
-                &sub.tenant_id,
-                &agent_key,
-                &sub.metric_id,
-                &sub.claimed_value,
-                &sub.n_records,
-                &sub.period_start,
-                &sub.period_end,
-                &sub.merkle_root,
-                &sub.proof_b64,
-                &sub.vk_id,
-                &sub.checkpoint_id,
-                &submitted_at,
-            ],
-        )
-        .map_err(|e| AggError::Storage(e.to_string()))?;
+        sql_params![
+            &sub.tenant_id,
+            &agent_key,
+            &sub.metric_id,
+            &sub.claimed_value,
+            &sub.n_records,
+            &sub.period_start,
+            &sub.period_end,
+            &sub.merkle_root,
+            &sub.proof_b64,
+            &sub.vk_id,
+            &sub.checkpoint_id,
+            &submitted_at,
+        ],
+    )
+    .map_err(|e| AggError::Storage(e.to_string()))?;
 
     Ok(CohortRow {
         tenant_id: sub.tenant_id.clone(),
@@ -84,7 +82,7 @@ pub fn list_cohort(
     period_start: i64,
     period_end: i64,
 ) -> Result<Vec<CohortRow>, AggError> {
-    let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
+    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
     let rows = conn
         .any_conn()
         .query_map(
@@ -133,7 +131,7 @@ pub fn list_for_cohort(
     if tenant_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
+    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
     // Build a parameterised `IN (...)` clause. SQLite has a 999-param
     // ceiling by default — cap defensively and rely on the operator to
     // size cohorts within it (S8 ships ≤ a few hundred tenants).
@@ -187,7 +185,7 @@ pub fn get_one(
     metric_id: &str,
     period_start: i64,
 ) -> Result<Option<CohortRow>, AggError> {
-    let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
+    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
     let agent_key = agent_id_or_none.unwrap_or("");
     conn.any_conn()
         .query_row(
@@ -264,30 +262,29 @@ pub fn anchor_submission(
     sub: &StatsSubmission,
     submitted_at: i64,
 ) -> Result<String, AggError> {
-    let conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
-    anchor_submission_conn(&conn, sub, submitted_at)
+    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
+    anchor_submission_conn(&mut conn.any_conn(), sub, submitted_at)
 }
 
 fn anchor_submission_conn(
-    conn: &Connection,
+    conn: &mut AnyConn<'_>,
     sub: &StatsSubmission,
     submitted_at: i64,
 ) -> Result<String, AggError> {
     let action_hash = synthetic_action_hash(sub);
-    conn.any_conn()
-        .execute(
-            r#"INSERT OR IGNORE INTO stats_submission_receipts
+    conn.execute(
+        r#"INSERT OR IGNORE INTO stats_submission_receipts
            (statement_hash, tenant_id, checkpoint_id, metric_id, submitted_at)
            VALUES (?1, ?2, ?3, ?4, ?5)"#,
-            sql_params![
-                &action_hash,
-                &sub.tenant_id,
-                &sub.checkpoint_id,
-                &sub.metric_id,
-                &submitted_at,
-            ],
-        )
-        .map_err(|e| AggError::Storage(e.to_string()))?;
+        sql_params![
+            &action_hash,
+            &sub.tenant_id,
+            &sub.checkpoint_id,
+            &sub.metric_id,
+            &submitted_at,
+        ],
+    )
+    .map_err(|e| AggError::Storage(e.to_string()))?;
     Ok(action_hash)
 }
 
@@ -301,13 +298,18 @@ pub fn persist_verified_submission(
     submitted_at: i64,
 ) -> Result<(CohortRow, String), AggError> {
     let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| AggError::Storage(e.to_string()))?;
-    let row = upsert_submission_conn(&tx, sub, submitted_at)?;
-    let statement_hash = anchor_submission_conn(&tx, sub, submitted_at)?;
-    tx.commit().map_err(|e| AggError::Storage(e.to_string()))?;
-    Ok((row, statement_hash))
+    // `AnyConn::transaction` rather than `rusqlite::Connection::transaction`:
+    // the latter needs `&mut rusqlite::Connection` and only exists on one
+    // backend. Both helpers here fail exclusively with `AggError::Storage`, so
+    // routing the error through `String` and back loses nothing.
+    conn.any_conn()
+        .transaction(|tx| {
+            let row = upsert_submission_conn(tx, sub, submitted_at).map_err(|e| e.to_string())?;
+            let statement_hash =
+                anchor_submission_conn(tx, sub, submitted_at).map_err(|e| e.to_string())?;
+            Ok((row, statement_hash))
+        })
+        .map_err(AggError::Storage)
 }
 
 #[cfg(test)]
@@ -387,7 +389,9 @@ mod tests {
         let hash = anchor_submission(&db, &sub, 100).unwrap();
         assert_eq!(hash, synthetic_action_hash(&sub));
         // Dedicated statement record landed.
-        let conn = db.lock().unwrap();
+        // lock_sqlite: this assertion is about the sidecar's contents, and the
+        // handle under test was built by open_db_at, which is SQLite-only.
+        let conn = db.lock_sqlite().unwrap();
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM stats_submission_receipts WHERE statement_hash = ?1",
@@ -412,7 +416,8 @@ mod tests {
         assert_eq!(row.tenant_id, "t1");
         assert_eq!(hash, synthetic_action_hash(&sub));
 
-        let conn = db.lock().unwrap();
+        // lock_sqlite: raw-rusqlite assertion against the SQLite handle under test.
+        let conn = db.lock_sqlite().unwrap();
         let stats_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM customer_stats", [], |r| r.get(0))
             .unwrap();
@@ -428,7 +433,8 @@ mod tests {
     fn statement_failure_rolls_back_verified_submission() {
         let db = temp_db("atomic-rollback");
         {
-            let conn = db.lock().unwrap();
+            // lock_sqlite: raw-rusqlite assertion against the SQLite handle under test.
+            let conn = db.lock_sqlite().unwrap();
             conn.execute_batch(
                 "CREATE TRIGGER reject_stats_statement
                  BEFORE INSERT ON stats_submission_receipts
@@ -442,7 +448,8 @@ mod tests {
         let result = persist_verified_submission(&db, &sample("t1", None), 100);
         assert!(result.is_err(), "forced statement failure must be surfaced");
 
-        let conn = db.lock().unwrap();
+        // lock_sqlite: raw-rusqlite assertion against the SQLite handle under test.
+        let conn = db.lock_sqlite().unwrap();
         let stats_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM customer_stats", [], |r| r.get(0))
             .unwrap();

@@ -24,12 +24,11 @@ use axum::{
     Json,
 };
 use curve25519_dalek::{ristretto::CompressedRistretto, ristretto::RistrettoPoint, scalar::Scalar};
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::{AnyConn, AnyRowGet};
 use crate::ring_pseudonym;
 use crate::sql_params;
 use crate::state::ServerState;
@@ -165,39 +164,37 @@ pub fn derive_member_point_hex(
     hex::encode(p_r.compress().as_bytes())
 }
 
-// ─── Repository (rusqlite) ─────────────────────────────────────────────────
+// ─── Repository (backend-portable) ─────────────────────────────────────────
 
 /// Create or replace a ring rule. Bumps `version` on replace.
 pub fn upsert_ring(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
     rule: &RingRule,
     now: i64,
 ) -> Result<(), String> {
     let rule_json = serde_json::to_string(rule).map_err(|e| format!("rule serialize: {e}"))?;
-    db.any_conn()
-        .execute(
-            "INSERT INTO rings (tenant_id, ring_id, rule_json, version, created_at, updated_at)
+    db.execute(
+        "INSERT INTO rings (tenant_id, ring_id, rule_json, version, created_at, updated_at)
          VALUES (?1, ?2, ?3, 1, ?4, ?4)
          ON CONFLICT(tenant_id, ring_id) DO UPDATE SET
             rule_json = excluded.rule_json,
             version   = rings.version + 1,
             updated_at = excluded.updated_at",
-            sql_params![&tenant_id, &ring_id, &rule_json, &now],
-        )
-        .map_err(|e| format!("upsert ring: {e}"))?;
+        sql_params![&tenant_id, &ring_id, &rule_json, &now],
+    )
+    .map_err(|e| format!("upsert ring: {e}"))?;
     Ok(())
 }
 
 /// Fetch a ring's rule + version.
 pub fn get_ring(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
 ) -> Result<Option<(RingRule, i64)>, String> {
     let row = db
-        .any_conn()
         .query_row(
             "SELECT rule_json, version FROM rings WHERE tenant_id = ?1 AND ring_id = ?2",
             sql_params![tenant_id, ring_id],
@@ -217,11 +214,10 @@ pub fn get_ring(
 
 /// List all rings for a tenant: (ring_id, rule, version).
 pub fn list_rings(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
 ) -> Result<Vec<(String, RingRule, i64)>, String> {
     let rows = db
-        .any_conn()
         .query_map(
             "SELECT ring_id, rule_json, version FROM rings WHERE tenant_id = ?1 ORDER BY ring_id",
             sql_params![tenant_id],
@@ -240,14 +236,13 @@ pub fn list_rings(
 /// Insert a member pseudonym point. Idempotent (INSERT OR IGNORE). Returns true
 /// if a new row was added.
 pub fn insert_member(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
     member_point_hex: &str,
     now: i64,
 ) -> Result<bool, String> {
     let n = db
-        .any_conn()
         .execute(
             "INSERT OR IGNORE INTO ring_members (tenant_id, ring_id, member_point_hex, created_at)
              VALUES (?1, ?2, ?3, ?4)",
@@ -259,13 +254,12 @@ pub fn insert_member(
 
 /// Remove a member pseudonym point. Returns true if a row was deleted.
 pub fn delete_member(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
     member_point_hex: &str,
 ) -> Result<bool, String> {
-    let n = db.any_conn()
-        .execute(
+    let n = db.execute(
             "DELETE FROM ring_members WHERE tenant_id = ?1 AND ring_id = ?2 AND member_point_hex = ?3",
             sql_params![&tenant_id, &ring_id, &member_point_hex],
         )
@@ -274,8 +268,8 @@ pub fn delete_member(
 }
 
 /// Number of members in a ring.
-pub fn member_count(db: &Connection, tenant_id: &str, ring_id: &str) -> Result<i64, String> {
-    Ok(db.any_conn().scalar_or(
+pub fn member_count(db: &mut AnyConn<'_>, tenant_id: &str, ring_id: &str) -> Result<i64, String> {
+    Ok(db.scalar_or(
         "SELECT COUNT(*) FROM ring_members WHERE tenant_id = ?1 AND ring_id = ?2",
         sql_params![tenant_id, ring_id],
         |r| r.get::<i64>(0),
@@ -286,12 +280,11 @@ pub fn member_count(db: &Connection, tenant_id: &str, ring_id: &str) -> Result<i
 /// The ring's member set as decompressed points, ordered deterministically.
 /// This is exactly what `ring::verify` consumes in phase 3.
 pub fn list_member_points(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     ring_id: &str,
 ) -> Result<Vec<RistrettoPoint>, String> {
     let rows = db
-        .any_conn()
         .query_map(
             "SELECT member_point_hex FROM ring_members
              WHERE tenant_id = ?1 AND ring_id = ?2 ORDER BY member_point_hex",
@@ -309,7 +302,7 @@ pub fn list_member_points(
 /// Subscribe an agent (by master public key) to a ring. Derives the per-ring
 /// pseudonym and inserts it. Returns the stored point hex.
 pub fn subscribe(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     trapdoor: &Scalar,
     agent_master_pub_hex: &str,
@@ -326,7 +319,7 @@ pub fn subscribe(
 /// master key (so no stored agent→ring link is needed) and deletes it. Returns
 /// true if the agent was a member.
 pub fn revoke(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     trapdoor: &Scalar,
     agent_master_pub_hex: &str,
@@ -377,7 +370,7 @@ fn require_enabled() -> Result<(), (StatusCode, String)> {
 
 /// Resolve an agent's master public key hex from the membership request.
 fn resolve_master_pub(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     req: &MembershipRequest,
 ) -> Result<String, (StatusCode, String)> {
@@ -396,7 +389,7 @@ fn resolve_master_pub(
             StatusCode::BAD_REQUEST,
             "agent_id or agent_public_hex is required".to_string(),
         ))?;
-    db.any_conn().require(
+    db.require(
         "SELECT public_key_hex FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
         sql_params![agent_id, tenant_id],
         |r| r.get::<String>(0),
@@ -413,9 +406,15 @@ pub async fn create_ring_handler(
     require_enabled()?;
     let now = crate::ajwt_support::now_secs();
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    upsert_ring(&db, tenant.as_str(), &req.ring_id, &req.rule, now)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let mut db = st.db.lock().unwrap();
+    upsert_ring(
+        &mut db.any_conn(),
+        tenant.as_str(),
+        &req.ring_id,
+        &req.rule,
+        now,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(
         json!({ "ok": true, "ring_id": req.ring_id, "tenant_id": tenant.as_str() }),
     ))
@@ -428,13 +427,13 @@ pub async fn list_rings_handler(
 ) -> HandlerResult {
     require_enabled()?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    let rings =
-        list_rings(&db, tenant.as_str()).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let mut db = st.db.lock().unwrap();
+    let rings = list_rings(&mut db.any_conn(), tenant.as_str())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let out: Vec<Value> = rings
         .into_iter()
         .map(|(ring_id, rule, version)| {
-            let count = member_count(&db, tenant.as_str(), &ring_id).unwrap_or(0);
+            let count = member_count(&mut db.any_conn(), tenant.as_str(), &ring_id).unwrap_or(0);
             json!({ "ring_id": ring_id, "rule": rule, "version": version, "member_count": count })
         })
         .collect();
@@ -452,16 +451,23 @@ pub async fn subscribe_handler(
     let trapdoor = operator_trapdoor().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let now = crate::ajwt_support::now_secs();
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    if get_ring(&db, tenant.as_str(), &ring_id)
+    let mut db = st.db.lock().unwrap();
+    if get_ring(&mut db.any_conn(), tenant.as_str(), &ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .is_none()
     {
         return Err((StatusCode::NOT_FOUND, "ring not found".into()));
     }
-    let master = resolve_master_pub(&db, tenant.as_str(), &req)?;
-    let point = subscribe(&db, tenant.as_str(), &trapdoor, &master, &ring_id, now)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let master = resolve_master_pub(&mut db.any_conn(), tenant.as_str(), &req)?;
+    let point = subscribe(
+        &mut db.any_conn(),
+        tenant.as_str(),
+        &trapdoor,
+        &master,
+        &ring_id,
+        now,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     {
         let st = state.read_or_recover();
         st.log("RING_SUBSCRIBE", "OK", &ring_id);
@@ -481,10 +487,16 @@ pub async fn revoke_handler(
     require_enabled()?;
     let trapdoor = operator_trapdoor().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    let master = resolve_master_pub(&db, tenant.as_str(), &req)?;
-    let removed = revoke(&db, tenant.as_str(), &trapdoor, &master, &ring_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let mut db = st.db.lock().unwrap();
+    let master = resolve_master_pub(&mut db.any_conn(), tenant.as_str(), &req)?;
+    let removed = revoke(
+        &mut db.any_conn(),
+        tenant.as_str(),
+        &trapdoor,
+        &master,
+        &ring_id,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     {
         let st = state.read_or_recover();
         st.log("RING_REVOKE", if removed { "OK" } else { "NOOP" }, &ring_id);
@@ -500,8 +512,8 @@ pub async fn members_handler(
 ) -> HandlerResult {
     require_enabled()?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    let points = list_member_points(&db, tenant.as_str(), &ring_id)
+    let mut db = st.db.lock().unwrap();
+    let points = list_member_points(&mut db.any_conn(), tenant.as_str(), &ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let hexes: Vec<String> = points
         .iter()
@@ -551,16 +563,16 @@ pub async fn agent_members_handler(
 ) -> HandlerResult {
     require_enabled()?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
 
     // 404 rather than an empty set: signing against a ring that does not exist
     // produces a signature nothing will ever verify, and the client should find
     // that out here instead of after the work.
-    let (rule, version) = get_ring(&db, tenant.as_str(), &ring_id)
+    let (rule, version) = get_ring(&mut db.any_conn(), tenant.as_str(), &ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "ring not found".to_string()))?;
 
-    let points = list_member_points(&db, tenant.as_str(), &ring_id)
+    let points = list_member_points(&mut db.any_conn(), tenant.as_str(), &ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let members: Vec<String> = points
         .iter()
@@ -585,7 +597,9 @@ pub async fn agent_members_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::any_db::AsAnyConn;
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_TABLE;
+    use rusqlite::Connection;
 
     fn mem_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -660,18 +674,24 @@ mod tests {
                 output_tokens: None,
             },
         };
-        upsert_ring(&db, "default", "ring:pay", &rule, 1).unwrap();
-        let (got, version) = get_ring(&db, "default", "ring:pay").unwrap().unwrap();
+        upsert_ring(&mut db.any_conn(), "default", "ring:pay", &rule, 1).unwrap();
+        let (got, version) = get_ring(&mut db.any_conn(), "default", "ring:pay")
+            .unwrap()
+            .unwrap();
         assert_eq!(got, rule);
         assert_eq!(version, 1);
 
         // Upsert bumps version.
-        upsert_ring(&db, "default", "ring:pay", &rule, 2).unwrap();
-        let (_, v2) = get_ring(&db, "default", "ring:pay").unwrap().unwrap();
+        upsert_ring(&mut db.any_conn(), "default", "ring:pay", &rule, 2).unwrap();
+        let (_, v2) = get_ring(&mut db.any_conn(), "default", "ring:pay")
+            .unwrap()
+            .unwrap();
         assert_eq!(v2, 2);
 
-        assert_eq!(list_rings(&db, "default").unwrap().len(), 1);
-        assert!(get_ring(&db, "default", "missing").unwrap().is_none());
+        assert_eq!(list_rings(&mut db.any_conn(), "default").unwrap().len(), 1);
+        assert!(get_ring(&mut db.any_conn(), "default", "missing")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -680,15 +700,28 @@ mod tests {
         let t = scalar(b"operator-trapdoor");
         let a = scalar(b"agent-master");
         let a_hex = pub_hex(&a);
-        upsert_ring(&db, "default", "ring:x", &RingRule::default(), 1).unwrap();
+        upsert_ring(
+            &mut db.any_conn(),
+            "default",
+            "ring:x",
+            &RingRule::default(),
+            1,
+        )
+        .unwrap();
 
-        let p_hex = subscribe(&db, "default", &t, &a_hex, "ring:x", 10).unwrap();
-        assert_eq!(member_count(&db, "default", "ring:x").unwrap(), 1);
+        let p_hex = subscribe(&mut db.any_conn(), "default", &t, &a_hex, "ring:x", 10).unwrap();
+        assert_eq!(
+            member_count(&mut db.any_conn(), "default", "ring:x").unwrap(),
+            1
+        );
 
         // Idempotent: subscribing again does not duplicate.
-        let p_hex2 = subscribe(&db, "default", &t, &a_hex, "ring:x", 11).unwrap();
+        let p_hex2 = subscribe(&mut db.any_conn(), "default", &t, &a_hex, "ring:x", 11).unwrap();
         assert_eq!(p_hex, p_hex2);
-        assert_eq!(member_count(&db, "default", "ring:x").unwrap(), 1);
+        assert_eq!(
+            member_count(&mut db.any_conn(), "default", "ring:x").unwrap(),
+            1
+        );
 
         // The stored point matches what the AGENT derives from its own secret.
         let big_t = &t * RISTRETTO_BASEPOINT_TABLE;
@@ -701,14 +734,17 @@ mod tests {
         );
 
         // Member list returns a usable ristretto point.
-        let points = list_member_points(&db, "default", "ring:x").unwrap();
+        let points = list_member_points(&mut db.any_conn(), "default", "ring:x").unwrap();
         assert_eq!(points.len(), 1);
 
         // Revoke re-derives and removes — no stored agent→ring link needed.
-        assert!(revoke(&db, "default", &t, &a_hex, "ring:x").unwrap());
-        assert_eq!(member_count(&db, "default", "ring:x").unwrap(), 0);
+        assert!(revoke(&mut db.any_conn(), "default", &t, &a_hex, "ring:x").unwrap());
+        assert_eq!(
+            member_count(&mut db.any_conn(), "default", "ring:x").unwrap(),
+            0
+        );
         // Revoking a non-member is a no-op false.
-        assert!(!revoke(&db, "default", &t, &a_hex, "ring:x").unwrap());
+        assert!(!revoke(&mut db.any_conn(), "default", &t, &a_hex, "ring:x").unwrap());
     }
 
     #[test]
@@ -716,10 +752,24 @@ mod tests {
         let db = mem_db();
         let t = scalar(b"op");
         let a_hex = pub_hex(&scalar(b"agent"));
-        upsert_ring(&db, "default", "ring:a", &RingRule::default(), 1).unwrap();
-        upsert_ring(&db, "default", "ring:b", &RingRule::default(), 1).unwrap();
-        let pa = subscribe(&db, "default", &t, &a_hex, "ring:a", 1).unwrap();
-        let pb = subscribe(&db, "default", &t, &a_hex, "ring:b", 1).unwrap();
+        upsert_ring(
+            &mut db.any_conn(),
+            "default",
+            "ring:a",
+            &RingRule::default(),
+            1,
+        )
+        .unwrap();
+        upsert_ring(
+            &mut db.any_conn(),
+            "default",
+            "ring:b",
+            &RingRule::default(),
+            1,
+        )
+        .unwrap();
+        let pa = subscribe(&mut db.any_conn(), "default", &t, &a_hex, "ring:a", 1).unwrap();
+        let pb = subscribe(&mut db.any_conn(), "default", &t, &a_hex, "ring:b", 1).unwrap();
         assert_ne!(
             pa, pb,
             "same agent must have unlinkable points across rings"

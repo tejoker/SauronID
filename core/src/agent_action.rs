@@ -5,13 +5,12 @@ use axum::{
 use hmac::{Hmac, Mac};
 // Production paths in this file go through `AnyConn`, so `params!` is only used
 // by the tests below, which build SQLite fixtures directly.
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 
-use crate::any_db::{AnyConn, AsAnyConn};
+use crate::any_db::AnyConn;
 use crate::sql_params;
 use crate::sync_recover::RwLockRecover;
 use crate::{policy, ring, state::ServerState, tenancy::TenantId};
@@ -143,21 +142,11 @@ pub fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-fn active_tenant_ring(
-    db: &Connection,
-    tenant_id: &str,
-    now: i64,
-) -> Result<Vec<(String, curve25519_dalek::ristretto::RistrettoPoint)>, String> {
-    active_tenant_ring_any(&mut db.any_conn(), tenant_id, now)
-}
-
-/// Backend-agnostic form.
-///
-/// `revoked = 0` is left as an integer comparison rather than `= FALSE`: the
+/// /// `revoked = 0` is left as an integer comparison rather than `= FALSE`: the
 /// column is INTEGER in both schemas (there are no BOOLEAN columns in the
 /// migrations), and [`SqlValue`] normalises bools to 0/1 for exactly this
 /// reason.
-fn active_tenant_ring_any(
+fn active_tenant_ring(
     conn: &mut AnyConn<'_>,
     tenant_id: &str,
     now: i64,
@@ -347,12 +336,6 @@ fn receipt_signing_payload(receipt: &ActionReceipt) -> Vec<u8> {
 /// Callers already hold the write path's connection, and SQLite serialises
 /// writers, so the read-then-insert that follows cannot interleave with another
 /// receipt for the same tenant. On an empty chain this returns `(1, "")`.
-fn next_chain_position(db: &Connection, tenant_id: &str) -> Result<(i64, String), String> {
-    next_chain_position_any(&mut db.any_conn(), tenant_id)
-}
-
-/// Backend-agnostic form.
-///
 /// Note the error handling change: the rusqlite version swallowed every failure
 /// with `.ok()`, so a genuine backend error read as "empty chain" and would have
 /// restarted the chain at seq 1 instead of failing. `query_row` returns
@@ -370,10 +353,7 @@ fn next_chain_position(db: &Connection, tenant_id: &str) -> Result<(i64, String)
 ///     PostgreSQL defaults to NULLS FIRST for DESC, so a legacy row would be
 ///     picked as the chain head. Ordering by the coalesced value removes the
 ///     difference instead of relying on either engine's default.
-fn next_chain_position_any(
-    conn: &mut AnyConn<'_>,
-    tenant_id: &str,
-) -> Result<(i64, String), String> {
+fn next_chain_position(conn: &mut AnyConn<'_>, tenant_id: &str) -> Result<(i64, String), String> {
     let head: Option<(i64, String)> = conn.query_row(
         "SELECT IFNULL(seq, 0), receipt_id FROM agent_action_receipts
              WHERE tenant_id = ?1 ORDER BY IFNULL(seq, 0) DESC LIMIT 1",
@@ -387,17 +367,14 @@ fn next_chain_position_any(
         // Chain starts after the legacy (unchained) rows.
         return Ok((1, String::new()));
     }
-    let prev = load_receipt_any(conn, &prev_receipt_id)?
+    let prev = load_receipt(conn, &prev_receipt_id)?
         .ok_or_else(|| "chain head receipt vanished between read and link".to_string())?;
     Ok((prev_seq + 1, receipt_chain_hash(&prev)))
 }
 
 /// Load a receipt by id, including its chain fields.
-pub fn load_receipt(db: &Connection, receipt_id: &str) -> Result<Option<ActionReceipt>, String> {
-    load_receipt_any(&mut db.any_conn(), receipt_id)
-}
-
-/// Backend-agnostic form. First call site converted to [`AnyConn`]: same SQL,
+///
+/// First call site converted to [`AnyConn`]: same SQL,
 /// translated on the way out, columns read through [`AnyRow`]'s typed getters
 /// so SQLite's dynamic typing and Postgres's strict typing both work.
 ///
@@ -405,7 +382,7 @@ pub fn load_receipt(db: &Connection, receipt_id: &str) -> Result<Option<ActionRe
 /// |r| ...)` becomes `conn.query_row(sql, sql_params![..], |r| ...)` with
 /// `r.get::<_, T>(i)` becoming the named getter, and the `QueryReturnedNoRows`
 /// dance disappearing because `query_row` already returns `Option`.
-pub fn load_receipt_any(
+pub fn load_receipt(
     conn: &mut AnyConn<'_>,
     receipt_id: &str,
 ) -> Result<Option<ActionReceipt>, String> {
@@ -442,12 +419,7 @@ pub fn load_receipt_any(
 /// no deletions) and `prev_hash` equals the recomputed chain hash of its
 /// predecessor (so no edits or reordering). Needs no key — a customer holding a
 /// database copy can run it against a vendor.
-pub fn verify_receipt_chain(db: &Connection, tenant_id: &str) -> Result<i64, String> {
-    verify_receipt_chain_any(&mut db.any_conn(), tenant_id)
-}
-
-/// Backend-agnostic form of [`verify_receipt_chain`].
-pub fn verify_receipt_chain_any(conn: &mut AnyConn<'_>, tenant_id: &str) -> Result<i64, String> {
+pub fn verify_receipt_chain(conn: &mut AnyConn<'_>, tenant_id: &str) -> Result<i64, String> {
     let ids: Vec<String> = conn.query_map(
         "SELECT receipt_id FROM agent_action_receipts
              WHERE tenant_id = ?1 AND IFNULL(seq, 0) > 0 ORDER BY seq ASC",
@@ -459,7 +431,7 @@ pub fn verify_receipt_chain_any(conn: &mut AnyConn<'_>, tenant_id: &str) -> Resu
     let mut expected_prev = String::new();
     let mut checked = 0i64;
     for id in ids {
-        let receipt = load_receipt_any(conn, &id)?
+        let receipt = load_receipt(conn, &id)?
             .ok_or_else(|| format!("receipt {id} listed but not loadable"))?;
         if receipt.seq != expected_seq {
             return Err(format!(
@@ -602,7 +574,7 @@ pub fn validate_agent_action(
 
     let (receipt, ring_ok) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let (db_human, revoked, expires_at, public_key_hex, registered_key_image, pop_jkt): (
             String,
             i64,
@@ -610,8 +582,7 @@ pub fn validate_agent_action(
             String,
             String,
             String,
-        ) = db.any_conn()
-            .query_row(
+        ) = db.any_conn().query_row(
                 "SELECT human_key_image, revoked, expires_at, IFNULL(public_key_hex, ''), IFNULL(ring_key_image_hex, ''), IFNULL(pop_jkt, '')
                  FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
                 sql_params![opts.agent_id, opts.tenant_id],
@@ -684,7 +655,7 @@ pub fn validate_agent_action(
         // Reconstruct exactly the same authenticated tenant ring returned by
         // /agent/action/challenge. The process-wide cache is only an indexing
         // convenience and must never become a cross-tenant proof statement.
-        let tenant_ring: Vec<_> = active_tenant_ring(&db, opts.tenant_id, now)
+        let tenant_ring: Vec<_> = active_tenant_ring(&mut db.any_conn(), opts.tenant_id, now)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .into_iter()
             .map(|(_, point)| point)
@@ -729,7 +700,7 @@ pub fn validate_agent_action(
                 })?;
         }
 
-        let (seq, prev_hash) = next_chain_position(&db, opts.tenant_id)
+        let (seq, prev_hash) = next_chain_position(&mut db.any_conn(), opts.tenant_id)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         // Which grant authorised this action. Read at receipt time, so a later
         // re-registration under a different mandate cannot retroactively change
@@ -916,7 +887,7 @@ pub fn anon_action_hash(e: &AnonActionEnvelope) -> String {
 /// DB connection + jwt secret (no `ServerState`), so it is unit-testable against
 /// an in-memory DB. `submit_anon_action` is a thin wrapper.
 pub fn validate_anon_action(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     jwt_secret: &[u8],
     proof: &AnonActionProof,
     now: i64,
@@ -1041,31 +1012,29 @@ pub fn validate_anon_action(
 
     // 4. Single-use on (per-ring key image | nonce) — replay protection keyed on
     //    the pseudonym, never an agent identity.
-    db.any_conn()
-        .execute(
-            "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
-            sql_params![now],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    db.execute(
+        "DELETE FROM agent_action_nonces WHERE expires_at < ?1",
+        sql_params![now],
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let nonce_key = format!("{key_image_hex}|{}", env.nonce);
-    db.any_conn()
-        .execute(
-            "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
+    db.execute(
+        "INSERT INTO agent_action_nonces (nonce, agent_id, action_hash, expires_at, used_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-            sql_params![&nonce_key, "", &action_hash, env.expires_at, now],
-        )
-        .map_err(|e| {
-            // Both backends' unique-violation wording — see the identity path.
-            let msg = e.to_lowercase();
-            if msg.contains("unique") || msg.contains("duplicate key") {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    "anon action nonce replay".to_string(),
-                )
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e)
-            }
-        })?;
+        sql_params![&nonce_key, "", &action_hash, env.expires_at, now],
+    )
+    .map_err(|e| {
+        // Both backends' unique-violation wording — see the identity path.
+        let msg = e.to_lowercase();
+        if msg.contains("unique") || msg.contains("duplicate key") {
+            (
+                StatusCode::UNAUTHORIZED,
+                "anon action nonce replay".to_string(),
+            )
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, e)
+        }
+    })?;
 
     // 5. Receipt with NO agent identity. ring_id + config_digest are also
     //    committed by action_hash (which is in the signed payload).
@@ -1093,8 +1062,7 @@ pub fn validate_anon_action(
     receipt.signature = sign_receipt(jwt_secret, &receipt);
     // Explicit conflict target, as in the identity path — `INSERT OR REPLACE`
     // on its own does not translate to PostgreSQL.
-    db.any_conn()
-        .execute(
+    db.execute(
         "INSERT OR REPLACE INTO agent_action_receipts
          (receipt_id, action_hash, agent_id, ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at, ring_id, config_digest, tenant_id, seq, prev_hash)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
@@ -1167,8 +1135,8 @@ pub async fn submit_anon_action(
     }
     let now = now_secs();
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
-    let receipt = validate_anon_action(&db, &st.jwt_secret, &proof, now)?;
+    let mut db = st.db.lock().unwrap();
+    let receipt = validate_anon_action(&mut db.any_conn(), &st.jwt_secret, &proof, now)?;
     Ok(Json(receipt))
 }
 
@@ -1191,9 +1159,8 @@ pub async fn action_challenge(
     let now = now_secs();
     let (agent_ring_public_keys_hex, signer_index, signing_public_key_hex) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        let signing_public_key_hex: String = db.any_conn()
-            .query_row(
+        let mut db = st.db.lock().unwrap();
+        let signing_public_key_hex: String = db.any_conn().query_row(
                 "SELECT IFNULL(public_key_hex, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2 AND human_key_image = ?3 AND revoked = 0 AND expires_at > ?4",
                 sql_params![tenant.as_str(), &payload.agent_id, &payload.human_key_image, now],
                 |r| r.get_string(0),
@@ -1232,11 +1199,12 @@ pub async fn action_challenge(
                 StatusCode::UNAUTHORIZED,
                 "Agent public key point invalid".to_string(),
             ))?;
-        let agent_ring_public_keys_hex: Vec<String> = active_tenant_ring(&db, tenant.as_str(), now)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .into_iter()
-            .map(|(hex_key, _)| hex_key)
-            .collect();
+        let agent_ring_public_keys_hex: Vec<String> =
+            active_tenant_ring(&mut db.any_conn(), tenant.as_str(), now)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .into_iter()
+                .map(|(hex_key, _)| hex_key)
+                .collect();
         let signer_index = agent_ring_public_keys_hex
             .iter()
             .position(|hex_key| hex_key == &signing_public_key_hex)
@@ -1254,6 +1222,37 @@ pub async fn action_challenge(
             signing_public_key_hex,
         )
     };
+    // Server-bound policy, BEFORE minting a challenge. Refusing here means the
+    // agent never receives signable bytes for an action its policy forbids —
+    // cheaper and clearer than letting it sign and rejecting at submission, and
+    // it closes the challenge route, which previously consulted no policy at all.
+    {
+        let mut bound_action = crate::policy::Action {
+            action_id: format!("challenge-{}", payload.ajwt_jti),
+            tool: payload.action.trim().to_string(),
+            amount_usd: (payload.amount_minor > 0).then(|| payload.amount_minor as f64 / 100.0),
+            timestamp: now,
+            ..Default::default()
+        };
+        for (key, value) in [
+            (
+                "currency",
+                Value::from(payload.currency.trim().to_ascii_uppercase()),
+            ),
+            ("merchant_id", Value::from(payload.merchant_id.clone())),
+        ] {
+            bound_action.metadata.insert(key.into(), value);
+        }
+        crate::policy::handlers::gate_action_on_bound_policy(
+            &state,
+            tenant.as_str(),
+            &payload.agent_id,
+            &bound_action,
+            "/agent/action/challenge",
+        )
+        .await?;
+    }
+
     let envelope = AgentActionEnvelope {
         agent_id: payload.agent_id,
         human_key_image: payload.human_key_image,
@@ -1286,9 +1285,8 @@ pub async fn receipt_verify(
     let st = state.read_or_recover();
     let valid_sig = verify_receipt_signature(&st.jwt_secret, &payload.receipt);
     let db_seen: bool = {
-        let db = st.db.lock().unwrap();
-        db.any_conn()
-            .scalar_or(
+        let mut db = st.db.lock().unwrap();
+        db.any_conn().scalar_or(
                 "SELECT COUNT(*) FROM agent_action_receipts WHERE receipt_id = ?1 AND action_hash = ?2 AND signature = ?3",
                 sql_params![
                     &payload.receipt.receipt_id,
@@ -1313,7 +1311,9 @@ pub async fn receipt_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::any_db::AsAnyConn;
     use rusqlite::params;
+    use rusqlite::Connection;
 
     fn sample_env() -> AgentActionEnvelope {
         AgentActionEnvelope {
@@ -1420,7 +1420,7 @@ mod tests {
             .unwrap();
         }
 
-        let ring = active_tenant_ring(&db, "tenant-a", 100).unwrap();
+        let ring = active_tenant_ring(&mut db.any_conn(), "tenant-a", 100).unwrap();
         let keys: Vec<_> = ring.into_iter().map(|(key, _)| key).collect();
         assert_eq!(keys, vec![a_first.public_hex(), a_second.public_hex()]);
         assert!(!keys.contains(&other_tenant.public_hex()));
@@ -1528,7 +1528,9 @@ mod tests {
         let big_t = t * RISTRETTO_BASEPOINT_TABLE;
         let shared = crate::ring_pseudonym::shared_secret_agent(a, &big_t);
         let signer_id = crate::ring_pseudonym::agent_ring_identity(a, &shared, &env.ring_id);
-        let members = crate::rings::list_member_points(db, &env.tenant_id, &env.ring_id).unwrap();
+        let members =
+            crate::rings::list_member_points(&mut db.any_conn(), &env.tenant_id, &env.ring_id)
+                .unwrap();
         let idx = members
             .iter()
             .position(|p| *p == signer_id.public)
@@ -1560,7 +1562,8 @@ mod tests {
         let big_t = t * RISTRETTO_BASEPOINT_TABLE;
         let shared = crate::ring_pseudonym::shared_secret_agent(a, &big_t);
         let signer_id = crate::ring_pseudonym::agent_ring_identity(a, &shared, ring_id);
-        let members = crate::rings::list_member_points(db, &env.tenant_id, ring_id).unwrap();
+        let members =
+            crate::rings::list_member_points(&mut db.any_conn(), &env.tenant_id, ring_id).unwrap();
         let idx = members
             .iter()
             .position(|p| *p == signer_id.public)
@@ -1589,10 +1592,18 @@ mod tests {
             allowed_config_digests: digests.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         };
-        crate::rings::upsert_ring(db, "default", ring_id, &rule, 1).unwrap();
-        crate::rings::subscribe(db, "default", t, &anon_pub_hex(a), ring_id, 1).unwrap();
+        crate::rings::upsert_ring(&mut db.any_conn(), "default", ring_id, &rule, 1).unwrap();
         crate::rings::subscribe(
-            db,
+            &mut db.any_conn(),
+            "default",
+            t,
+            &anon_pub_hex(a),
+            ring_id,
+            1,
+        )
+        .unwrap();
+        crate::rings::subscribe(
+            &mut db.any_conn(),
             "default",
             t,
             &anon_pub_hex(&anon_scalar(b"decoy")),
@@ -1613,7 +1624,8 @@ mod tests {
         let mut env = anon_env("r", "search", "", "nonce-multi-0000001");
         env.also_ring_ids = vec!["s".into()];
         let proof = sign_anon(&db, &a, &t, &env);
-        let r = validate_anon_action(&db, b"s", &proof, 1).expect("member of both accepted");
+        let r = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1)
+            .expect("member of both accepted");
         assert_eq!(r.policy_version, "ring:r:v1+ring:s:v1");
         // The two per-ring key images differ — no cross-ring correlation leaks.
         let k_r = hex::encode(proof.ring_signature.key_image.compress().as_bytes());
@@ -1636,7 +1648,7 @@ mod tests {
         let mut env = anon_env("r", "transfer", "", "nonce-multi-0000002");
         env.also_ring_ids = vec!["s".into()];
         let proof = sign_anon(&db, &a, &t, &env);
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
         assert!(err.1.contains("ring 's' rule denied"), "got: {}", err.1);
     }
@@ -1660,7 +1672,7 @@ mod tests {
         let big_t = &t * RISTRETTO_BASEPOINT_TABLE;
         let shared = crate::ring_pseudonym::shared_secret_agent(&a, &big_t);
         let signer_id = crate::ring_pseudonym::agent_ring_identity(&a, &shared, "s");
-        let members = crate::rings::list_member_points(&db, "default", "s").unwrap();
+        let members = crate::rings::list_member_points(&mut db.any_conn(), "default", "s").unwrap();
         let forged = ring::sign(
             &canonical_anon_envelope_bytes(&env),
             &members,
@@ -1672,7 +1684,7 @@ mod tests {
             envelope: env,
             also_ring_signatures: vec![forged],
         };
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
         assert!(err.1.contains("verification failed"), "got: {}", err.1);
     }
@@ -1690,7 +1702,7 @@ mod tests {
         // Strip the co-ring claim after signing.
         proof.envelope.also_ring_ids.clear();
         proof.also_ring_signatures.clear();
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
     }
 
@@ -1751,10 +1763,10 @@ mod tests {
         for i in 0..3 {
             let env = anon_env("r", "search", "", &format!("nonce-chain-{i:012}"));
             let proof = sign_anon(&db, &a, &t, &env);
-            validate_anon_action(&db, b"s", &proof, 1).expect("receipt written");
+            validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).expect("receipt written");
         }
         assert_eq!(
-            verify_receipt_chain(&db, "default").expect("intact chain verifies"),
+            verify_receipt_chain(&mut db.any_conn(), "default").expect("intact chain verifies"),
             3
         );
 
@@ -1772,7 +1784,7 @@ mod tests {
             params![victim],
         )
         .unwrap();
-        let survivor = load_receipt(&db, &{
+        let survivor = load_receipt(&mut db.any_conn(), &{
             let id: String = db
                 .query_row(
                     "SELECT receipt_id FROM agent_action_receipts WHERE seq = 3",
@@ -1789,7 +1801,7 @@ mod tests {
             "the surviving receipt's own signature is still valid — that is the gap the chain closes"
         );
 
-        let err = verify_receipt_chain(&db, "default").unwrap_err();
+        let err = verify_receipt_chain(&mut db.any_conn(), "default").unwrap_err();
         assert!(err.contains("expected seq 2"), "got: {err}");
     }
 
@@ -1802,16 +1814,19 @@ mod tests {
         for i in 0..2 {
             let env = anon_env("r", "search", "", &format!("nonce-edit-{i:013}"));
             let proof = sign_anon(&db, &a, &t, &env);
-            validate_anon_action(&db, b"s", &proof, 1).expect("receipt written");
+            validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).expect("receipt written");
         }
-        assert_eq!(verify_receipt_chain(&db, "default").unwrap(), 2);
+        assert_eq!(
+            verify_receipt_chain(&mut db.any_conn(), "default").unwrap(),
+            2
+        );
 
         db.execute(
             "UPDATE agent_action_receipts SET status = 'rewritten' WHERE seq = 1",
             [],
         )
         .unwrap();
-        let err = verify_receipt_chain(&db, "default").unwrap_err();
+        let err = verify_receipt_chain(&mut db.any_conn(), "default").unwrap_err();
         assert!(err.contains("prev_hash does not match"), "got: {err}");
     }
 
@@ -1822,8 +1837,8 @@ mod tests {
         setup_ring(&db, &t, &a, &["search"], &[]);
         let env = anon_env("r", "search", "", "nonce-abcdef123456");
         let proof = sign_anon(&db, &a, &t, &env);
-        let r =
-            validate_anon_action(&db, b"secret", &proof, 1000).expect("genuine member accepted");
+        let r = validate_anon_action(&mut db.any_conn(), b"secret", &proof, 1000)
+            .expect("genuine member accepted");
         assert_eq!(r.agent_id, "", "anon receipt must carry NO agent identity");
         assert!(r.policy_version.starts_with("ring:r:v"));
         assert!(!r.ring_key_image_hex.is_empty());
@@ -1836,8 +1851,8 @@ mod tests {
         setup_ring(&db, &t, &a, &["x"], &[]);
         let env = anon_env("r", "x", "", "nonce-replay-000001");
         let proof = sign_anon(&db, &a, &t, &env);
-        assert!(validate_anon_action(&db, b"s", &proof, 1).is_ok());
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        assert!(validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).is_ok());
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
         assert!(err.1.contains("replay"), "got: {}", err.1);
     }
@@ -1849,7 +1864,7 @@ mod tests {
         setup_ring(&db, &t, &a, &["search"], &[]);
         let env = anon_env("r", "transfer", "", "nonce-deny-00000001");
         let proof = sign_anon(&db, &a, &t, &env);
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
 
@@ -1860,7 +1875,7 @@ mod tests {
         setup_ring(&db, &t, &a, &["search"], &["sha256:good"]);
         let env = anon_env("r", "search", "sha256:DRIFTED", "nonce-drift-0000001");
         let proof = sign_anon(&db, &a, &t, &env);
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
 
@@ -1874,7 +1889,7 @@ mod tests {
         // Mutate after signing — action stays allowed so the rule passes, but the
         // canonical bytes change, so the ring signature must fail.
         proof.envelope.resource = "evil".into();
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
         assert!(err.1.contains("signature"), "got: {}", err.1);
     }
@@ -1890,7 +1905,7 @@ mod tests {
             ring_signature: sig,
             also_ring_signatures: Vec::new(),
         };
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::NOT_FOUND);
     }
 
@@ -1907,10 +1922,11 @@ mod tests {
             },
             ..Default::default()
         };
-        crate::rings::upsert_ring(&db, "default", "r", &rule, 1).unwrap();
-        crate::rings::subscribe(&db, "default", &t, &anon_pub_hex(&a), "r", 1).unwrap();
+        crate::rings::upsert_ring(&mut db.any_conn(), "default", "r", &rule, 1).unwrap();
+        crate::rings::subscribe(&mut db.any_conn(), "default", &t, &anon_pub_hex(&a), "r", 1)
+            .unwrap();
         crate::rings::subscribe(
-            &db,
+            &mut db.any_conn(),
             "default",
             &t,
             &anon_pub_hex(&anon_scalar(b"decoy")),
@@ -1939,7 +1955,7 @@ mod tests {
 
         let env = anon_env("r", "search", "", "nonce-overbudget-01");
         let proof = sign_anon(&db, &a, &t, &env);
-        let err = validate_anon_action(&db, b"s", &proof, 1).unwrap_err();
+        let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
         assert_eq!(err.0, StatusCode::PAYMENT_REQUIRED, "got: {}", err.1);
     }
 }

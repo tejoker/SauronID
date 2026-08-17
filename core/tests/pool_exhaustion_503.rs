@@ -24,8 +24,12 @@ use tower_http::catch_panic::CatchPanicLayer;
 async fn takes_a_connection(
     axum::extract::State(db): axum::extract::State<std::sync::Arc<DbHandle>>,
 ) -> &'static str {
-    let conn = db.lock().unwrap();
-    let _: i64 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
+    let mut conn = db.lock().unwrap();
+    let _: i64 = conn
+        .any_conn()
+        .query_row("SELECT 1", sauron_core::sql_params![], |r| r.get_i64(0))
+        .unwrap()
+        .unwrap();
     "ok"
 }
 

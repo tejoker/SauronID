@@ -30,12 +30,13 @@ impl RuntimeCheck for ChainDepthCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        let depth = ctx
-            .action
-            .metadata
-            .get("chain_depth")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        // Fail closed. `unwrap_or(0)` meant a runaway loop that never reported
+        // its depth was always at depth zero — the check existed to stop exactly
+        // that agent.
+        let depth = match ctx.require_u64("chain_depth", "chain_depth") {
+            Ok(v) => v,
+            Err(deny) => return deny,
+        };
         if depth > self.max_chain_depth as u64 {
             Verdict::Deny {
                 check: self.name().to_string(),
@@ -84,10 +85,16 @@ mod tests {
         assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
+    /// Fail-closed: `unwrap_or(0)` meant the runaway loop this check exists to
+    /// stop was always reported as being at depth zero.
     #[test]
-    fn missing_depth_treated_as_zero() {
-        let c = ChainDepthCheck::new(0);
+    fn an_undeclared_chain_depth_is_denied_not_zero() {
+        let c = ChainDepthCheck::new(5);
         let a = Action::default();
-        assert!(c.evaluate(&ctx(&a)).is_allow());
+        let v = c.evaluate(&ctx(&a));
+        assert!(v.is_deny());
+        if let Verdict::Deny { reason, .. } = v {
+            assert!(reason.contains("chain_depth"), "{reason}");
+        }
     }
 }

@@ -19,7 +19,7 @@
 //! so it enforces at the host + resolved-IP level only — no payload inspection
 //! beyond opt-in PII redaction of the request body.
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::{AnyConn, AnyRowGet};
 use crate::sql_params;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -32,7 +32,6 @@ use axum::{
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -337,7 +336,7 @@ fn header_forbidden(name: &str) -> bool {
 /// complete transparent-proof batch impossible. Returns the egress row id.
 #[allow(clippy::too_many_arguments)]
 pub fn record_egress(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     agent_id: &str,
     target_host: &str,
@@ -348,10 +347,13 @@ pub fn record_egress(
     allowed: bool,
     now: i64,
 ) -> Result<i64, String> {
-    db.any_conn().execute(
+    // `RETURNING id` rather than `last_insert_rowid()`: the rowid accessor is a
+    // rusqlite method with no Postgres equivalent, and the id is returned to the
+    // caller of POST /agent/egress/report, so it cannot just be dropped.
+    let egress_id = db.query_row(
         "INSERT INTO agent_egress_log
          (tenant_id, agent_id, target_host, target_path, method, body_hash_hex, status_code, ts, allowed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
         sql_params![
             &tenant_id,
             &agent_id,
@@ -363,9 +365,10 @@ pub fn record_egress(
             &now,
             allowed as i64
         ],
+        |r| r.get_i64(0),
     )
-    .map_err(|e| format!("insert agent_egress_log: {e}"))?;
-    let egress_id = db.last_insert_rowid();
+    .map_err(|e| format!("insert agent_egress_log: {e}"))?
+    .ok_or_else(|| "insert agent_egress_log returned no id".to_string())?;
 
     Ok(egress_id)
 }
@@ -373,14 +376,14 @@ pub fn record_egress(
 /// Load the agent's parsed `intent_json`, scoped to `tenant_id` (fail-closed:
 /// unknown/revoked/other-tenant → error).
 fn agent_intent(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     agent_id: &str,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     // A missing or revoked agent must stay a 401 — `require` keeps "no such row"
     // and "query failed" both mapping to that, where a default-on-missing would
     // have handed back an empty intent and let the call proceed.
-    let s: String = db.any_conn().require(
+    let s: String = db.require(
         "SELECT intent_json FROM agents WHERE agent_id = ?1 AND tenant_id = ?2 AND revoked = 0",
         sql_params![agent_id, tenant_id],
         |r| r.get(0),
@@ -651,7 +654,7 @@ pub async fn issue_egress_capability(
     }
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         crate::risk::check_and_increment(
             &mut db.any_conn(),
             &crate::risk::bucket_egress_capability(&tenant_id, &req.agent_id),
@@ -712,6 +715,34 @@ pub async fn issue_egress_capability(
         },
     )?;
 
+    // Server-bound policy for the egress this capability would authorise. Runs
+    // at issuance, where the destination is known but the body is not — the
+    // proxy call gates again with the payload facts it can only see then.
+    {
+        let mut bound_action = crate::policy::Action {
+            action_id: format!("egress-cap-{}", validated.receipt.receipt_id),
+            tool: "egress".to_string(),
+            amount_usd: None,
+            timestamp: crate::agent_action::now_secs(),
+            ..Default::default()
+        };
+        bound_action.metadata.insert(
+            "target_domain".into(),
+            serde_json::json!(url.host_str().unwrap_or("")),
+        );
+        bound_action
+            .metadata
+            .insert("method".into(), serde_json::json!(method.clone()));
+        crate::policy::handlers::gate_action_on_bound_policy(
+            &state,
+            &tenant_id,
+            &req.agent_id,
+            &bound_action,
+            "/agent/egress/capability",
+        )
+        .await?;
+    }
+
     let now = crate::agent_action::now_secs();
     let expires_at = exp.min(req.agent_action.envelope.expires_at).min(now + 120);
     if expires_at <= now {
@@ -728,15 +759,15 @@ pub async fn issue_egress_capability(
     let token_hash = sha256_hex(&capability);
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        db.execute(
+        let mut db = st.db.lock().unwrap();
+        db.any_conn().execute(
             "DELETE FROM agent_egress_capabilities WHERE expires_at < ?1 OR used_at IS NOT NULL",
-            params![now],
+            sql_params![now],
         )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        db.execute(
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        db.any_conn().execute(
             "INSERT INTO agent_egress_capabilities (token_hash_hex, tenant_id, agent_id, method, url, body_hash_hex, action_receipt_id, expires_at, used_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL)",
-            params![token_hash, tenant_id, req.agent_id, method, req.url, req.body_hash_hex.to_ascii_lowercase(), validated.receipt.receipt_id, expires_at],
+            sql_params![&token_hash, tenant_id, &req.agent_id, &method, &req.url, req.body_hash_hex.to_ascii_lowercase(), &validated.receipt.receipt_id, expires_at],
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -817,9 +848,9 @@ pub async fn agent_egress_proxy(
     let deny = |reason: String| -> (StatusCode, String) {
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             let _ = record_egress(
-                &db,
+                &mut db.any_conn(),
                 &tenant_id,
                 &agent_id,
                 &host,
@@ -858,8 +889,8 @@ pub async fn agent_egress_proxy(
     // 1. Allowlist check (host + optional method/path constraints).
     let matched = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        let intent = agent_intent(&db, &tenant_id, &agent_id)?;
+        let mut db = st.db.lock().unwrap();
+        let intent = agent_intent(&mut db.any_conn(), &tenant_id, &agent_id)?;
         egress_match(
             &intent,
             &host,
@@ -892,6 +923,55 @@ pub async fn agent_egress_proxy(
         None => None,
     };
     let injected_header_lc = injected.as_ref().map(|(h, _)| h.to_ascii_lowercase());
+
+    // 1b. Server-bound policy, with the facts only this call site has. The
+    //     gateway IS the TLS client, so the request body is plaintext here — the
+    //     policy engine was simply never given it. `pii_detected` is computed
+    //     server-side from the same rules the redactor uses, so the PII gate is
+    //     server-attested rather than trusted from the agent, and it is set
+    //     regardless of whether redaction is switched on.
+    {
+        let declared_body = req.body.clone().unwrap_or_default();
+        let (_, pii_classes) = redact_pii(&declared_body);
+        let mut bound_action = crate::policy::Action {
+            action_id: format!(
+                "egress-{}",
+                sha256_hex(&format!("{agent_id}{now}{}", req.url))
+            ),
+            tool: "egress".to_string(),
+            amount_usd: None,
+            timestamp: now,
+            ..Default::default()
+        };
+        for (key, value) in [
+            ("target_domain", serde_json::json!(host.clone())),
+            ("method", serde_json::json!(method_str.clone())),
+            (
+                "payload_bytes",
+                serde_json::json!(declared_body.len() as u64),
+            ),
+            ("pii_detected", serde_json::json!(!pii_classes.is_empty())),
+            (
+                "content_type",
+                serde_json::json!(req
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("application/octet-stream")),
+            ),
+        ] {
+            bound_action.metadata.insert(key.into(), value);
+        }
+        crate::policy::handlers::gate_action_on_bound_policy(
+            &state,
+            &tenant_id,
+            &agent_id,
+            &bound_action,
+            "/agent/egress/proxy",
+        )
+        .await?;
+    }
 
     // 2. Resolve + vet the target IP (SSRF / metadata / private-range block).
     //    Pin the vetted address so the actual connection cannot be rebound to a
@@ -933,24 +1013,25 @@ pub async fn agent_egress_proxy(
     {
         let token_hash = sha256_hex(req.capability.trim());
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let changed = db
+            .any_conn()
             .execute(
                 "UPDATE agent_egress_capabilities SET used_at = ?1
                  WHERE token_hash_hex = ?2 AND tenant_id = ?3 AND agent_id = ?4
                    AND method = ?5 AND url = ?6 AND body_hash_hex = ?7
                    AND used_at IS NULL AND expires_at >= ?1",
-                params![
+                sql_params![
                     now,
-                    token_hash,
-                    tenant_id,
-                    agent_id,
-                    method_str,
-                    req.url,
-                    original_body_hash,
+                    &token_hash,
+                    &tenant_id,
+                    &agent_id,
+                    &method_str,
+                    &req.url,
+                    &original_body_hash,
                 ],
             )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         if changed != 1 {
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -1013,9 +1094,9 @@ pub async fn agent_egress_proxy(
     // body — so the anchored log captures the call even if the body is capped.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let _ = record_egress(
-            &db,
+            &mut db.any_conn(),
             &tenant_id,
             &agent_id,
             &host,
@@ -1080,6 +1161,8 @@ pub async fn agent_egress_proxy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::any_db::AsAnyConn;
+    use rusqlite::{params, Connection};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn mem_db() -> Connection {
@@ -1228,13 +1311,13 @@ mod tests {
     fn agent_intent_scoped_by_tenant_and_revocation() {
         let db = mem_db();
         insert_agent(&db, "a1", r#"{"egress_allowlist":["x.com"]}"#);
-        assert!(agent_intent(&db, "default", "a1").is_ok());
+        assert!(agent_intent(&mut db.any_conn(), "default", "a1").is_ok());
         assert!(
-            agent_intent(&db, "default", "ghost").is_err(),
+            agent_intent(&mut db.any_conn(), "default", "ghost").is_err(),
             "unknown agent denied"
         );
         assert!(
-            agent_intent(&db, "other-tenant", "a1").is_err(),
+            agent_intent(&mut db.any_conn(), "other-tenant", "a1").is_err(),
             "cross-tenant lookup denied"
         );
     }
@@ -1386,7 +1469,7 @@ mod tests {
     fn record_egress_does_not_create_unprovable_synthetic_receipts() {
         let db = mem_db();
         record_egress(
-            &db,
+            &mut db.any_conn(),
             "default",
             "a1",
             "example.com",
@@ -1425,7 +1508,16 @@ mod tests {
         assert_eq!(scoped, 1);
 
         record_egress(
-            &db, "default", "a1", "evil.com", "/y", "POST", "bh", 0, false, 11,
+            &mut db.any_conn(),
+            "default",
+            "a1",
+            "evil.com",
+            "/y",
+            "POST",
+            "bh",
+            0,
+            false,
+            11,
         )
         .unwrap();
         let denied: i64 = db

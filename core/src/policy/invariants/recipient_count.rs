@@ -27,14 +27,10 @@ impl RuntimeCheck for RecipientCountCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        let Some(n) = ctx
-            .action
-            .metadata
-            .get("recipient_count")
-            .and_then(|v| v.as_u64())
-        else {
-            // No recipient_count declared → treat as zero → allow.
-            return Verdict::Allow;
+        // Fail closed — see payload_size for the reasoning.
+        let n = match ctx.require_u64("recipient_count", "recipient_count") {
+            Ok(v) => v,
+            Err(deny) => return deny,
         };
         if n > self.max_recipients as u64 {
             Verdict::Deny {
@@ -84,10 +80,15 @@ mod tests {
         assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
+    /// Fail-closed: an undeclared fanout used to satisfy every recipient cap.
     #[test]
-    fn missing_count_allows() {
+    fn an_undeclared_recipient_count_is_denied() {
         let c = RecipientCountCheck::new(50);
         let a = Action::default();
-        assert!(c.evaluate(&ctx(&a)).is_allow());
+        let v = c.evaluate(&ctx(&a));
+        assert!(v.is_deny());
+        if let Verdict::Deny { reason, .. } = v {
+            assert!(reason.contains("recipient_count"), "{reason}");
+        }
     }
 }

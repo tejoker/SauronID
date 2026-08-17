@@ -40,6 +40,10 @@ r2d2_sqlite = "0.24"
 # function and its callers as async. See core/src/any_db.rs.
 postgres = "0.19"
 r2d2_postgres = "0.18"
+# BN254 field reduction for `aggregation::verify::stats_scope_hash`, the
+# Groth16 stats-circuit public-input binding. This was also the Paillier
+# dependency; Paillier is gone, so this goes when the Groth16 stats path does.
+num-bigint = "0.4"
 rs_merkle = "1.4"
 hmac = "0.12"
 hkdf = "0.12"
@@ -54,14 +58,6 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 ring = "0.17"
 webpki = { version = "0.22", features = ["std"] }
 pem = "3"
-# Sprint 13-14: Paillier homomorphic encryption (Tier 2). Big-int arithmetic
-# for ~2048-bit modular exponentiation. `num-bigint` is NOT constant-time —
-# acceptable for a dev/demo HE module that explicitly requires cryptographer
-# review before production secret-aggregation use. See `core/src/he/` and
-# `docs/homomorphic-encryption.md` for the full NEEDS_CRYPTO_REVIEW notice.
-num-bigint = { version = "0.4", features = ["rand", "serde"] }
-num-integer = "0.1"
-num-traits = "0.2"
 # Transparent production proof verifier.  We deliberately compile the verifier
 # without prover/Bonsai features and with dev-mode disabled.  The application
 # additionally rejects Groth16 and Fake receipt variants at the wire boundary;

@@ -32,7 +32,7 @@
 //!   solana airdrop 2 $(solana-keygen pubkey /etc/sauron/solana-keypair.json) \
 //!       --url https://api.devnet.solana.com
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use ed25519_dalek::{Signer, SigningKey};
 use std::sync::Arc;
@@ -217,7 +217,7 @@ impl SolanaAnchorService {
         let anchor_id = format!("sol_{}", random_hex_32());
         let now = now_secs();
         {
-            let conn = db.lock().map_err(|e| e.to_string())?;
+            let mut conn = db.lock().map_err(|e| e.to_string())?;
             conn.any_conn()
                 .execute(
                     "INSERT INTO solana_merkle_anchors
@@ -300,7 +300,7 @@ pub fn spawn_solana_confirmer(db: Arc<DbHandle>, rpc_url: String) {
             ticker.tick().await;
             let pending: Vec<(String, String)> = match db.lock() {
                 // Best-effort, as in the Bitcoin confirmer: skip this round.
-                Ok(conn) => conn
+                Ok(mut conn) => conn
                     .any_conn()
                     .query_map(
                         "SELECT anchor_id, signature
@@ -358,7 +358,7 @@ pub fn spawn_solana_confirmer(db: Arc<DbHandle>, rpc_url: String) {
                         );
                         continue;
                     }
-                    if let Ok(conn) = db.lock() {
+                    if let Ok(mut conn) = db.lock() {
                         let _ = conn.any_conn().execute(
                             "UPDATE solana_merkle_anchors SET confirmed = 1, slot = ?1 WHERE anchor_id = ?2",
                             sql_params![&slot, &anchor_id],

@@ -27,14 +27,12 @@ impl RuntimeCheck for PayloadSizeCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        let Some(bytes) = ctx
-            .action
-            .metadata
-            .get("payload_bytes")
-            .and_then(|v| v.as_u64())
-        else {
-            // No payload declared → treat as zero-byte → allow.
-            return Verdict::Allow;
+        // Fail closed: an action that does not declare its size cannot show it
+        // is under the cap. "Undeclared means zero" let the constrained party
+        // waive the constraint by omission.
+        let bytes = match ctx.require_u64("payload_bytes", "payload_size") {
+            Ok(v) => v,
+            Err(deny) => return deny,
         };
         if bytes > self.max_bytes {
             Verdict::Deny {
@@ -84,10 +82,21 @@ mod tests {
         assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
+    /// The fail-open this check used to have: an action that never mentioned
+    /// `payload_bytes` satisfied every payload cap, so the cheapest way past the
+    /// gate was to omit the field it measures.
     #[test]
-    fn missing_payload_allows() {
+    fn an_undeclared_payload_is_denied_not_treated_as_zero() {
         let c = PayloadSizeCheck::new(1024);
         let a = Action::default();
-        assert!(c.evaluate(&ctx(&a)).is_allow());
+        let v = c.evaluate(&ctx(&a));
+        assert!(v.is_deny(), "undeclared payload must not satisfy the cap");
+        if let Verdict::Deny { reason, check } = v {
+            assert_eq!(check, "payload_size");
+            assert!(
+                reason.contains("payload_bytes"),
+                "deny must name the missing key: {reason}"
+            );
+        }
     }
 }

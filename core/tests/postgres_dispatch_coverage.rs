@@ -1,43 +1,73 @@
 //! How much of the core can actually reach Postgres. Measured, not estimated.
 //!
-//! `SAURON_DB_BACKEND=postgres` builds a Postgres pool, and ~189 statements are
-//! written in the portable `AnyConn` idiom against a dialect translator that
-//! handles both engines. It is easy to read that as "mostly ported". It is not.
+//! ## What this used to measure, and why it changed
 //!
-//! There is exactly one function that can construct `AnyConn::Postgres`:
-//! `DbHandle::any()`. Everything else obtains its `AnyConn` from
-//! `impl AsAnyConn for rusqlite::Connection`, which hard-returns
-//! `AnyConn::Sqlite` whatever the configuration says:
+//! Before the call-site sweep there was exactly one function that could
+//! construct `AnyConn::Postgres` — `DbHandle::any()` — and it had **zero
+//! callers**, verified by renaming it and watching nothing fail to compile.
+//! Everything else got its `AnyConn` from `impl AsAnyConn for
+//! rusqlite::Connection`, which hard-returns `AnyConn::Sqlite` whatever the
+//! configuration says:
 //!
 //! ```ignore
-//! st.db.any(|conn| conn.query_row(..))?;   // dispatches
-//!
 //! let db = st.db.lock().unwrap();
-//! db.any_conn().query_row(..)?;            // never dispatches — always SQLite
+//! db.any_conn().query_row(..);   // read as portable; always SQLite
 //! ```
 //!
-//! `DbHandle::any()` had **zero callers** — verified by renaming it and watching
-//! nothing fail to compile — so for its whole life the layer was unreachable and
-//! only `repository.rs`, with its own pool, ever spoke Postgres.
+//! So the old measure was "statements written in the portable idiom but pinned
+//! to SQLite", counted by grepping `any_conn()`. That number is now
+//! meaningless in the other direction: `DbHandle::lock()` returns a `DbConn`,
+//! and `DbConn::any_conn()` dispatches, so the *same* grep now counts mostly
+//! portable statements. A count that means opposite things before and after the
+//! change it is supposed to track is worse than no count.
 //!
-//! `DbHandle::conn()` is the way out. It returns an owned `DbConn` guard whose
-//! `any_conn()` dispatches, so converting a call site is a one-line change to
-//! the acquisition rather than a rewrite around a closure. Sites still holding a
-//! `lock()`ed SQLite connection remain pinned, and this counts them.
+//! ## What it measures now
 //!
-//! An audit of this repository initially reported "59% ported" by counting the
-//! portable idiom as evidence of portability. These tests exist so the number
-//! comes from the build rather than from reading, and so converting call sites
-//! forces the claim in `docs/production-readiness.md` to move with the code.
+//! The sweep inverted the default: dispatching is what you get, and staying on
+//! SQLite is what you have to ask for, by name, via `DbHandle::lock_sqlite()`.
+//! So the honest measure of "cannot reach Postgres" is that opt-out, and it is
+//! small enough to enumerate rather than count. Each entry below is a claim
+//! that the code there does not work on Postgres and is not meant to.
+//!
+//! These tests exist so the figure in `docs/production-readiness.md` comes from
+//! the build rather than from reading, and so re-pinning a call site forces the
+//! claim to move with the code.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Statements written in the portable idiom but pinned to SQLite.
+/// Files allowed to opt out of dispatch, and why.
+///
+/// `repository.rs` dominates the count and is not a gap: `Repo` is an older,
+/// separate dual-backend split whose `Repo::Sqlite(db)` arms are the SQLite
+/// half of a two-armed match, with sqlx Postgres code in the other half. Both
+/// arms are chosen from the same `SAURON_DB_BACKEND`, so a `Repo::Sqlite` arm
+/// only ever runs when there is no Postgres pool at all. Making those dispatch
+/// would give Postgres two independent routes to one table.
+///
 /// Update together with the figure in docs/production-readiness.md.
-const EXPECTED_PINNED: usize = 190;
-/// Tolerance for incidental refactors; a real sweep moves this far more.
-const SLACK: usize = 5;
+const SQLITE_ONLY: &[(&str, usize, &str)] = &[
+    (
+        "repository.rs",
+        33,
+        "the SQLite half of Repo's own backend match; the Postgres half is sqlx",
+    ),
+    (
+        "db.rs",
+        2,
+        "the dispatcher itself — it has to be able to name the SQLite pool",
+    ),
+    (
+        "audit/store.rs",
+        1,
+        "ensure_audit_reports_schema; Postgres takes this table from migrations/postgres/0008",
+    ),
+    (
+        "middleware/audit_log.rs",
+        1,
+        "ensure_security_audit_schema; Postgres takes this table from migrations/postgres/0007+0014",
+    ),
+];
 
 fn core_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -54,28 +84,35 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn pinned_sites() -> (usize, BTreeMap<String, usize>) {
+/// `lock_sqlite()` uses in production code, per file.
+///
+/// Test modules are excluded: a fixture asserting on the SQLite database it
+/// just created is not a deployment that cannot use Postgres. Comments are
+/// stripped first — this counts call sites, and the doc comments explaining why
+/// a site is SQLite-only name the function too. Counting those made adding an
+/// explanation look like adding an opt-out.
+fn sqlite_only_sites() -> BTreeMap<String, usize> {
     let mut files = Vec::new();
     rust_files(&core_src(), &mut files);
     assert!(!files.is_empty(), "no sources under core/src");
 
-    let mut total = 0;
     let mut by_file = BTreeMap::new();
     for f in files {
-        // any_db.rs defines the trait; db.rs defines the dispatcher. Counting
-        // them would measure the plumbing rather than its users.
-        let name = f.file_name().unwrap().to_string_lossy().to_string();
-        if name == "any_db.rs" || name == "db.rs" {
-            continue;
-        }
         let src = std::fs::read_to_string(&f).expect("readable source");
         let body = match src.find("#[cfg(test)]") {
             Some(i) => &src[..i],
             None => &src[..],
         };
-        let n = body.matches("any_conn()").count();
+        let code: String = body
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let n = code.matches("lock_sqlite()").count();
         if n > 0 {
-            total += n;
             by_file.insert(
                 f.strip_prefix(core_src())
                     .unwrap_or(&f)
@@ -85,34 +122,80 @@ fn pinned_sites() -> (usize, BTreeMap<String, usize>) {
             );
         }
     }
-    (total, by_file)
+    by_file
 }
 
 #[test]
-fn sqlite_pinned_statement_count_matches_the_documented_figure() {
-    let (pinned, by_file) = pinned_sites();
-    if pinned.abs_diff(EXPECTED_PINNED) > SLACK {
-        let mut worst: Vec<_> = by_file.into_iter().collect();
-        worst.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        let listing = worst
-            .iter()
-            .take(10)
-            .map(|(f, n)| format!("    {n:3}  {f}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+fn the_sqlite_only_opt_outs_are_exactly_the_documented_ones() {
+    let found = sqlite_only_sites();
+    let expected: BTreeMap<String, usize> = SQLITE_ONLY
+        .iter()
+        .map(|(f, n, _)| ((*f).to_string(), *n))
+        .collect();
+
+    if found != expected {
+        let mut report = String::new();
+        for (file, n) in &found {
+            match expected.get(file) {
+                Some(e) if e == n => {}
+                Some(e) => report.push_str(&format!("    {file}: {n} (documented {e})\n")),
+                None => report.push_str(&format!("    {file}: {n} (NOT documented)\n")),
+            }
+        }
+        for file in expected.keys() {
+            if !found.contains_key(file) {
+                report.push_str(&format!("    {file}: 0 (documented, now gone)\n"));
+            }
+        }
         panic!(
-            "SQLite-pinned statement count moved: {pinned} (documented {EXPECTED_PINNED}).\n\
-             Update this constant and docs/production-readiness.md in the same commit,\n\
-             so the claim and the code cannot disagree.\n\nLargest:\n{listing}"
+            "the set of SQLite-only opt-outs moved:\n{report}\n\
+             Every `lock_sqlite()` asserts \"this does not work on Postgres and is \
+             not meant to\". Adding one is a deliberate act: record it in \
+             SQLITE_ONLY with the reason, and update the figure in \
+             docs/production-readiness.md in the same commit. Removing one is the \
+             port progressing — do the same."
         );
     }
 }
 
 #[test]
-fn the_pinned_form_cannot_reach_postgres() {
-    // The premise of the count above. If someone gives this trait a dispatching
-    // implementation, that is the fix — but the coverage figure then means
-    // something different and must be re-derived, not silently inherited.
+fn acquisition_dispatches_by_default() {
+    // The inversion the sweep is: `lock()` — what ~92 call sites call — hands
+    // back the dispatching guard, so a call site reaches Postgres by doing
+    // nothing special. If this ever goes back to returning a SQLite connection,
+    // every one of those sites silently re-pins and the count above still reads
+    // zero, because they are not spelled `lock_sqlite()`.
+    let db = std::fs::read_to_string(core_src().join("db.rs")).expect("db.rs");
+    let lock = db
+        .find("pub fn lock(&self)")
+        .expect("DbHandle::lock is gone; the whole sweep routes through it");
+    let body = &db[lock..(lock + 200).min(db.len())];
+    assert!(
+        body.contains("self.conn()"),
+        "DbHandle::lock no longer delegates to conn(). It is the single point \
+         that made the port atomic; re-pinning it silently un-ports every call \
+         site. Got:\n{body}"
+    );
+    assert!(
+        db.contains("pub fn conn(&self)"),
+        "the dispatching constructor is gone"
+    );
+    assert!(
+        db.contains("pub enum DbConn"),
+        "the dispatching guard is gone"
+    );
+    assert!(
+        db.contains("pub fn any<T>"),
+        "DbHandle::any is gone — still the right shape for an async call site"
+    );
+}
+
+#[test]
+fn the_pinned_form_still_cannot_reach_postgres() {
+    // `AsAnyConn for rusqlite::Connection` is what made the portable idiom read
+    // as backend-agnostic while being SQLite. It is still SQLite-only, and that
+    // is correct: what it borrows really is a rusqlite connection. What changed
+    // is that call sites no longer obtain one — they hold a `DbConn`.
     let src = std::fs::read_to_string(core_src().join("any_db.rs")).expect("any_db.rs");
     let start = src
         .find("impl AsAnyConn for rusqlite::Connection")
@@ -120,31 +203,14 @@ fn the_pinned_form_cannot_reach_postgres() {
     let body = &src[start..(start + 220).min(src.len())];
     assert!(
         body.contains("AnyConn::Sqlite"),
-        "AsAnyConn for rusqlite::Connection no longer hard-returns Sqlite. If it \
-         dispatches now, rewrite this test — the pinned count is no longer the \
-         right measure of Postgres reach."
+        "AsAnyConn for rusqlite::Connection no longer hard-returns Sqlite; if it \
+         dispatches now, this file needs re-deriving from scratch."
     );
 }
 
 #[test]
-fn both_dispatch_paths_exist_and_live_in_db_rs() {
-    // Two ways to reach Postgres, and both must stay in db.rs so "can this
-    // possibly touch Postgres?" is answerable by reading one file:
-    //
-    //   DbHandle::any(closure)  — the original; correct, but requires the call
-    //                             site to be restructured around a closure.
-    //   DbHandle::conn()        — returns a DbConn guard whose any_conn()
-    //                             dispatches; the sweep converts to this.
-    let db = std::fs::read_to_string(core_src().join("db.rs")).expect("db.rs");
-    assert!(db.contains("pub fn any<T>"), "DbHandle::any is gone");
-    assert!(db.contains("pub fn conn(&self)"), "DbHandle::conn is gone");
-    assert!(
-        db.contains("pub enum DbConn"),
-        "the dispatching guard is gone"
-    );
-
-    // Nowhere outside db.rs may construct the Postgres variant: a call site
-    // that built one itself would be a third dispatch path nobody is counting.
+fn nothing_outside_db_rs_constructs_a_postgres_connection() {
+    // A call site that built its own would be a dispatch path nobody counts.
     let mut files = Vec::new();
     rust_files(&core_src(), &mut files);
     let stray: Vec<String> = files
@@ -161,5 +227,72 @@ fn both_dispatch_paths_exist_and_live_in_db_rs() {
         stray.is_empty(),
         "AnyConn::Postgres constructed outside db.rs, so Postgres reach is no \
          longer a property of one file: {stray:?}"
+    );
+}
+
+#[test]
+fn blocking_postgres_calls_are_confined_to_any_db() {
+    // The synchronous `postgres` driver drives a private Tokio runtime with
+    // `block_on`, which panics on a thread already running tasks — and every
+    // call site is inside an async handler. `any_db::blocking` is the guard.
+    // If a Postgres call appears anywhere else, it is a panic waiting for the
+    // first request that reaches it.
+    let any_db = std::fs::read_to_string(core_src().join("any_db.rs")).expect("any_db.rs");
+    assert!(
+        any_db.contains("block_in_place"),
+        "any_db no longer defers blocking Postgres calls; async handlers will panic"
+    );
+    let db = std::fs::read_to_string(core_src().join("db.rs")).expect("db.rs");
+    for needed in ["impl Drop for DbConn", "impl Drop for DbHandle"] {
+        assert!(
+            db.contains(needed),
+            "{needed} is gone — releasing a Postgres client closes it, and \
+             closing blocks, so the drop has to run where blocking is allowed"
+        );
+    }
+}
+
+#[test]
+fn every_upsert_names_its_conflict_target() {
+    // `sql_translate` rewrites `INSERT OR REPLACE` only when the statement
+    // already carries an explicit `ON CONFLICT`; the bare form is left untouched
+    // on purpose, so that Postgres rejects it rather than the translator
+    // guessing an upsert key and silently changing what a rollback undoes.
+    //
+    // The consequence is that a bare `INSERT OR REPLACE` is a syntax error under
+    // SAURON_DB_BACKEND=postgres — "syntax error at or near OR" — at whatever
+    // moment that code path first runs. Two shipped in the port: the
+    // bank_kyc_links link in `/bank/register`, reachable in production whenever
+    // SAURON_DISABLE_BANK_KYC is not set, and the agents seed in
+    // `/dev/leash/demo`. Neither is covered by the empirical suite, because the
+    // bank flow is flag-gated off and the dev route is not mounted in prod.
+    //
+    // Grep found them once. This keeps them found.
+    let mut files = Vec::new();
+    rust_files(&core_src(), &mut files);
+
+    let mut bare = Vec::new();
+    for f in files {
+        if f.file_name().unwrap() == "sql_translate.rs" {
+            continue; // its own fixtures are the bare form, deliberately
+        }
+        let src = std::fs::read_to_string(&f).expect("readable source");
+        for (off, _) in src.match_indices("INSERT OR REPLACE INTO") {
+            // The conflict clause follows within the same statement; 1600 chars
+            // clears the longest column list in the tree with room to spare.
+            let window = &src[off..(off + 1600).min(src.len())];
+            if !window.contains("ON CONFLICT") {
+                let line = src[..off].matches('\n').count() + 1;
+                bare.push(format!("{}:{}", f.display(), line));
+            }
+        }
+    }
+
+    assert!(
+        bare.is_empty(),
+        "INSERT OR REPLACE without an explicit ON CONFLICT target is valid \
+         SQLite and a syntax error on Postgres. Give each one a conflict target \
+         and the update list that reproduces replace semantics:\n  {}",
+        bare.join("\n  ")
     );
 }

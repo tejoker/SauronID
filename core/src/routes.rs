@@ -1,4 +1,4 @@
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use axum::{
     extract::{DefaultBodyLimit, Extension, Json as AxumJson, State},
@@ -178,7 +178,7 @@ async fn finalize_proof_checkpoint(
         i64,
         String,
     ) = {
-        let conn = db
+        let mut conn = db
             .lock()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         conn.any_conn()
@@ -235,7 +235,7 @@ async fn finalize_proof_checkpoint(
         "StatsHonestComputation" | "TransparentActionPolicy"
     ) {
         let (batch_count, compatible_count, valid_mac_count): (i64, i64, i64) = {
-            let conn = db
+            let mut conn = db
                 .lock()
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             let rows = conn
@@ -356,7 +356,7 @@ async fn finalize_proof_checkpoint(
     let finalized_at = crate::ajwt_support::now_secs();
     let checkpoint_id = format!("zkc_{}", crate::ajwt_support::random_hex_32());
     {
-        let conn = db
+        let mut conn = db
             .lock()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         conn.any_conn().execute(
@@ -449,7 +449,7 @@ async fn transparent_verify_handler(
     }
     let (expected_root, expected_size, expected_anchor): (String, i64, String) = {
         let st = state.read().unwrap();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .query_row(
                 "SELECT merkle_root, tree_size, anchor_id FROM zk_proof_checkpoints
@@ -506,7 +506,7 @@ async fn action_log_verify_handler(
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let (expected_root, tree_size): (String, i64) = {
         let st = state.read().unwrap();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn().query_row(
             "SELECT merkle_root, tree_size FROM zk_proof_checkpoints WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = ?3 AND finalized_at > 0",
             sql_params![&body.checkpoint_id, &tenant_id, &body.payload.circuit],
@@ -567,7 +567,7 @@ async fn action_log_verify_handler(
 ///
 /// Both admin-gated through the same middleware stack as `/v1/policy/*`.
 pub fn stats_router() -> Router<Arc<RwLock<ServerState>>> {
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/submit", post(agg_handlers::submit_handler))
         .route(
             "/submit-transparent",
@@ -575,44 +575,9 @@ pub fn stats_router() -> Router<Arc<RwLock<ServerState>>> {
         )
         .route("/cohort", get(agg_handlers::cohort_handler));
 
-    // Sprint 13-14 Tier 2: optional Paillier-encrypted submission path, OFF by
-    // default and mounted only when explicitly enabled.
-    //
-    // NEEDS_CRYPTO_REVIEW — see the disclaimer block in core/src/he/. The
-    // Paillier implementation is built on `num-bigint`, which is NOT
-    // constant-time: ~2048-bit modular exponentiation over secret material with
-    // data-dependent timing is a side channel. The route is admin-gated, so an
-    // attacker needs an admin key to reach it, but an optional and unreviewed
-    // feature should not be reachable at all in a deployment that does not use
-    // it. Not mounting it removes the surface entirely instead of defending it,
-    // and keeps it out of an external reviewer's scope until it has been
-    // replaced with a reviewed, constant-time implementation.
-    if he_encrypted_submission_enabled() {
-        tracing::warn!(
-            target: "sauron::routes",
-            "SAURON_ENABLE_HE=1 — mounting /v1/stats/submit-encrypted. The Paillier \
-             path is unreviewed and not constant-time; see docs/homomorphic-encryption.md"
-        );
-        router = router.route(
-            "/submit-encrypted",
-            post(agg_handlers::submit_encrypted_handler),
-        );
-    }
-
     router
         .route_layer(middleware::from_fn(admin::auth_middleware))
         .route_layer(middleware::from_fn(tenancy::extract_tenant))
-}
-
-/// Whether the unreviewed Paillier submission path is mounted.
-///
-/// Opt-in, and deliberately not disable-shaped: a `SAURON_DISABLE_*` default
-/// leaves the surface live for every operator who never read the flag.
-fn he_encrypted_submission_enabled() -> bool {
-    std::env::var("SAURON_ENABLE_HE")
-        .ok()
-        .and_then(|v| crate::runtime_mode::parse_truthy(&v))
-        .unwrap_or(false)
 }
 
 /// Router for `/v1/cohort/*` — Sprint 8 DP-published cohort surface.

@@ -30,7 +30,7 @@
 //! Schema lives in `core/src/db.rs::init_schema` (SQLite) and
 //! `migrations/postgres/0009_dp_budget_ledger.sql` (Postgres).
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use std::sync::Arc;
 
@@ -157,7 +157,7 @@ impl DpBudgetLedger {
         delta_cap: f64,
     ) -> Result<(), LedgerError> {
         validate_inputs(cohort_id, metric_id, epsilon_cap, delta_cap, cycle_start)?;
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
@@ -213,7 +213,7 @@ impl DpBudgetLedger {
                 "requested_delta must be >= 0 and finite, got {requested_delta}"
             )));
         }
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
@@ -299,11 +299,19 @@ impl DpBudgetLedger {
             .unwrap_or(0);
         let publication_id = new_publication_id();
 
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
-        conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
+        // Statements rather than `AnyConn::transaction`: that helper fixes the
+        // error type to `String`, which would flatten `LedgerError::Invalid`
+        // ("budget exceeded") into `Storage` and lose the distinction callers
+        // map to a status code. `sql_translate` rewrites the BEGIN for
+        // Postgres, where it is READ COMMITTED — safe here because the cap
+        // guard is inside the UPDATE's WHERE clause, so the row lock does the
+        // serialising, not the isolation level.
+        conn.any_conn()
+            .execute("BEGIN IMMEDIATE TRANSACTION", &[])
             .map_err(|e| LedgerError::Storage(format!("begin immediate: {e}")))?;
 
         let txn_res = (|| -> Result<(), LedgerError> {
@@ -370,12 +378,13 @@ impl DpBudgetLedger {
 
         match txn_res {
             Ok(()) => {
-                conn.execute_batch("COMMIT;")
+                conn.any_conn()
+                    .execute("COMMIT", &[])
                     .map_err(|e| LedgerError::Storage(format!("commit: {e}")))?;
                 Ok(publication_id)
             }
             Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
+                let _ = conn.any_conn().execute("ROLLBACK", &[]);
                 Err(e)
             }
         }
@@ -404,7 +413,7 @@ impl DpBudgetLedger {
             new_delta_cap,
             new_cycle_start,
         )?;
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
@@ -441,7 +450,7 @@ impl DpBudgetLedger {
         if cohort_id.trim().is_empty() {
             return Err(LedgerError::Invalid("cohort_id empty".into()));
         }
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;

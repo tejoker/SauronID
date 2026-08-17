@@ -1,4 +1,4 @@
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::{AnyConn, AnyRowGet};
 use crate::bitcoin_anchor::BitcoinAnchorService;
 use crate::compliance::ComplianceConfig;
 use crate::db::DbHandle;
@@ -10,7 +10,6 @@ use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use hex;
 use hmac::{Hmac, Mac};
-use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -108,19 +107,6 @@ pub struct ServerState {
     /// `core/src/dp/ledger.rs` and `docs/privacy-model.md` § "Cycle
     /// rotation".
     pub dp_budget_ledger: Arc<crate::dp::DpBudgetLedger>,
-    /// Sprint 13-14 Tier 2 — in-process registry of Paillier public keys
-    /// keyed by `pk_id`. Operators register a key (and retain the matching
-    /// private key out-of-band) before customers can submit ciphertexts.
-    ///
-    /// NEEDS_CRYPTO_REVIEW: in-process registry has no persistence and no
-    /// rotation policy. Production deployments must back this with HSM /
-    /// Vault and treat it as authenticated configuration, not application
-    /// state. See `docs/homomorphic-encryption.md` for the full checklist.
-    pub he_pk_registry: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, crate::he::paillier::PaillierPublicKey>,
-        >,
-    >,
 }
 
 fn derive_dev_secret(name: &str) -> Vec<u8> {
@@ -208,11 +194,10 @@ impl ServerState {
         let compliance = ComplianceConfig::from_env();
 
         // ── Restore ring groups from DB ──────────────────────────────────────
-        fn load_pubkeys(conn: &Connection, sql: &str) -> Vec<String> {
+        fn load_pubkeys(conn: &mut AnyConn<'_>, sql: &str) -> Vec<String> {
             // Best-effort by design: a ring that cannot be restored leaves the
             // in-memory group empty rather than blocking startup.
-            conn.any_conn()
-                .query_map(sql, sql_params![], |row| row.get::<String>(0))
+            conn.query_map(sql, sql_params![], |row| row.get::<String>(0))
                 .unwrap_or_default()
         }
 
@@ -232,18 +217,22 @@ impl ServerState {
 
         // Phase 3 dual-backend repository, built first so the `users` and
         // `merkle_leaves` reconstruction below reads whichever backend holds
-        // them. `clients`/`agents` are SQLite-only, so they stay on the raw
-        // handle.
+        // them. `clients`/`agents` come off the raw handle, which now dispatches
+        // too, so all three groups are restored from the configured backend.
         let repo = crate::repository::Repo::from_env(Arc::clone(&db))
             .await
             .unwrap_or_else(|e| panic!("[FATAL] repository init failed: {e}"));
 
+        // Sequential rather than a tuple: each `any_conn()` borrows the guard
+        // mutably, so the two reads cannot share one expression.
         let (client_hexes, agent_hexes) = {
-            let conn = db.lock().unwrap();
-            (
-                load_pubkeys(&conn, "SELECT public_key_hex FROM clients"),
-                load_pubkeys(&conn, "SELECT public_key_hex FROM agents WHERE revoked = 0"),
-            )
+            let mut conn = db.lock().unwrap();
+            let clients = load_pubkeys(&mut conn.any_conn(), "SELECT public_key_hex FROM clients");
+            let agents = load_pubkeys(
+                &mut conn.any_conn(),
+                "SELECT public_key_hex FROM agents WHERE revoked = 0",
+            );
+            (clients, agents)
         };
         let user_hexes = repo.all_user_pubkeys().await.unwrap_or_default();
 
@@ -324,7 +313,6 @@ impl ServerState {
             policy_store,
             cohort_store,
             dp_budget_ledger,
-            he_pk_registry: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -343,7 +331,7 @@ impl ServerState {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        if let Ok(db) = self.db.lock() {
+        if let Ok(mut db) = self.db.lock() {
             let _ = db.any_conn().execute(
                 "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1, ?2, ?3, ?4)",
                 sql_params![&ts, &action_type, &status, &detail],
@@ -396,7 +384,7 @@ pub fn spawn_background_gc(db: Arc<DbHandle>) {
                 .clamp(10, 3600);
             let oldest_window = (now / window_secs).saturating_sub(120);
 
-            let conn = match db.lock() {
+            let mut conn = match db.lock() {
                 Ok(c) => c,
                 Err(_) => continue,
             };

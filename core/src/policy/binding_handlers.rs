@@ -18,7 +18,7 @@
 //! the `Repo::Postgres` arm grows a `bind_agent_policy_tenant` helper
 //! (deferred to S11.6 alongside per-tenant batching).
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -135,7 +135,7 @@ pub async fn bind_policy_with_handles(
         )));
     }
     {
-        let db = db_handle
+        let mut db = db_handle
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
         let exists: i64 = db.any_conn().scalar_or(
@@ -157,7 +157,7 @@ pub async fn bind_policy_with_handles(
         .unwrap_or(0);
 
     {
-        let db = db_handle
+        let mut db = db_handle
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
         db.any_conn()
@@ -214,7 +214,7 @@ pub async fn get_binding_with_handle(
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    let db = db_handle
+    let mut db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
     let row = db
@@ -274,7 +274,7 @@ pub async fn unbind_policy_with_handle(
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    let db = db_handle
+    let mut db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
     db.any_conn()
@@ -301,7 +301,7 @@ pub fn lookup_bound_policy_id(
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    let db = db_handle
+    let mut db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
     let row: Result<Option<String>, String> = db.any_conn().query_row(
@@ -350,7 +350,8 @@ mod tests {
     }
 
     fn seed_agent(db: &Arc<DbHandle>, tenant_id: &str, agent_id: &str) {
-        let conn = db.lock().unwrap();
+        // lock_sqlite: raw rusqlite fixture against the SQLite handle under test.
+        let conn = db.lock_sqlite().unwrap();
         conn.execute(
             "INSERT INTO agents
              (agent_id, human_key_image, agent_checksum, issued_at, expires_at, tenant_id)

@@ -12,8 +12,7 @@ use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::traits::Identity as _;
 use curve25519_dalek::{RistrettoPoint, Scalar};
 use hmac::{Hmac, Mac};
-use rusqlite::params;
-use sauron_core::any_db::{AnyRowGet, AsAnyConn};
+use sauron_core::any_db::AnyRowGet;
 use sauron_core::compliance;
 use sauron_core::crypto_protocol::{partner_registration_payload, PartnerRegistrationInput};
 use sauron_core::issuer_runtime::IssuerVerifyError;
@@ -46,17 +45,36 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Refuse to boot a production deployment that is silently single-node.
+///
+/// The acknowledgement used to be required with or without
+/// `SAURON_DB_BACKEND=postgres`, because selecting Postgres moved almost
+/// nothing: `agents`, `agent_action_receipts`, `spend_ledger` and the rest kept
+/// writing to the local SQLite sidecar, which no amount of operator-side
+/// Postgres HA covers. The comment here said to re-add the bypass "only when
+/// the drift test flips". It has: `core/tests/postgres_backend_drift.sh` now
+/// asserts the rows are in Postgres and the sidecar is empty, and fails if they
+/// are not.
+///
+/// So a configured Postgres backend is now a real answer to "is this
+/// single-node", and demanding the acknowledgement anyway would train operators
+/// to set a flag that no longer means anything. SQLite deployments — still the
+/// default — are unaffected.
 fn assert_production_sqlite_acknowledged() {
     if sauron_core::runtime_mode::is_development_runtime() {
         return;
     }
-    // The single-node SQLite tier is load-bearing in EVERY production config.
-    // Even with SAURON_DB_BACKEND=postgres, only a subset of tables are ported
-    // to the Repo/Postgres path (see core/tests/postgres_backend_drift.sh) — the
-    // rest (agents, agent_action_receipts, spend_ledger, …) still write to the
-    // local SQLite sidecar, which is NOT covered by the operator's Postgres HA.
-    // So the acknowledgement is required regardless of backend until the port
-    // is complete; re-add a postgres bypass here only when the drift test flips.
+    // Read the same way `db::open_pg_pool` does. A DATABASE_URL is required
+    // with it: without one the handle logs and stays on SQLite, so treating the
+    // flag alone as sufficient would let a typo disable this gate.
+    let backend = std::env::var("SAURON_DB_BACKEND")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let url_set = std::env::var("DATABASE_URL").is_ok_and(|u| !u.trim().is_empty());
+    if matches!(backend.as_str(), "postgres" | "pg" | "postgresql") && url_set {
+        return;
+    }
+
     let ok = std::env::var("SAURON_ACCEPT_SINGLE_NODE_SQLITE")
         .map(|v| {
             let low = v.to_ascii_lowercase();
@@ -65,7 +83,7 @@ fn assert_production_sqlite_acknowledged() {
         .unwrap_or(false);
     if !ok {
         panic!(
-            "[FATAL] SQLite is single-node (no cross-region HA) and stays load-bearing even under SAURON_DB_BACKEND=postgres (partial port — see core/tests/postgres_backend_drift.sh). Set SAURON_ACCEPT_SINGLE_NODE_SQLITE=1 to acknowledge this deployment, or finish the Postgres port before claiming global production readiness."
+            "[FATAL] SQLite is single-node (no cross-region HA). Set SAURON_ACCEPT_SINGLE_NODE_SQLITE=1 to acknowledge this deployment, or run on PostgreSQL with SAURON_DB_BACKEND=postgres and DATABASE_URL set."
         );
     }
 }
@@ -786,7 +804,7 @@ fn store_user_auth_credential(
 ) -> Result<(), (StatusCode, String)> {
     validate_user_auth_public_key(public_key_b64u)?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     db.any_conn()
         .execute(
             "INSERT OR IGNORE INTO user_auth_credentials
@@ -884,7 +902,7 @@ async fn bank_register_user(
     // Verify caller is known BANK client.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let bank_exists: bool = db.any_conn().scalar_or(
             "SELECT COUNT(*) FROM clients c
                  JOIN client_tenant_bindings b ON b.client_name = c.name
@@ -976,10 +994,20 @@ async fn bank_register_user(
             })
             .to_string();
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             db.any_conn().execute(
-                "INSERT OR REPLACE INTO bank_kyc_links (bank_customer_id, user_key_image, updated_at, metadata_json)
-                 VALUES (?1, ?2, ?3, ?4)",
+                // Explicit conflict target, not `INSERT OR REPLACE`: the
+                // translator deliberately leaves the bare form alone so it
+                // fails loudly rather than silently changing upsert semantics,
+                // which meant this statement was a syntax error on Postgres.
+                // Re-linking a bank customer must overwrite the mapping, so
+                // every non-key column is updated.
+                "INSERT INTO bank_kyc_links (bank_customer_id, user_key_image, updated_at, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(bank_customer_id) DO UPDATE SET
+                   user_key_image = excluded.user_key_image,
+                   updated_at     = excluded.updated_at,
+                   metadata_json  = excluded.metadata_json",
                 sql_params![&bank_customer_id, &payload.key_image_hex, &now, &metadata],
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1082,7 +1110,7 @@ async fn handle_register(
     // different tenant, or a BANK/ZKP_ONLY key, is not registration authority.
     let tenant_partner_ring: Vec<RistrettoPoint> = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let points = db
             .any_conn()
             .query_map(
@@ -1378,7 +1406,7 @@ async fn dev_register_user(
         let metadata =
             serde_json::json!({ "source": "dev", "site_name": payload.site_name }).to_string();
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn().execute(
             "INSERT OR IGNORE INTO bank_kyc_links (bank_customer_id, user_key_image, updated_at, metadata_json) VALUES (?1, ?2, ?3, ?4)",
             sql_params![&bank_customer_id, identity.key_image_hex(), 1000000, &metadata],
@@ -1415,7 +1443,7 @@ async fn dev_buy_tokens(
     if !sauron_core::runtime_mode::is_development_runtime() {
         return Err((StatusCode::FORBIDDEN, "Dev only".into()));
     }
-    let db = state.read_or_recover().db.lock().unwrap();
+    let mut db = state.read_or_recover().db.lock().unwrap();
     db.any_conn()
         .execute(
             "UPDATE clients SET tokens_b = tokens_b + ?1 WHERE name = ?2",
@@ -1597,12 +1625,19 @@ async fn dev_leash_demo(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .execute(
-                "INSERT OR REPLACE INTO bank_kyc_links
+                // Explicit conflict target: see the note on the other
+                // bank_kyc_links upsert. Bare INSERT OR REPLACE is untranslated
+                // by design and is a syntax error on Postgres.
+                "INSERT INTO bank_kyc_links
              (bank_customer_id, user_key_image, updated_at, metadata_json)
-             VALUES (?1, ?2, ?3, ?4)",
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(bank_customer_id) DO UPDATE SET
+               user_key_image = excluded.user_key_image,
+               updated_at     = excluded.updated_at,
+               metadata_json  = excluded.metadata_json",
                 sql_params![
                     format!("DEV-{}", &human_key_image),
                     &human_key_image,
@@ -1654,9 +1689,31 @@ async fn dev_leash_demo(
                 // "Agent not found" for its own happy path, while every negative
                 // case still passed — a leash that denies everything looks
                 // healthy until you check what it allows.
-                "INSERT OR REPLACE INTO agents
+                //
+                // Conflict target is `agent_id`, the primary key, and every
+                // other column is refreshed — the same effect the bare
+                // `INSERT OR REPLACE` had. Spelling it out is required rather
+                // than tidier: the translator leaves the bare form untouched on
+                // purpose, so this statement was a syntax error under
+                // SAURON_DB_BACKEND=postgres and re-running the demo on a
+                // Postgres dev box failed at the first agent.
+                "INSERT INTO agents
                  (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u)
-                 VALUES (?1, ?2, ?3, ?4, 'delegated_bank', ?5, ?6, ?7, ?8, 0, NULL, 0, ?9, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, 'delegated_bank', ?5, ?6, ?7, ?8, 0, NULL, 0, ?9, ?10)
+                 ON CONFLICT(agent_id) DO UPDATE SET
+                   human_key_image     = excluded.human_key_image,
+                   agent_checksum      = excluded.agent_checksum,
+                   intent_json         = excluded.intent_json,
+                   assurance_level     = excluded.assurance_level,
+                   public_key_hex      = excluded.public_key_hex,
+                   ring_key_image_hex  = excluded.ring_key_image_hex,
+                   issued_at           = excluded.issued_at,
+                   expires_at          = excluded.expires_at,
+                   revoked             = excluded.revoked,
+                   parent_agent_id     = excluded.parent_agent_id,
+                   delegation_depth    = excluded.delegation_depth,
+                   pop_jkt             = excluded.pop_jkt,
+                   pop_public_key_b64u = excluded.pop_public_key_b64u",
                 sql_params![
                     &row_agent_id,
                     &human_key_image,
@@ -1900,14 +1957,14 @@ async fn dev_leash_demo(
     )?;
     let ajwt_replay_fails = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let first = sauron_core::ajwt_support::consume_ajwt_jti(
-            &db,
+            &mut db.any_conn(),
             &ajwt_replay_token.jti,
             ajwt_replay_token.exp,
         );
         let second = sauron_core::ajwt_support::consume_ajwt_jti(
-            &db,
+            &mut db.any_conn(),
             &ajwt_replay_token.jti,
             ajwt_replay_token.exp,
         );
@@ -1969,7 +2026,7 @@ async fn dev_leash_demo(
     );
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .execute(
                 "UPDATE agents SET revoked = 1 WHERE agent_id = ?1",
@@ -1991,7 +2048,7 @@ async fn dev_leash_demo(
         let st = state.read_or_recover();
         let signature_valid = agent_action::verify_receipt_signature(&st.jwt_secret, &receipt);
         let stored = {
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             db.any_conn().scalar_or(
                 "SELECT COUNT(*) FROM agent_action_receipts WHERE receipt_id = ?1 AND action_hash = ?2 AND signature = ?3",
                 sql_params![&receipt.receipt_id, &receipt.action_hash, &receipt.signature],
@@ -2302,7 +2359,7 @@ async fn delegated_agent_binding_middleware(
             String,
         ) = {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             db.any_conn().require(
                 "SELECT human_key_image, revoked, expires_at, public_key_hex, IFNULL(pop_jkt, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
                 sql_params![&tenant_id, &claim_agent_id],
@@ -2445,7 +2502,7 @@ async fn kyc_request(
     // Mandatory ZKP-only mode: only ZKP_ONLY relying parties may open consent requests.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let exists: bool = db.any_conn().scalar_or(
             "SELECT COUNT(*) FROM clients WHERE name = ?1 AND client_type = 'ZKP_ONLY'",
             sql_params![&payload.site_name],
@@ -2498,7 +2555,7 @@ async fn kyc_request(
                 )
             })?;
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let _ = db.any_conn().execute(
             "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1,'KYC_REQUEST','PENDING',?2)",
             sql_params![&ts, format!("site={} &request_id={}", &payload.site_name, &request_id)],
@@ -2663,7 +2720,7 @@ async fn kyc_consent(
         // Also log the consent in requests_log (SQLite-only table, raw handle).
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             let _ = db.any_conn().execute(
                 "INSERT INTO requests_log (timestamp, action_type, status, detail) VALUES (?1,'KYC_CONSENT','OK',?2)",
                 sql_params![ts, format!("site={} user={}", site_name, &hex_ki[..16])],
@@ -2791,7 +2848,7 @@ async fn kyc_retrieve(
         // ported table); scope it so the lock drops before the async read.
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             risk::check_and_increment(
                 &mut db.any_conn(),
                 &risk::bucket_kyc_retrieve(&tenant_id, &payload.site_name, &user_ki),
@@ -2915,7 +2972,7 @@ async fn kyc_retrieve(
     // Mark token as used + charge one connection credit + record api_usage
     let billing = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
 
         let charged = db
             .any_conn()
@@ -2953,7 +3010,7 @@ async fn kyc_retrieve(
     {
         let st = state.read_or_recover();
         {
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3014,7 +3071,7 @@ async fn kyc_retrieve(
     };
     let (human_in_user_ring, agent_in_agent_ring, agent_pub_key_hex, agent_assurance_level) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
 
         let human_in_ring = if let Some(ref hex) = human_pub_hex {
             if let Ok(bytes) = hex::decode(hex) {
@@ -3153,9 +3210,13 @@ async fn kyc_retrieve(
         )?;
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
-            sauron_core::ajwt_support::consume_ajwt_jti(&db, &binding.ajwt_jti, binding.ajwt_exp)
-                .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+            let mut db = st.db.lock().unwrap();
+            sauron_core::ajwt_support::consume_ajwt_jti(
+                &mut db.any_conn(),
+                &binding.ajwt_jti,
+                binding.ajwt_exp,
+            )
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
         }
         Some(validated.receipt)
     } else {
@@ -3636,13 +3697,13 @@ async fn policy_authorize(
         String,
     ) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        db.query_row(
+        let mut db = st.db.lock().unwrap();
+        db.any_conn().require(
             "SELECT assurance_level, revoked, expires_at, human_key_image, IFNULL(pop_jkt, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
-            params![tenant_id, payload.agent_id],
+            sql_params![&tenant_id, &payload.agent_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".into()))?
+            || (StatusCode::NOT_FOUND, "Agent not found".to_string()),
+        )?
     };
 
     let now = SystemTime::now()
@@ -3694,8 +3755,8 @@ async fn policy_authorize(
     )?;
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        sauron_core::ajwt_support::consume_ajwt_jti(&db, &jti, exp)
+        let mut db = st.db.lock().unwrap();
+        sauron_core::ajwt_support::consume_ajwt_jti(&mut db.any_conn(), &jti, exp)
             .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
     }
 
@@ -3947,7 +4008,7 @@ async fn agent_payment_authorize(
     let payment_jurisdiction = {
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             risk::check_and_increment(
                 &mut db.any_conn(),
                 &risk::bucket_payment_authorize(&tenant_id, &agent_id),
@@ -3971,14 +4032,15 @@ async fn agent_payment_authorize(
 
     let (assurance_level, pop_jkt) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let (revoked, expires_at, db_human, assurance, pop_jkt, pop_pk_b64u): (i64, i64, String, String, String, String) = db
-            .query_row(
+            .any_conn()
+            .require(
                 "SELECT revoked, expires_at, human_key_image, assurance_level, IFNULL(pop_jkt, ''), IFNULL(pop_public_key_b64u, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
-                params![tenant_id, agent_id],
+                sql_params![&tenant_id, &agent_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .map_err(|_| (StatusCode::NOT_FOUND, "Agent not found".into()))?;
+                || (StatusCode::NOT_FOUND, "Agent not found".to_string()),
+            )?;
         if revoked != 0 {
             return Err((StatusCode::UNAUTHORIZED, "Agent has been revoked".into()));
         }
@@ -4004,7 +4066,7 @@ async fn agent_payment_authorize(
         // MutexGuard; Repo::take_pop_challenge exists for the post-sweep
         // async port. SELECT+DELETE is wrapped in BEGIN IMMEDIATE today.
         let challenge_plain = sauron_core::ajwt_support::take_pop_challenge(
-            &db,
+            &mut db.any_conn(),
             &payload.pop_challenge_id,
             &agent_id,
         )
@@ -4029,32 +4091,17 @@ async fn agent_payment_authorize(
         ));
     }
 
-    // Sprint 1 (advisory → enforce): consult the server-bound policy for
-    // this (tenant, agent). If the binding denies and enforcement mode is
-    // `enforce`, short-circuit with 403 before any payment authorisation
-    // is issued. `advisory` logs + continues, `off` skips entirely.
-    let enforcement_mode = sauron_core::runtime_mode::policy_enforcement_mode();
-    if !matches!(
-        enforcement_mode,
-        sauron_core::runtime_mode::PolicyEnforcementMode::Off
-    ) {
-        // Build a minimal Action describing the requested payment.
-        // - `tool` reuses the intent action name when present, defaulting
-        //   to `payment_initiation` (matches the legacy KYA matrix label).
-        // - `amount_usd` carries the minor-unit amount converted to a
-        //   floating-point USD-equivalent; bound policies that gate by
-        //   monetary amount use this directly.
+    // Server-bound policy for this payment. The metadata keys are the ones a
+    // payment can actually attest to; a policy that also declares an egress-shaped
+    // cap (payload size, recipient count) will now DENY here rather than silently
+    // pass, which is the correct reading of a constraint this action cannot report.
+    {
         let intent_tool = intent
             .get("tool")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                intent
-                    .get("action")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("payment_initiation")
-                    .to_string()
-            });
+            .or_else(|| intent.get("action").and_then(|v| v.as_str()))
+            .unwrap_or("payment_initiation")
+            .to_string();
         let mut bound_action = sauron_core::policy::Action {
             action_id: format!("payauth-{jti}"),
             tool: intent_tool,
@@ -4068,115 +4115,14 @@ async fn agent_payment_authorize(
         bound_action
             .metadata
             .insert("merchant_id".into(), serde_json::json!(merchant_id.clone()));
-        match sauron_core::policy::handlers::enforce_bound_policy_for_action(
+        sauron_core::policy::handlers::gate_action_on_bound_policy(
             &state,
             &tenant_id,
             &agent_id,
             &bound_action,
+            "/agent/payment/authorize",
         )
-        .await
-        {
-            Ok(sauron_core::policy::handlers::BoundPolicyOutcome::Deny {
-                policy_id,
-                check,
-                reason,
-            }) => {
-                tracing::warn!(
-                    target: "sauron::policy::enforcement",
-                    %tenant_id,
-                    %agent_id,
-                    %policy_id,
-                    %check,
-                    %reason,
-                    enforce = matches!(
-                        enforcement_mode,
-                        sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                    ),
-                    "bound policy denied /agent/payment/authorize",
-                );
-                if matches!(
-                    enforcement_mode,
-                    sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                ) {
-                    return Err((
-                        StatusCode::FORBIDDEN,
-                        format!("policy {policy_id} denied {check}: {reason}"),
-                    ));
-                }
-            }
-            Ok(sauron_core::policy::handlers::BoundPolicyOutcome::PolicyUnavailable {
-                policy_id,
-            }) => {
-                // A binding exists but its policy is not loadable. Never a
-                // license to allow — fail closed in enforce mode.
-                tracing::error!(
-                    target: "sauron::policy::enforcement",
-                    %tenant_id,
-                    %agent_id,
-                    %policy_id,
-                    enforce = matches!(
-                        enforcement_mode,
-                        sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                    ),
-                    "bound policy unavailable (binding exists, policy not loadable) — failing closed",
-                );
-                if matches!(
-                    enforcement_mode,
-                    sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                ) {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!("bound policy {policy_id} is unavailable (failing closed)"),
-                    ));
-                }
-            }
-            Ok(sauron_core::policy::handlers::BoundPolicyOutcome::NoBinding) => {
-                // Opt-in strict mode: every protected agent must carry a
-                // binding. Deny unmanaged agents when require-binding is set.
-                if matches!(
-                    enforcement_mode,
-                    sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                ) && sauron_core::runtime_mode::policy_require_binding()
-                {
-                    tracing::warn!(
-                        target: "sauron::policy::enforcement",
-                        %tenant_id,
-                        %agent_id,
-                        "no bound policy and SAURON_POLICY_REQUIRE_BINDING=1 — denying",
-                    );
-                    return Err((
-                        StatusCode::FORBIDDEN,
-                        "no bound policy for agent (SAURON_POLICY_REQUIRE_BINDING)".to_string(),
-                    ));
-                }
-            }
-            Ok(sauron_core::policy::handlers::BoundPolicyOutcome::Allow { .. }) => {}
-            Err(e) => {
-                // H-7: fail CLOSED in enforce mode. An infra error during policy
-                // evaluation previously fell through and authorised the action —
-                // an attacker who can induce an eval error (DB pressure, etc.)
-                // could bypass the bound policy. In enforce mode we now refuse;
-                // advisory/off modes still fall through (dev convenience).
-                tracing::warn!(
-                    target: "sauron::policy::enforcement",
-                    error = %e,
-                    enforce = matches!(
-                        enforcement_mode,
-                        sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                    ),
-                    "bound policy enforcement errored",
-                );
-                if matches!(
-                    enforcement_mode,
-                    sauron_core::runtime_mode::PolicyEnforcementMode::Enforce
-                ) {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!("policy enforcement unavailable (failing closed): {e}"),
-                    ));
-                }
-            }
-        }
+        .await?;
     }
 
     enforce_strict_payment_intent(&intent, payload.amount_minor, &currency, &merchant_id)?;
@@ -4202,8 +4148,8 @@ async fn agent_payment_authorize(
 
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        sauron_core::ajwt_support::consume_ajwt_jti(&db, &jti, exp)
+        let mut db = st.db.lock().unwrap();
+        sauron_core::ajwt_support::consume_ajwt_jti(&mut db.any_conn(), &jti, exp)
             .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
     }
 
@@ -4371,24 +4317,24 @@ async fn user_auth_challenge(
     let nonce = sauron_core::ajwt_support::random_hex_32();
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        let _ = db.execute(
+        let mut db = st.db.lock().unwrap();
+        let _ = db.any_conn().execute(
             "DELETE FROM user_auth_challenges WHERE expires_at < ?1 OR used_at > 0",
-            params![now - 300],
+            sql_params![now - 300],
         );
-        let total: i64 = db
-            .query_row("SELECT COUNT(*) FROM user_auth_challenges", [], |r| {
-                r.get(0)
-            })
-            .unwrap_or(0);
-        let active_for_subject: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM user_auth_challenges
+        let total: i64 = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM user_auth_challenges",
+            sql_params![],
+            |r| r.get_i64(0),
+            0,
+        );
+        let active_for_subject: i64 = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM user_auth_challenges
                  WHERE tenant_id = ?1 AND key_image_hex = ?2 AND used_at = 0 AND expires_at >= ?3",
-                params![&tenant_id, &key_image, now],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+            sql_params![&tenant_id, &key_image, now],
+            |r| r.get_i64(0),
+            0,
+        );
         if total >= 100_000 || active_for_subject >= 5 {
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
@@ -4397,13 +4343,14 @@ async fn user_auth_challenge(
         }
         // Insert even for an unknown key image so the response shape and timing
         // do not become a reliable account-enumeration oracle.
-        db.execute(
-            "INSERT INTO user_auth_challenges
+        db.any_conn()
+            .execute(
+                "INSERT INTO user_auth_challenges
              (challenge_id, tenant_id, key_image_hex, nonce, expires_at, used_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-            params![&challenge_id, &tenant_id, &key_image, &nonce, expires_at],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                sql_params![&challenge_id, &tenant_id, &key_image, &nonce, expires_at],
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
     let signing_payload = sauron_core::crypto_protocol::user_auth_challenge_payload(
         &challenge_id,
@@ -4444,36 +4391,34 @@ async fn user_auth_finish(
         .as_secs() as i64;
     let (nonce, expires_at, public_key_b64u, jwt_secret) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        let challenge: (String, i64) = db
-            .query_row(
-                "SELECT nonce, expires_at FROM user_auth_challenges
+        let mut db = st.db.lock().unwrap();
+        let challenge: (String, i64) = db.any_conn().require(
+            "SELECT nonce, expires_at FROM user_auth_challenges
                  WHERE challenge_id = ?1 AND tenant_id = ?2 AND key_image_hex = ?3
                    AND used_at = 0 AND expires_at >= ?4",
-                params![&payload.challenge_id, &tenant_id, &key_image, now],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(|_| {
+            sql_params![&payload.challenge_id, &tenant_id, &key_image, now],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+            || {
                 (
                     StatusCode::UNAUTHORIZED,
-                    "invalid authentication proof".into(),
+                    "invalid authentication proof".to_string(),
                 )
-            })?;
-        let public_key: String = db
-            .query_row(
-                "SELECT c.ed25519_public_key_b64u
+            },
+        )?;
+        let public_key: String = db.any_conn().require(
+            "SELECT c.ed25519_public_key_b64u
                  FROM user_auth_credentials c
                  JOIN user_auth_tenant_bindings b ON b.key_image_hex = c.key_image_hex
                  WHERE c.key_image_hex = ?1 AND b.tenant_id = ?2",
-                params![&key_image, &tenant_id],
-                |r| r.get(0),
-            )
-            .map_err(|_| {
+            sql_params![&key_image, &tenant_id],
+            |r| r.get_string(0),
+            || {
                 (
                     StatusCode::UNAUTHORIZED,
-                    "invalid authentication proof".into(),
+                    "invalid authentication proof".to_string(),
                 )
-            })?;
+            },
+        )?;
         (challenge.0, challenge.1, public_key, st.jwt_secret.clone())
     };
     let public_key: [u8; 32] = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -4518,15 +4463,16 @@ async fn user_auth_finish(
     // replay arbiter if two valid finishes race; exactly one receives a session.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let consumed = db
+            .any_conn()
             .execute(
                 "UPDATE user_auth_challenges SET used_at = ?1
                  WHERE challenge_id = ?2 AND tenant_id = ?3 AND key_image_hex = ?4
                    AND used_at = 0 AND expires_at >= ?1",
-                params![now, &payload.challenge_id, &tenant_id, &key_image],
+                sql_params![now, &payload.challenge_id, &tenant_id, &key_image],
             )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         if consumed != 1 {
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -4918,11 +4864,11 @@ async fn agent_egress_log(
         .as_secs() as i64;
     let id = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         // Shared with the enforcing proxy (/agent/egress/proxy) so both log +
         // anchor identically. Voluntary reports are always `allowed = true`.
         sauron_core::egress_gateway::record_egress(
-            &db,
+            &mut db.any_conn(),
             &tenant_id,
             &payload.agent_id,
             &payload.target_host,
@@ -4977,7 +4923,7 @@ async fn agent_kyc_consent(
     {
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             risk::check_and_increment(
                 &mut db.any_conn(),
                 &risk::bucket_agent_kyc_consent(&tenant_id, &payload.site_name, &human_key_image),
@@ -5002,7 +4948,7 @@ async fn agent_kyc_consent(
     // 2. Verify agent status + mandatory delegated-ring membership + KYA policy
     let (assurance_level, pop_jkt) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let (revoked, expires_at, db_human, agent_pub_hex, assurance, pop_jkt, pop_pk_b64u): (
             i64,
             i64,
@@ -5012,9 +4958,13 @@ async fn agent_kyc_consent(
             String,
             String,
         ) = db
-            .query_row(
+            .any_conn()
+            // scalar_or, not require: an absent agent deliberately falls through
+            // to revoked = 1 below, which produces the same 401 as a revoked one
+            // and keeps this endpoint from being an existence oracle.
+            .scalar_or(
                 "SELECT revoked, expires_at, human_key_image, public_key_hex, assurance_level, IFNULL(pop_jkt, ''), IFNULL(pop_public_key_b64u, '') FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
-                params![tenant_id, agent_id],
+                sql_params![&tenant_id, &agent_id],
                 |r| {
                     Ok((
                         r.get(0)?,
@@ -5026,16 +4976,16 @@ async fn agent_kyc_consent(
                         r.get(6)?,
                     ))
                 },
-            )
-            .unwrap_or((
+                (
                 1,
                 0,
                 String::new(),
                 String::new(),
-                "delegated_nonbank".to_string(),
-                String::new(),
-                String::new(),
-            ));
+                    "delegated_nonbank".to_string(),
+                    String::new(),
+                    String::new(),
+                ),
+            );
         if revoked != 0 {
             return Err((StatusCode::UNAUTHORIZED, "Agent has been revoked".into()));
         }
@@ -5094,7 +5044,7 @@ async fn agent_kyc_consent(
         // TODO M2-callsite-sweep: same pattern as the /agent/payment/authorize
         // site — sync take_pop_challenge under MutexGuard. Repo helper exists.
         let challenge_plain = sauron_core::ajwt_support::take_pop_challenge(
-            &db,
+            &mut db.any_conn(),
             &payload.pop_challenge_id,
             &agent_id,
         )
@@ -5159,8 +5109,8 @@ async fn agent_kyc_consent(
     // 3b. Server-side JTI consumption (one consent per A-JWT)
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        sauron_core::ajwt_support::consume_ajwt_jti(&db, &jti, exp)
+        let mut db = st.db.lock().unwrap();
+        sauron_core::ajwt_support::consume_ajwt_jti(&mut db.any_conn(), &jti, exp)
             .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
     }
 
@@ -5384,16 +5334,14 @@ async fn agent_vc_issue(
     };
     let (human_in_user_ring, has_bank_link) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
 
-        let has_bank_link: bool = db
-            .query_row(
-                "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
-                params![human_key_image],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
-            > 0;
+        let has_bank_link: bool = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
+            sql_params![&human_key_image],
+            |r| r.get_i64(0),
+            0,
+        ) > 0;
 
         let bytes = hex::decode(&human_pub_hex).map_err(|_| {
             (
@@ -5422,7 +5370,7 @@ async fn agent_vc_issue(
     {
         {
             let st = state.read_or_recover();
-            let db = st.db.lock().unwrap();
+            let mut db = st.db.lock().unwrap();
             risk::check_and_increment(
                 &mut db.any_conn(),
                 &risk::bucket_agent_vc_issue(&tenant_id, &human_key_image),
@@ -5552,42 +5500,45 @@ async fn agent_vc_issue(
     // each action signing key/key-image pair may back only one active agent.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let active_count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agent_vcs
+        let active_count: i64 = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM agent_vcs
              WHERE agent_id IN (SELECT agent_id FROM agents WHERE tenant_id = ?1 AND human_key_image = ?2)
              AND revoked = 0 AND expires_at > ?3",
-                params![tenant_id, human_key_image, now],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+            sql_params![&tenant_id, &human_key_image, now],
+            |r| r.get_i64(0),
+            0,
+        );
         if active_count >= 10 {
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 "Maximum 10 active agent VCs per human. Revoke some first.".into(),
             ));
         }
-        let pub_in_use: bool = db.query_row(
+        // Advisory only — `uq_agents_active_public_key` is the real arbiter, so
+        // a registration that races past this check still fails at the INSERT.
+        let pub_in_use: bool = db.any_conn().scalar_or(
             "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1 AND public_key_hex = ?2 AND revoked = 0 AND expires_at > ?3",
-            params![tenant_id, payload.public_key_hex, now],
-            |r| r.get::<_, i64>(0),
-        ).unwrap_or(0) > 0;
+            sql_params![&tenant_id, &payload.public_key_hex, now],
+            |r| r.get_i64(0),
+            0,
+        ) > 0;
         if pub_in_use {
             return Err((
                 StatusCode::CONFLICT,
                 "public_key_hex already registered to an active agent".into(),
             ));
         }
-        let key_image_in_use: bool = db.query_row(
+        let key_image_in_use: bool = db.any_conn().scalar_or(
             "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1 AND ring_key_image_hex = ?2 AND revoked = 0 AND expires_at > ?3",
-            params![tenant_id, payload.ring_key_image_hex, now],
-            |r| r.get::<_, i64>(0),
-        ).unwrap_or(0) > 0;
+            sql_params![&tenant_id, &payload.ring_key_image_hex, now],
+            |r| r.get_i64(0),
+            0,
+        ) > 0;
         if key_image_in_use {
             return Err((
                 StatusCode::CONFLICT,
@@ -5654,40 +5605,63 @@ async fn agent_vc_issue(
     // 6. Persist in agents + agent_vcs tables
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         // Register in agents table (so A-JWT flow works normally)
-        db.execute(
+        db.any_conn().execute(
             "INSERT OR REPLACE INTO agents
              (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u, tenant_id)
-             VALUES (?1,?2,?3,?4,'autonomous_web3',?5,?6,?7,?8,0,NULL,0,?9,?10,?11)",
-            params![
-                agent_id.clone(),
-                human_key_image.clone(),
-                payload.agent_checksum.clone(),
-                intent_json.clone(),
-                payload.public_key_hex.clone(),
-                payload.ring_key_image_hex.clone(),
+             VALUES (?1,?2,?3,?4,'autonomous_web3',?5,?6,?7,?8,0,NULL,0,?9,?10,?11)
+             ON CONFLICT(agent_id) DO UPDATE SET
+               human_key_image = excluded.human_key_image,
+               agent_checksum = excluded.agent_checksum,
+               intent_json = excluded.intent_json,
+               assurance_level = excluded.assurance_level,
+               public_key_hex = excluded.public_key_hex,
+               ring_key_image_hex = excluded.ring_key_image_hex,
+               issued_at = excluded.issued_at,
+               expires_at = excluded.expires_at,
+               revoked = excluded.revoked,
+               parent_agent_id = excluded.parent_agent_id,
+               delegation_depth = excluded.delegation_depth,
+               pop_jkt = excluded.pop_jkt,
+               pop_public_key_b64u = excluded.pop_public_key_b64u,
+               tenant_id = excluded.tenant_id",
+            sql_params![
+                &agent_id,
+                &human_key_image,
+                &payload.agent_checksum,
+                &intent_json,
+                &payload.public_key_hex,
+                &payload.ring_key_image_hex,
                 now,
                 expires_at,
-                payload.pop_jkt.clone(),
-                payload.pop_public_key_b64u.clone(),
-                tenant_id.clone(),
+                &payload.pop_jkt,
+                &payload.pop_public_key_b64u,
+                &tenant_id,
             ],
-        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        ).map_err(|e| {
+            // The active-key partial unique indexes are the registration race
+            // arbiter; losing that race is a conflict, not a server fault.
+            let msg = e.to_lowercase();
+            if msg.contains("uq_agents_active") || msg.contains("unique") || msg.contains("duplicate key") {
+                (StatusCode::CONFLICT, "public_key_hex or ring_key_image_hex already registered to an active agent".to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
 
         // Persist VC
-        db.execute(
+        db.any_conn().execute(
             "INSERT OR REPLACE INTO agent_vcs (agent_id, vc_json, vc_hash, issued_at, expires_at)
-             VALUES (?1,?2,?3,?4,?5)",
-            params![
-                agent_id.clone(),
-                vc_canonical.clone(),
-                vc_hash.clone(),
-                now,
-                expires_at
-            ],
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(agent_id) DO UPDATE SET
+               vc_json = excluded.vc_json,
+               vc_hash = excluded.vc_hash,
+               issued_at = excluded.issued_at,
+               expires_at = excluded.expires_at",
+            sql_params![&agent_id, &vc_canonical, &vc_hash, now, expires_at],
         )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
 
     // Add the caller-owned signing key to the in-memory delegated-agent ring.

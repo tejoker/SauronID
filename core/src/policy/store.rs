@@ -4,7 +4,7 @@
 //! Writes go through [`PolicyStore::upsert`] which persists to the
 //! supplied DB handle and refreshes both indices.
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use std::collections::HashMap;
 use std::error::Error;
@@ -121,7 +121,7 @@ impl PolicyStore {
     /// was at shutdown. Legacy rows (pre-S11) backfill to the default
     /// tenant via the column DEFAULT and round-trip transparently.
     pub fn hydrate(&self) -> Result<usize, StoreError> {
-        let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+        let mut conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
         let rows = conn
             .any_conn()
             .query_map(
@@ -182,7 +182,7 @@ impl PolicyStore {
             .map_err(|e| StoreError::Db(format!("serialize: {e}")))?;
 
         {
-            let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+            let mut conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
             conn.any_conn().execute(
                 "INSERT INTO policies (policy_id, agent, version, raw_yaml, created_at, updated_at, tenant_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
@@ -287,7 +287,7 @@ impl PolicyStore {
     /// id was not present for that tenant (idempotent); DB errors surface.
     pub fn delete_tenant(&self, tenant_id: &str, id: &str) -> Result<(), StoreError> {
         {
-            let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+            let mut conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
             conn.any_conn()
                 .execute(
                     "DELETE FROM policies WHERE policy_id = ?1 AND tenant_id = ?2",

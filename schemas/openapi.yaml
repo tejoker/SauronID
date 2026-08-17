@@ -3538,43 +3538,6 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
-  /v1/stats/submit-encrypted:
-    post:
-      tags: [v1-stats]
-      summary: Submit a Paillier-encrypted contribution (quarantined in prod)
-      operationId: statsSubmitEncrypted
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [cohort_id, metric_id, period_start, pk_id, encrypted_value_b64]
-              properties:
-                cohort_id: { type: string }
-                metric_id: { type: string }
-                period_start: { type: integer, format: int64 }
-                pk_id: { type: string }
-                encrypted_value_b64: { type: string }
-      responses:
-        '200':
-          description: Aggregated homomorphically.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [aggregated_into, n_contributions]
-                properties:
-                  aggregated_into: { type: string }
-                  n_contributions: { type: integer, format: int64 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-
   /v1/stats/cohort:
     get:
       tags: [v1-stats]

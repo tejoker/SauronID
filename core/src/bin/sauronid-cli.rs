@@ -102,6 +102,7 @@ ENV:
 
 fn cmd_verify_audit(args: &[String]) -> Result<(), String> {
     use rusqlite::{Connection, OpenFlags};
+    use sauron_core::any_db::AsAnyConn;
 
     let path = require_arg(args, "database")?;
     if env::var("SAURON_AUDIT_HMAC_KEY")
@@ -115,7 +116,7 @@ fn cmd_verify_audit(args: &[String]) -> Result<(), String> {
     }
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open audit database {path}: {e}"))?;
-    let count = sauron_core::middleware::audit_log::verify_audit_chain(&conn)?;
+    let count = sauron_core::middleware::audit_log::verify_audit_chain(&mut conn.any_conn())?;
     println!("audit chain OK: {count} records");
     Ok(())
 }
@@ -152,12 +153,13 @@ fn cmd_owner_keygen() -> Result<(), String> {
 /// checking the operator.
 fn cmd_verify_receipts(args: &[String]) -> Result<(), String> {
     use rusqlite::{Connection, OpenFlags};
+    use sauron_core::any_db::AsAnyConn;
 
     let path = require_arg(args, "database")?;
     let tenant = arg_value(args, "tenant").unwrap_or_else(|| "default".to_string());
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open database {path}: {e}"))?;
-    let count = sauron_core::agent_action::verify_receipt_chain(&conn, &tenant)?;
+    let count = sauron_core::agent_action::verify_receipt_chain(&mut conn.any_conn(), &tenant)?;
     println!("receipt chain OK: {count} chained receipts for tenant {tenant}");
     Ok(())
 }

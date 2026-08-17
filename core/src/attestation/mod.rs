@@ -78,26 +78,43 @@ pub enum AttestationKind {
     ServerDerived,
     Ed25519Self,
     Tpm2Quote,
-    SgxQuote,
-    SevSnp,
-    ArmCca,
     NitroEnclave,
-    AppleSecure,
 }
 
 impl AttestationKind {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "ed25519_self" => Self::Ed25519Self,
-            "server_derived" | "server" => Self::ServerDerived,
-            "tpm2_quote" | "tpm2" => Self::Tpm2Quote,
-            "sgx_quote" | "sgx" => Self::SgxQuote,
-            "sev_snp" | "sev" => Self::SevSnp,
-            "arm_cca" | "cca" => Self::ArmCca,
-            "nitro_enclave" | "nitro" => Self::NitroEnclave,
-            "apple_secure" | "apple" => Self::AppleSecure,
-            _ => Self::None,
+    /// Every spelling this build can actually verify, plus the two
+    /// no-hardware kinds. Unlisted platforms are absent on purpose: an enum arm
+    /// that only ever returns `NotImplemented` advertises a capability the
+    /// build does not have, and a reviewer has to trace it to find that out.
+    const KNOWN: &'static [(&'static str, AttestationKind)] = &[
+        ("ed25519_self", Self::Ed25519Self),
+        ("server_derived", Self::ServerDerived),
+        ("server", Self::ServerDerived),
+        ("tpm2_quote", Self::Tpm2Quote),
+        ("tpm2", Self::Tpm2Quote),
+        ("nitro_enclave", Self::NitroEnclave),
+        ("nitro", Self::NitroEnclave),
+    ];
+
+    /// Parse a caller-supplied `attestation_kind`.
+    ///
+    /// An unrecognised, non-empty value is an ERROR, not `None`. The previous
+    /// `_ => Self::None` fallback meant a typo — `tmp2_quote`, `sev_snp` on a
+    /// build without a SEV verifier — silently registered the agent with NO
+    /// attestation at all, because `None` is an accepted kind whenever
+    /// `SAURON_REQUIRE_HARDWARE_ATTESTATION` is off, which is the production
+    /// default. The operator saw their chosen kind echoed in the request and
+    /// got nothing. Failing the registration is the only reading of a
+    /// misspelled security control that cannot silently weaken it.
+    pub fn parse(s: &str) -> Result<Self, AttestationError> {
+        let key = s.trim();
+        if key.is_empty() {
+            return Ok(Self::None);
         }
+        Self::KNOWN
+            .iter()
+            .find_map(|(name, kind)| (*name == key).then_some(*kind))
+            .ok_or(AttestationError::UnsupportedKind)
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -106,12 +123,15 @@ impl AttestationKind {
             Self::ServerDerived => "server_derived",
             Self::Ed25519Self => "ed25519_self",
             Self::Tpm2Quote => "tpm2_quote",
-            Self::SgxQuote => "sgx_quote",
-            Self::SevSnp => "sev_snp",
-            Self::ArmCca => "arm_cca",
             Self::NitroEnclave => "nitro_enclave",
-            Self::AppleSecure => "apple_secure",
         }
+    }
+
+    /// Whether this kind carries hardware-rooted evidence. Drives the posture
+    /// reported by `/admin/agents`, so an operator can see an unattested agent
+    /// instead of having to infer it.
+    pub fn is_hardware_backed(&self) -> bool {
+        matches!(self, Self::Tpm2Quote | Self::NitroEnclave)
     }
 }
 
@@ -416,11 +436,6 @@ pub fn enforce_registration_attestation_bound(
             })?;
             require_fresh_timestamp(ts)?;
         }
-        _ => {
-            return Err(AttestationError::NotImplemented(
-                "fresh challenge binding for this attestation kind",
-            ));
-        }
     }
 
     Ok(verified)
@@ -466,6 +481,10 @@ pub enum AttestationError {
         got: String,
     },
     NotImplemented(&'static str),
+    /// Caller named an `attestation_kind` this build does not verify. Fails the
+    /// registration rather than degrading to `None`, so a typo cannot silently
+    /// disable the control the caller asked for.
+    UnsupportedKind,
     /// Caller submitted a structurally well-formed payload but the verifier is
     /// only partially implemented (M1 ships parsing; M2 ships verification).
     /// Carries a static message pointing at the roadmap entry.
@@ -489,7 +508,16 @@ impl std::fmt::Display for AttestationError {
             ),
             Self::NotImplemented(kind) => write!(
                 f,
-                "attestation kind '{kind}' is recognised but verification is not yet implemented in this build (TPM2/SGX/SEV/CCA/Nitro/Apple roadmapped — see attestation.rs)"
+                "attestation kind '{kind}' is recognised but verification is not yet implemented in this build"
+            ),
+            Self::UnsupportedKind => write!(
+                f,
+                "unknown attestation_kind; this build verifies only: {} (omit the field for no attestation)",
+                AttestationKind::KNOWN
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::PartialImplementation(msg) => write!(
                 f,
@@ -529,11 +557,7 @@ pub fn verify_attestation(
         AttestationKind::ServerDerived => check_server_derived_allowed(),
         AttestationKind::Ed25519Self => Ed25519SelfVerifier.verify(blob, ctx),
         AttestationKind::Tpm2Quote => Tpm2QuoteVerifier.verify(blob, ctx),
-        AttestationKind::SgxQuote => Err(AttestationError::NotImplemented("sgx_quote")),
-        AttestationKind::SevSnp => Err(AttestationError::NotImplemented("sev_snp")),
-        AttestationKind::ArmCca => Err(AttestationError::NotImplemented("arm_cca")),
         AttestationKind::NitroEnclave => NitroEnclaveVerifier.verify(blob, ctx),
-        AttestationKind::AppleSecure => Err(AttestationError::NotImplemented("apple_secure")),
     }
 }
 
@@ -545,27 +569,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unimplemented_kinds_return_clean_error() {
-        // M1 of the TPM2/Nitro roadmap: `Tpm2Quote` + `NitroEnclave` are no
-        // longer `NotImplemented` — they return `Malformed` for garbage input
-        // and `PartialImplementation` / `MeasurementMismatch` for well-formed
-        // input. The other hardware kinds remain `NotImplemented` until their
-        // respective milestones land.
-        let ctx = AttestationContext {
-            expected_measurement_hex: "x",
-            trusted_pubkey_b64u: "x",
-        };
-        for k in [
-            AttestationKind::SgxQuote,
-            AttestationKind::SevSnp,
-            AttestationKind::ArmCca,
-            AttestationKind::AppleSecure,
+    fn an_unknown_kind_is_refused_rather_than_downgraded_to_none() {
+        // The bug this pins: `parse` used to fall back to `AttestationKind::None`
+        // for anything it did not recognise, and `None` is accepted whenever
+        // SAURON_REQUIRE_HARDWARE_ATTESTATION is off — the production default.
+        // So a misspelled kind registered an agent with no attestation while the
+        // caller believed it had asked for one.
+        for bad in [
+            "tmp2_quote",
+            "sgx_quote",
+            "sev_snp",
+            "arm_cca",
+            "apple_secure",
+            "nonsense",
         ] {
-            match verify_attestation(k, b"any", &ctx) {
-                Err(AttestationError::NotImplemented(_)) => {}
-                other => panic!("kind {:?} expected NotImplemented, got {:?}", k, other),
+            match AttestationKind::parse(bad) {
+                Err(AttestationError::UnsupportedKind) => {}
+                other => panic!("{bad} must be refused, got {other:?}"),
             }
         }
+        // Absent / whitespace is the one input that legitimately means "none".
+        assert_eq!(AttestationKind::parse("").unwrap(), AttestationKind::None);
+        assert_eq!(
+            AttestationKind::parse("   ").unwrap(),
+            AttestationKind::None
+        );
+    }
+
+    #[test]
+    fn every_known_spelling_round_trips_and_declares_its_posture() {
+        for (name, kind) in AttestationKind::KNOWN {
+            assert_eq!(AttestationKind::parse(name).unwrap(), *kind);
+        }
+        assert!(AttestationKind::Tpm2Quote.is_hardware_backed());
+        assert!(AttestationKind::NitroEnclave.is_hardware_backed());
+        assert!(!AttestationKind::None.is_hardware_backed());
+        assert!(!AttestationKind::ServerDerived.is_hardware_backed());
+        assert!(!AttestationKind::Ed25519Self.is_hardware_backed());
     }
 
     // `std::env::set_var` is process-wide. To avoid one test stomping another's

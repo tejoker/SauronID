@@ -38,13 +38,13 @@ impl RuntimeCheck for DomainDenylistCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        let Some(raw) = ctx
-            .action
-            .metadata
-            .get("target_domain")
-            .and_then(|v| v.as_str())
-        else {
-            return Verdict::Allow;
+        // Fail closed. A denylist cannot clear an action whose destination it
+        // was never told — and the sibling `domain_allowlist` check already
+        // denies on the same missing field, so allowing here was inconsistent
+        // as well as unsafe.
+        let raw = match ctx.require_str("target_domain", "domain_denylist") {
+            Ok(v) => v,
+            Err(deny) => return deny,
         };
         let tag = raw.to_ascii_lowercase();
         if self.domains.contains(&tag) {
@@ -90,13 +90,13 @@ mod tests {
         assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
+    /// Fail-closed, and consistent with the sibling `domain_allowlist`, which
+    /// already denied on this same missing field.
     #[test]
-    fn missing_domain_allows() {
-        // Denylist semantics: only explicit matches deny. Allowlist
-        // enforces the "must declare" contract separately.
-        let c = DomainDenylistCheck::new(vec!["competitor.com".into()]);
-        let a = action_with(None);
-        assert!(c.evaluate(&ctx(&a)).is_allow());
+    fn a_missing_target_domain_is_denied() {
+        let c = DomainDenylistCheck::new(vec!["evil.test".into()]);
+        let a = Action::default();
+        assert!(c.evaluate(&ctx(&a)).is_deny());
     }
 
     #[test]

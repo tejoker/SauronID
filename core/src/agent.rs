@@ -15,7 +15,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::ajwt_support;
-use crate::any_db::AsAnyConn;
+use crate::any_db::AnyConn;
 use crate::crypto_protocol::{self, CallSignatureInput};
 use crate::error::AppError;
 use crate::policy;
@@ -31,7 +31,6 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use curve25519_dalek::traits::Identity as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
@@ -465,8 +464,8 @@ pub struct VerifyAjwtResponse {
     pub error: Option<String>,
 }
 
-fn has_bank_kyc_link(db: &rusqlite::Connection, human_key_image: &str) -> bool {
-    db.any_conn().scalar_or(
+fn has_bank_kyc_link(db: &mut AnyConn<'_>, human_key_image: &str) -> bool {
+    db.scalar_or(
         "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
         sql_params![human_key_image],
         |r| r.get_i64(0),
@@ -490,7 +489,7 @@ fn has_bank_kyc_link(db: &rusqlite::Connection, human_key_image: &str) -> bool {
 /// `user_auth_with_key` proves possession of — so the operator cannot produce
 /// this signature, only relay it.
 fn verify_owner_mandate(
-    db: &rusqlite::Connection,
+    db: &mut AnyConn<'_>,
     tenant_id: &str,
     human_key_image: &str,
     agent_public_key_hex: &str,
@@ -508,7 +507,7 @@ fn verify_owner_mandate(
             "owner mandate requires an owner key bound to human_key_image; register the owner with a client-generated Ed25519 key first".to_string(),
         )
     };
-    let owner_pk_b64u: String = db.any_conn().require(
+    let owner_pk_b64u: String = db.require(
         "SELECT c.ed25519_public_key_b64u
              FROM user_auth_credentials c
              JOIN user_auth_tenant_bindings b ON b.key_image_hex = c.key_image_hex
@@ -664,12 +663,12 @@ pub async fn register_agent(
         String::new()
     } else {
         let st = state.read_or_recover();
-        let db = st
+        let mut db = st
             .db
             .lock()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         verify_owner_mandate(
-            &db,
+            &mut db.any_conn(),
             &tenant_id,
             &payload.human_key_image,
             &payload.public_key_hex,
@@ -682,7 +681,7 @@ pub async fn register_agent(
 
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let now = crate::ajwt_support::now_secs();
         risk::check_and_increment(
             &mut db.any_conn(),
@@ -698,7 +697,11 @@ pub async fn register_agent(
         })?;
     }
 
-    let kind_parsed = crate::attestation::AttestationKind::parse(&payload.attestation_kind);
+    // A kind this build cannot verify is a 400, not a silent fall-back to
+    // `None` — see AttestationKind::parse for why the old fallback was a
+    // security hole rather than leniency.
+    let kind_parsed = crate::attestation::AttestationKind::parse(&payload.attestation_kind)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let needs_attestation_challenge = !matches!(
         kind_parsed,
         crate::attestation::AttestationKind::None
@@ -712,7 +715,7 @@ pub async fn register_agent(
             ));
         }
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let now = now_secs();
         let no_challenge = || {
             (
@@ -1016,7 +1019,7 @@ pub async fn register_agent(
 
     if needs_attestation_challenge {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let now = now_secs();
         // Single-use claim: the `used_at IS NULL` predicate is what makes this
         // atomic, so the row count is the TOCTOU verdict. Preserved exactly.
@@ -1093,7 +1096,7 @@ pub async fn register_agent(
     // Ensure no active agent already uses this pubkey.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let in_use: bool = db.any_conn()
             .scalar_or(
                 "SELECT COUNT(*) FROM agents WHERE public_key_hex = ?1 AND revoked = 0 AND tenant_id = ?2",
@@ -1153,8 +1156,8 @@ pub async fn register_agent(
 
     let has_bank_link = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        has_bank_kyc_link(&db, &human_key_image)
+        let mut db = st.db.lock().unwrap();
+        has_bank_kyc_link(&mut db.any_conn(), &human_key_image)
     };
 
     if !has_bank_link {
@@ -1170,7 +1173,7 @@ pub async fn register_agent(
         (None::<String>, 0i64)
     } else {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let no_parent = || {
             (
                 StatusCode::BAD_REQUEST,
@@ -1273,7 +1276,7 @@ pub async fn register_agent(
         // successfully and then failed every signed call with 401
         // call_sig_unknown_agent. `agents` converts as one unit — writes and
         // reads together — or not at all.
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         // M1 of TPM2 PoP roadmap: persist the new hardware-attestation columns
         // alongside the legacy blob+kind. They are NULL for non-TPM2 kinds.
         let attestation_pubkey_b64u = payload
@@ -1406,7 +1409,7 @@ pub async fn issue_agent_token(
         String,
     ) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .require(
                 "SELECT human_key_image, agent_checksum, intent_json, revoked, expires_at, IFNULL(pop_jkt, '')
@@ -1509,7 +1512,7 @@ pub async fn update_agent_checksum(
     // Verify the caller owns the agent (same human as registration).
     let owner_ki: String = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .query_row(
                 "SELECT human_key_image FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2",
@@ -1536,7 +1539,7 @@ pub async fn update_agent_checksum(
 
     let prev_checksum: String = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn().scalar_or(
             "SELECT agent_checksum FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
             sql_params![&agent_id, &tenant_id],
@@ -1550,7 +1553,7 @@ pub async fn update_agent_checksum(
         let st = state.read_or_recover();
         // Same reason as agent registration above: rotate_inputs also runs
         // `UPDATE agents SET agent_checksum`, and `agents` is not converted.
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         // Honour the storage-privacy mode on rotation too, otherwise hash_only
         // would leak the plaintext config via a later checksum update.
         let stored = crate::agent_checksum::storage_payload(&canonical, &new_checksum);
@@ -1592,7 +1595,7 @@ pub async fn get_agent(
 ) -> Result<Json<AgentRecord>, StatusCode> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     db.any_conn()
         .query_row(
             "SELECT agent_id, human_key_image, agent_checksum, intent_json, assurance_level, IFNULL(ring_key_image_hex, ''), issued_at, expires_at, revoked
@@ -1633,7 +1636,7 @@ pub async fn revoke_agent(
 
     let rows = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .execute(
                 "UPDATE agents SET revoked = 1 WHERE agent_id = ?1 AND human_key_image = ?2 AND tenant_id = ?3",
@@ -1652,7 +1655,7 @@ pub async fn revoke_agent(
     // M-3: prune the revoked agent's point from the in-memory ring.
     let pubkey: Option<String> = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .query_row(
                 "SELECT public_key_hex FROM agents WHERE tenant_id = ?1 AND agent_id = ?2",
@@ -1713,7 +1716,7 @@ pub async fn verify_agent_token(
     // Rate-limit per agent_id to prevent token enumeration / replay amplification.
     if let Some(ref aid) = agent_id {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let now = crate::ajwt_support::now_secs();
         if risk::check_and_increment(
             &mut db.any_conn(),
@@ -1739,7 +1742,7 @@ pub async fn verify_agent_token(
 
     if let Some(ref aid) = agent_id {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         let row: Option<(i64, String, String)> = db.any_conn()
             .query_row(
                 "SELECT revoked, assurance_level, IFNULL(pop_public_key_b64u, '') FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
@@ -1781,20 +1784,23 @@ pub async fn verify_agent_token(
             // wraps the SELECT+DELETE in BEGIN IMMEDIATE so SQLite races are
             // safe today. Repo::take_pop_challenge is the dual-backend entry
             // point once this handler is converted to fully async.
-            let challenge_plain =
-                match ajwt_support::take_pop_challenge(&db, &payload.pop_challenge_id, aid) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return Json(VerifyAjwtResponse {
-                            valid: false,
-                            agent_id: agent_id.clone(),
-                            human_key_image: human_ki.clone(),
-                            intent_json: intent.clone(),
-                            assurance_level: Some(db_assurance),
-                            error: Some(e),
-                        });
-                    }
-                };
+            let challenge_plain = match ajwt_support::take_pop_challenge(
+                &mut db.any_conn(),
+                &payload.pop_challenge_id,
+                aid,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Json(VerifyAjwtResponse {
+                        valid: false,
+                        agent_id: agent_id.clone(),
+                        human_key_image: human_ki.clone(),
+                        intent_json: intent.clone(),
+                        assurance_level: Some(db_assurance),
+                        error: Some(e),
+                    });
+                }
+            };
             if let Err(e) = ajwt_support::verify_ed25519_pop_jws(
                 &challenge_plain,
                 &payload.pop_jws,
@@ -1840,8 +1846,8 @@ pub async fn verify_agent_token(
             }
         };
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        if let Err(e) = ajwt_support::consume_ajwt_jti(&db, &jti, exp) {
+        let mut db = st.db.lock().unwrap();
+        if let Err(e) = ajwt_support::consume_ajwt_jti(&mut db.any_conn(), &jti, exp) {
             return Json(VerifyAjwtResponse {
                 valid: false,
                 agent_id,
@@ -1884,7 +1890,7 @@ pub async fn list_agents(
     }
 
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AgentRecord> = db.any_conn()
         .query_map(
             "SELECT agent_id, human_key_image, agent_checksum, intent_json, assurance_level, IFNULL(ring_key_image_hex, ''), issued_at, expires_at, revoked
@@ -1970,7 +1976,7 @@ pub async fn agent_attestation_challenge(
     let now = now_secs();
     let expires_at = now + 300;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     db.any_conn()
         .execute(
             "DELETE FROM agent_attestation_challenges WHERE expires_at < ?1 OR used_at IS NOT NULL",
@@ -2022,7 +2028,7 @@ pub async fn agent_pop_challenge(
     ))?;
 
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let (db_human, revoked, exp_a): (String, i64, i64) = db.any_conn()
         .require(
             "SELECT human_key_image, revoked, expires_at FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
@@ -2049,8 +2055,14 @@ pub async fn agent_pop_challenge(
     // surrounding agent lookup; switching to Repo::insert_pop_challenge would
     // require dropping the guard early. Legacy path wraps DELETE+INSERT in
     // BEGIN IMMEDIATE so concurrent inserts under SQLite are atomic.
-    let exp = ajwt_support::insert_pop_challenge(&db, &id, &payload.agent_id, &challenge, 300)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let exp = ajwt_support::insert_pop_challenge(
+        &mut db.any_conn(),
+        &id,
+        &payload.agent_id,
+        &challenge,
+        300,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(AgentPopChallengeResponse {
         pop_challenge_id: id,
@@ -2275,19 +2287,19 @@ async fn try_verify_call_sig(
     let now = now_secs();
     let (pop_pk_b64u, registered_checksum): (String, String) = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        db.query_row(
+        let mut db = st.db.lock().unwrap();
+        db.any_conn().require(
             "SELECT IFNULL(pop_public_key_b64u, ''), agent_checksum
              FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2 AND expires_at > ?3",
-            params![agent_id, tenant_id, now],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .map_err(|_| AppError::with_hint(
-            StatusCode::UNAUTHORIZED,
-            "call_sig_unknown_agent",
-            "unknown, revoked, or expired agent",
-            "register the agent (or re-register after expiry/revocation) and send its exact agent_id and tenant in x-sauron-agent-id / x-sauron-tenant-id",
-        ))?
+            sql_params![&agent_id, &tenant_id, now],
+            |r| Ok((r.get_string(0)?, r.get_string(1)?)),
+            || AppError::with_hint(
+                StatusCode::UNAUTHORIZED,
+                "call_sig_unknown_agent",
+                "unknown, revoked, or expired agent",
+                "register the agent (or re-register after expiry/revocation) and send its exact agent_id and tenant in x-sauron-agent-id / x-sauron-tenant-id",
+            ),
+        )?
     };
     if pop_pk_b64u.is_empty() {
         return Err(AppError::with_hint(
@@ -2492,17 +2504,17 @@ fn log_denied_egress(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     if let Ok(st) = state.read() {
-        if let Ok(db) = st.db.lock() {
-            let _ = db.execute(
+        if let Ok(mut db) = st.db.lock() {
+            let _ = db.any_conn().execute(
                 "INSERT INTO agent_egress_log
                  (agent_id, target_host, target_path, method, body_hash_hex, status_code, ts, allowed)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-                params![
-                    agent_id,
-                    target_host,
-                    target_path,
-                    method,
-                    body_hash_hex,
+                sql_params![
+                    &agent_id,
+                    &target_host,
+                    &target_path,
+                    &method,
+                    &body_hash_hex,
                     status.as_u16() as i64,
                     now,
                 ],
@@ -2799,6 +2811,7 @@ mod call_sig_default_deny_tests {
 #[cfg(test)]
 mod owner_mandate_tests {
     use super::verify_owner_mandate;
+    use crate::any_db::AsAnyConn;
     use base64::Engine;
     use ed25519_dalek::{Signer, SigningKey};
 
@@ -2856,7 +2869,14 @@ mod owner_mandate_tests {
         let sig = mandate_sig(&owner, &ki, "pk_hex", "pop_b64u", intent, 3600);
 
         let hash = verify_owner_mandate(
-            &db, "default", &ki, "pk_hex", "pop_b64u", intent, 3600, &sig,
+            &mut db.any_conn(),
+            "default",
+            &ki,
+            "pk_hex",
+            "pop_b64u",
+            intent,
+            3600,
+            &sig,
         )
         .expect("owner-signed mandate verifies");
         assert_eq!(hash.len(), 64, "mandate hash is sha256 hex");
@@ -2874,7 +2894,14 @@ mod owner_mandate_tests {
 
         let forged = mandate_sig(&operator, &ki, "pk_hex", "pop_b64u", intent, 3600);
         let err = verify_owner_mandate(
-            &db, "default", &ki, "pk_hex", "pop_b64u", intent, 3600, &forged,
+            &mut db.any_conn(),
+            "default",
+            &ki,
+            "pk_hex",
+            "pop_b64u",
+            intent,
+            3600,
+            &forged,
         )
         .unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
@@ -2891,14 +2918,21 @@ mod owner_mandate_tests {
 
         let widened = r#"{"scope":["payment_initiation"],"maxAmount":100000,"currency":"EUR"}"#;
         let err = verify_owner_mandate(
-            &db, "default", &ki, "pk_hex", "pop_b64u", widened, 3600, &sig,
+            &mut db.any_conn(),
+            "default",
+            &ki,
+            "pk_hex",
+            "pop_b64u",
+            widened,
+            3600,
+            &sig,
         )
         .unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
 
         // Same for swapping in a different agent key or stretching the TTL.
         let err = verify_owner_mandate(
-            &db,
+            &mut db.any_conn(),
             "default",
             &ki,
             "other_pk",
@@ -2910,7 +2944,7 @@ mod owner_mandate_tests {
         .unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
         let err = verify_owner_mandate(
-            &db,
+            &mut db.any_conn(),
             "default",
             &ki,
             "pk_hex",

@@ -35,7 +35,7 @@ use sauron_core::policy::handlers::{
 use sauron_core::policy::parser::parse;
 use sauron_core::policy::PolicyStore;
 use sauron_core::repository::Repo;
-use sauron_core::tenancy::{TenantId, TenantRegistry, DEFAULT_TENANT};
+use sauron_core::tenancy::{TenantId, DEFAULT_TENANT};
 
 fn build_test_repo(test_name: &str) -> (Repo, Arc<sauron_core::db::DbHandle>) {
     let pid = std::process::id();
@@ -292,16 +292,6 @@ fn default_tenant_back_compat_legacy_record_spend_inner() {
 }
 
 #[test]
-fn tenant_registry_records_first_seen_and_lists_sorted() {
-    let r = TenantRegistry::new();
-    r.ensure_tenant_exists("zeta");
-    r.ensure_tenant_exists("alpha");
-    r.ensure_tenant_exists("alpha"); // idempotent
-    let listed = r.list();
-    assert_eq!(listed, vec!["alpha", "default", "zeta"]);
-}
-
-#[test]
 fn tenant_id_default_is_default_const_pinned() {
     // Pin the const value — changing it would silently revert the
     // back-compat baseline for every legacy caller.
@@ -321,7 +311,7 @@ fn tenant_id_default_is_default_const_pinned() {
 // ───────────────────────────────────────────────────────────────────────
 
 fn seed_agent_row(db: &sauron_core::db::DbHandle, tenant_id: &str, agent_id: &str, human_ki: &str) {
-    let conn = db.lock().unwrap();
+    let conn = db.lock_sqlite().unwrap();
     conn.execute(
         "INSERT INTO agents
          (agent_id, human_key_image, agent_checksum, issued_at, expires_at, tenant_id)
@@ -340,7 +330,7 @@ fn agent_registered_as_tenant_a_invisible_to_tenant_b_list() {
 
     // Mirror the list_agents query under tenant_b's filter.
     let count_b: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM agents WHERE human_key_image = ?1 AND tenant_id = ?2",
             rusqlite::params![human_ki, "tenant_b"],
@@ -351,7 +341,7 @@ fn agent_registered_as_tenant_a_invisible_to_tenant_b_list() {
     assert_eq!(count_b, 0, "tenant_b must not see tenant_a's agents");
 
     let count_a: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM agents WHERE human_key_image = ?1 AND tenant_id = ?2",
             rusqlite::params![human_ki, "tenant_a"],
@@ -369,7 +359,7 @@ fn agent_lookup_by_id_returns_404_cross_tenant() {
 
     // Mirror the get_agent query under tenant_b's filter — must miss.
     let row_b: Option<String> = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT agent_id FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
             rusqlite::params!["agt_secret", "tenant_b"],
@@ -384,7 +374,7 @@ fn agent_lookup_by_id_returns_404_cross_tenant() {
 
     // Sanity: tenant_a still resolves the row.
     let row_a: Option<String> = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT agent_id FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
             rusqlite::params!["agt_secret", "tenant_a"],
@@ -422,7 +412,7 @@ fn admin_stats_aggregates_across_tenants() {
     seed_agent_row(&db, "tenant_b", "agt_b_1", "ki-b");
 
     let total_unfiltered: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
             .unwrap()
     };
@@ -435,7 +425,7 @@ fn admin_stats_aggregates_across_tenants() {
     // Sanity: the per-tenant filter restores isolation when the operator
     // wants it.
     let only_a: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1",
             rusqlite::params!["tenant_a"],
@@ -456,7 +446,7 @@ fn admin_agents_filters_to_callers_tenant() {
 
     // Mirrors the tenant-scoped admin query.
     let listed_a: Vec<String> = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         let mut stmt = conn
             .prepare("SELECT agent_id FROM agents WHERE tenant_id = ?1 ORDER BY agent_id")
             .unwrap();
@@ -470,7 +460,7 @@ fn admin_agents_filters_to_callers_tenant() {
     assert_eq!(listed_a, vec!["agt_a_only".to_string()]);
 
     let listed_b: Vec<String> = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         let mut stmt = conn
             .prepare("SELECT agent_id FROM agents WHERE tenant_id = ?1 ORDER BY agent_id")
             .unwrap();
@@ -486,7 +476,7 @@ fn admin_agents_filters_to_callers_tenant() {
     // The unfiltered (legacy aggregate) shape MUST see both — guards
     // against accidentally hiding rows behind a global default tenant.
     let listed_all: Vec<String> = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         let mut stmt = conn
             .prepare("SELECT agent_id FROM agents ORDER BY agent_id")
             .unwrap();
@@ -510,7 +500,7 @@ fn admin_audit_log_isolated_per_tenant() {
     // production; for the test we mirror what `ensure_security_audit_schema`
     // would do (the schema is also created by init_schema since S12).
     {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.execute(
             "INSERT INTO security_audit_log
                 (audit_id, tenant_id, event_type, event_json, timestamp)
@@ -540,7 +530,7 @@ fn admin_audit_log_isolated_per_tenant() {
     }
 
     let count_a: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM security_audit_log WHERE tenant_id = ?1",
             rusqlite::params!["tenant_a"],
@@ -551,7 +541,7 @@ fn admin_audit_log_isolated_per_tenant() {
     assert_eq!(count_a, 1, "tenant_a sees only its own audit row");
 
     let count_b: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM security_audit_log WHERE tenant_id = ?1",
             rusqlite::params!["tenant_b"],
@@ -564,7 +554,7 @@ fn admin_audit_log_isolated_per_tenant() {
     // Cross-check: querying for an unknown tenant returns 0 (no
     // existence leak even via row counts).
     let count_c: i64 = {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM security_audit_log WHERE tenant_id = ?1",
             rusqlite::params!["tenant_c"],

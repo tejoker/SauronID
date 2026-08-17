@@ -33,7 +33,6 @@ pub mod dpop;
 pub mod egress_gateway;
 pub mod error;
 pub mod feature_flags;
-pub mod he;
 pub mod identity;
 pub mod issuer_runtime;
 pub mod merkle;

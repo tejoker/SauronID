@@ -72,6 +72,17 @@ use std::sync::Arc;
 use crate::db::DbHandle;
 use crate::tenancy::DEFAULT_TENANT;
 
+/// The repository's own backend split, older than and separate from
+/// [`crate::db::DbConn`].
+///
+/// Both variants are selected from the same `SAURON_DB_BACKEND`, so
+/// `Repo::Sqlite` exists only when `DbHandle` has no Postgres pool either. That
+/// is why every `Repo::Sqlite(db)` arm below takes `db.lock_sqlite()` rather
+/// than the dispatching `db.lock()`: it is already the SQLite half of a
+/// two-armed match, and the Postgres half is the sqlx code next to it. Making
+/// those arms dispatch would give Postgres two independent routes to the same
+/// table — sqlx here and `AnyConn` there — which is the split the port exists
+/// to remove.
 #[derive(Clone)]
 pub enum Repo {
     Sqlite(Arc<DbHandle>),
@@ -132,14 +143,16 @@ impl Repo {
                     .await
                     .map_err(|e| format!("postgres connect: {e}"))?;
                 tracing::info!(target: "sauron::repo", backend = "postgres", "repository pool ready");
-                // The Postgres port is partial: only a few tables route here;
-                // the rest still write to the SQLite sidecar. Say so loudly so
-                // no operator believes selecting postgres gives them full HA.
-                tracing::warn!(
-                    target: "sauron::repo",
-                    "SAURON_DB_BACKEND=postgres is a partial port: most tables still use the SQLite sidecar. \
-                     See docs/postgres-port-status.md for the exact coverage before relying on Postgres for HA."
-                );
+                // This used to warn that the port was partial and most tables
+                // still used the SQLite sidecar. That stopped being true when
+                // `DbHandle::lock()` began returning the dispatching guard; the
+                // sidecar now only carries what `lock_sqlite()` names, which is
+                // schema bootstrap and the backup tooling. Leaving the warning
+                // would have operators discount a message that is no longer
+                // describing their deployment.
+                //
+                // The claim is held by `core/tests/postgres_backend_drift.sh`,
+                // which fails if a registration lands in the sidecar.
                 Ok(Repo::Postgres(pool))
             }
             _ => {
@@ -169,7 +182,9 @@ impl Repo {
     {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
                     .map_err(|e| RepoError::Backend(format!("begin immediate: {e}")))?;
                 let res = f(&conn);
@@ -481,7 +496,9 @@ impl Repo {
     pub async fn prune_call_nonces(&self, now: i64) -> Result<u64, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n = conn
                     .execute(
                         "DELETE FROM agent_call_nonces WHERE exp < ?1",
@@ -513,7 +530,9 @@ impl Repo {
     pub async fn prune_pop_challenges(&self, now: i64) -> Result<u64, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n = conn
                     .execute(
                         "DELETE FROM agent_pop_challenges WHERE exp < ?1",
@@ -888,8 +907,22 @@ impl Repo {
                             return Ok(row);
                         }
                         // Disambiguate the failure path.
+                        // `token_used` and `revoked` are INTEGER (int4) in
+                        // migrations/postgres, and sqlx decodes strictly: asking
+                        // for i64 fails with "Rust type `i64` … is not compatible
+                        // with SQL type `INT4`". Casting in SQL rather than
+                        // narrowing the tuple keeps this identical to the SQLite
+                        // arm above, which reads i64 because SQLite has one
+                        // integer type.
+                        //
+                        // The decode error surfaced as an HTTP 500 on the REPLAY
+                        // path only: the atomic UPDATE had already done its job,
+                        // so a second claim was correctly refused and then failed
+                        // to say why. The 16-attack suite reads that as the TOCTOU
+                        // defence being absent, because it counts 409s.
                         let status: Option<(i64, i64, i64)> = sqlx::query_as(
-                            "SELECT token_used, revoked, consent_expires_at FROM consent_log \
+                            "SELECT token_used::BIGINT, revoked::BIGINT, consent_expires_at \
+                             FROM consent_log \
                              WHERE tenant_id = $1 AND consent_token = $2",
                         )
                         .bind(&tenant_id)
@@ -925,7 +958,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT INTO consent_log (request_id, user_key_image, site_name, \
                      requested_claims_json, granted_at, token_used, revoked, tenant_id) \
@@ -967,7 +1002,9 @@ impl Repo {
     ) -> Result<Option<(String, Option<String>)>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 Ok(conn
                     .query_row(
                         "SELECT user_key_image, issuing_agent_id FROM consent_log \
@@ -1002,7 +1039,9 @@ impl Repo {
     ) -> Result<Option<String>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 Ok(conn
                     .query_row(
                         "SELECT user_key_image FROM consent_log \
@@ -1039,7 +1078,9 @@ impl Repo {
     ) -> Result<Option<(String, String, Option<String>)>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 Ok(conn
                     .query_row(
                         "SELECT site_name, requested_claims_json, consent_token FROM consent_log \
@@ -1085,7 +1126,9 @@ impl Repo {
         };
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let sql = format!(
                     "SELECT site_name FROM consent_log \
                      WHERE tenant_id = ?1 AND request_id = ?2 AND token_used = 0 AND revoked = 0{ungranted_sql}"
@@ -1128,7 +1171,9 @@ impl Repo {
     ) -> Result<u64, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n = conn
                     .execute(
                         "UPDATE consent_log SET user_key_image = ?1, granted_at = ?2, \
@@ -1176,7 +1221,9 @@ impl Repo {
     ) -> Result<Vec<(String, String, i64, i64, i64)>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let mut stmt = conn
                     .prepare(
                         "SELECT request_id, site_name, granted_at, token_used, revoked \
@@ -1194,8 +1241,10 @@ impl Repo {
                 Ok(rows)
             }
             Repo::Postgres(pool) => {
+                // token_used/revoked are int4; cast for the same reason as in
+                // consume_consent_token above.
                 let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
-                    "SELECT request_id, site_name, granted_at, token_used, revoked \
+                    "SELECT request_id, site_name, granted_at, token_used::BIGINT, revoked::BIGINT \
                      FROM consent_log WHERE tenant_id = $1 AND user_key_image = $2 \
                      ORDER BY granted_at DESC LIMIT 100",
                 )
@@ -1218,7 +1267,9 @@ impl Repo {
     ) -> Result<u64, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n = conn
                     .execute(
                         "UPDATE consent_log SET revoked = 1 \
@@ -1335,7 +1386,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT INTO agent_payment_authorizations (auth_id, agent_id, jti, \
                      amount_minor, currency, merchant_id, payment_ref, created_at, \
@@ -1465,7 +1518,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "UPDATE credential_codes SET claimed = 0 \
                      WHERE tenant_id = ?1 AND key_image_hex = ?2 AND claimed = 1",
@@ -1497,7 +1552,9 @@ impl Repo {
     ) -> Result<Option<(String, String)>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let row = conn
                     .query_row(
                         "SELECT pre_auth_code, subject_did FROM credential_codes \
@@ -1529,7 +1586,9 @@ impl Repo {
     pub async fn user_exists(&self, key_image_hex: &str) -> Result<bool, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM users WHERE key_image_hex = ?1",
@@ -1565,7 +1624,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT INTO users (key_image_hex, public_key_hex, first_name, last_name, \
                      email, date_of_birth, nationality) \
@@ -1633,7 +1694,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT OR IGNORE INTO users (key_image_hex, public_key_hex, first_name, \
                      last_name, email, date_of_birth, nationality) \
@@ -1677,7 +1740,9 @@ impl Repo {
     pub async fn get_user(&self, key_image_hex: &str) -> Result<Option<UserRow>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let row = conn
                     .query_row(
                         "SELECT public_key_hex, first_name, last_name, email, date_of_birth, nationality \
@@ -1726,7 +1791,9 @@ impl Repo {
     pub async fn all_user_pubkeys(&self) -> Result<Vec<String>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let mut stmt = conn
                     .prepare("SELECT public_key_hex FROM users")
                     .map_err(|e| RepoError::Backend(e.to_string()))?;
@@ -1751,7 +1818,9 @@ impl Repo {
     pub async fn all_merkle_commitments(&self) -> Result<Vec<String>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let mut stmt = conn
                     .prepare("SELECT commitment_hex FROM merkle_leaves ORDER BY seq ASC")
                     .map_err(|e| RepoError::Backend(e.to_string()))?;
@@ -1779,7 +1848,9 @@ impl Repo {
     pub async fn count_users(&self) -> Result<i64, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n: i64 = conn
                     .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
                     .unwrap_or(0);
@@ -1799,7 +1870,9 @@ impl Repo {
     pub async fn list_users(&self) -> Result<Vec<(String, String, String, String)>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let mut stmt = conn
                     .prepare("SELECT key_image_hex, first_name, last_name, nationality FROM users")
                     .map_err(|e| RepoError::Backend(e.to_string()))?;
@@ -1830,7 +1903,9 @@ impl Repo {
     ) -> Result<Vec<(String, String, String, String, String, i64)>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let mut stmt = conn
                     .prepare(
                         "SELECT u.first_name, u.last_name, u.email, u.nationality, r.source, r.timestamp \
@@ -1883,7 +1958,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let changed = conn.execute(
                     "INSERT INTO user_credentials (key_image_hex, credential_json, issued_at, tenant_id) \
                      VALUES (?1, ?2, ?3, ?4) \
@@ -1933,7 +2010,9 @@ impl Repo {
     ) -> Result<Option<String>, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let row = conn
                     .query_row(
                         "SELECT credential_json FROM user_credentials WHERE tenant_id = ?1 AND key_image_hex = ?2",
@@ -1968,7 +2047,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp, tenant_id) \
                      VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -2006,7 +2087,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT OR IGNORE INTO merkle_leaves (commitment_hex, registered_at, tenant_id) \
                      VALUES (?1, ?2, ?3)",
@@ -2059,7 +2142,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT INTO bitcoin_merkle_anchors (anchor_id, merkle_root_hex, provider, \
                      network, op_return_hex, txid, broadcast, no_real_money, created_at, \
@@ -2122,7 +2207,9 @@ impl Repo {
     ) -> Result<(), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 conn.execute(
                     "INSERT INTO solana_merkle_anchors (anchor_id, merkle_root_hex, network, \
                      signature, slot, confirmed, created_at) \
@@ -2172,7 +2259,9 @@ impl Repo {
     ) -> Result<bool, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let n: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM agent_action_receipts \
@@ -2463,7 +2552,9 @@ impl Repo {
     ) -> Result<f64, RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let row: Option<f64> = conn
                     .query_row(
                         "SELECT total_usd FROM spend_ledger \
@@ -2516,7 +2607,9 @@ impl Repo {
     ) -> Result<(i64, i64), RepoError> {
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let last_updated: i64 = conn
                     .query_row(
                         "SELECT last_updated FROM spend_ledger \
@@ -2588,7 +2681,9 @@ impl Repo {
         let limit = limit.clamp(1, 1000);
         match self {
             Repo::Sqlite(db) => {
-                let conn = db.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
                 let mut stmt = conn
                     .prepare(
                         "SELECT log_id, policy_id, agent_id, action_id, amount_usd, \
@@ -2998,7 +3093,7 @@ mod tests {
     /// scope for the repo-level test).
     fn seed_consent_row(repo: &Repo, request_id: &str, token: &str, expires_at: i64) {
         if let Repo::Sqlite(db) = repo {
-            let conn = db.lock().unwrap();
+            let conn = db.lock_sqlite().unwrap();
             conn.execute(
                 "INSERT INTO consent_log (request_id, user_key_image, site_name, \
                  requested_claims_json, granted_at, consent_expires_at, consent_token, \
@@ -3202,7 +3297,7 @@ mod tests {
 
     fn seed_credential_code(repo: &Repo, key_image: &str) {
         if let Repo::Sqlite(db) = repo {
-            let conn = db.lock().unwrap();
+            let conn = db.lock_sqlite().unwrap();
             conn.execute(
                 "INSERT INTO credential_codes (key_image_hex, pre_auth_code, subject_did, issued_at, claimed) \
                  VALUES (?1, 'pac_1', 'did:test:1', 1000, 0)",
@@ -3409,7 +3504,7 @@ mod tests {
         let repo = build_test_repo("receipt_inserted");
         rt().block_on(async {
             if let Repo::Sqlite(db) = &repo {
-                let conn = db.lock().unwrap();
+                let conn = db.lock_sqlite().unwrap();
                 conn.execute(
                     "INSERT INTO agent_action_receipts (receipt_id, action_hash, agent_id, \
                      ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at) \

@@ -32,8 +32,15 @@ impl std::fmt::Display for StoreError {
 impl std::error::Error for StoreError {}
 
 /// Create the `audit_reports` table + tenant index if missing. Idempotent.
+///
+/// SQLite-only, deliberately: under Postgres this table comes from
+/// `migrations/postgres/0008_audit_reports.sql`, and issuing `CREATE TABLE`
+/// from here would duplicate the migration that already owns the schema. The
+/// sidecar still gets the table so a rollback to SQLite keeps the shape.
 pub fn ensure_audit_reports_schema(db: &DbHandle) -> Result<(), StoreError> {
-    let conn = db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+    let conn = db
+        .lock_sqlite()
+        .map_err(|e| StoreError::Db(e.to_string()))?;
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS audit_reports (
