@@ -179,3 +179,12 @@ core/tests/e2e_ring_restore_consent.sh
 core/tests/run_confidence_suite.sh
 core/tests/hf_fetch_and_matrix_test.sh
 core/tests/lib/zkp_fixture.sh
+
+# Design-review artifacts and local captures
+.impeccable/review/
+.playwright-mcp/
+*.png
+!site/public/*.png
+!site/app/icon.png
+!branding/*.png
+!docs/img/*.png
