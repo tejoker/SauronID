@@ -168,7 +168,26 @@ impl Drop for DbConn {
         // guard's drop is pure bookkeeping.
         if let DbConn::Postgres(slot) = self {
             if let Some(client) = slot.take() {
-                crate::any_db::blocking(move || drop(client));
+                use tokio::runtime::{Handle, RuntimeFlavor};
+                match Handle::try_current() {
+                    // Multi-thread runtime: hand the thread to the blocking
+                    // driver for the duration of the close.
+                    Ok(h) if h.runtime_flavor() != RuntimeFlavor::CurrentThread => {
+                        tokio::task::block_in_place(move || drop(client));
+                    }
+                    // Current-thread runtime: `block_in_place` is unavailable and
+                    // dropping inline runs the driver's `block_on` on the very
+                    // thread driving the reactor, which panics with "cannot start
+                    // a runtime from within a runtime". In a destructor that is
+                    // not a catchable panic — it aborts the process. So the
+                    // client goes to a plain OS thread, off the reactor, where
+                    // the close can block as much as it likes.
+                    Ok(_) => {
+                        std::thread::spawn(move || drop(client));
+                    }
+                    // No runtime at all: nothing to block, so close inline.
+                    Err(_) => drop(client),
+                }
             }
         }
     }
@@ -210,6 +229,14 @@ impl DbConn {
 }
 
 /// Build the Postgres pool when the deployment asks for it.
+///
+/// **The runtime must be multi-threaded.** `postgres` is the blocking driver, so
+/// closing a connection calls `block_on`. On a current-thread runtime that runs
+/// on the very thread driving the reactor and panics with "cannot start a
+/// runtime from within a runtime" — and because the close happens in `Drop`,
+/// it aborts the process instead of failing a request. `#[tokio::main]` is
+/// multi-threaded by default, which is why the server is fine; anything
+/// embedding this handle under `flavor = "current_thread"` is not.
 ///
 /// Returns None (and logs) rather than failing when the backend is not selected
 /// or the URL is absent, so a SQLite deployment is unaffected.

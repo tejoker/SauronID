@@ -13,7 +13,10 @@
     --ice: #4F8CFE;
     --cyan: #00C8FF;
     --red: #F87171;
-    --sans: "Helvetica Neue", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif;
+    /* Liberation Sans leads for the PDF build: it embeds as TrueType, which
+       renders punctuation (em dashes) reliably in every PDF viewer. Systems
+       without it fall through to Helvetica/Arial. */
+    --sans: "Liberation Sans", "Helvetica Neue", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif;
     --mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
   }
 
@@ -203,9 +206,25 @@
   .footnote {
     font-size: 12px;
     color: var(--dim);
-    margin: 0 0 20px;
+    margin: 0 0 14px;
   }
   .footnote b { color: var(--muted); font-weight: 600; }
+
+  /* The named attack list: the "16 / 16" metric, itemised so it can be checked. */
+  .attacks {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 10px 13px 11px;
+    margin-bottom: 20px;
+  }
+  .attacks p {
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.7;
+    color: var(--muted);
+    margin: 6px 0 0;
+  }
 
   /* ---- bands ---- */
 
@@ -297,8 +316,8 @@
 
   @page { size: A4; margin: 0; }
   @media print {
-    .sheet { max-width: none; padding: 8mm 9mm 6mm; }
-    body { font-size: 7.7pt; line-height: 1.34; }
+    .sheet { max-width: none; padding: 7mm 9mm 4mm; }
+    body { font-size: 7.4pt; line-height: 1.32; }
     .wordmark { font-size: 12pt; }
     .masthead { padding-bottom: 6pt; }
     .meta, .label, .rule-row .hex { font-size: 5.6pt; }
@@ -322,12 +341,16 @@
     .ask { padding: 7pt 9pt 8pt; }
     .ask .headline { font-size: 9.6pt; margin: 2pt 0 5pt; }
     .card p, .limits p, .ask li, .footnote { font-size: 7.4pt; }
-    .strip, .cols, .band, .limits, .ask, .footnote { margin-bottom: 7pt; }
+    .attacks { padding: 6pt 8pt 7pt; }
+    .attacks p { font-size: 6.5pt; line-height: 1.55; margin-top: 4pt; }
+    .strip, .cols, .band, .limits, .ask, .attacks { margin-bottom: 7pt; }
+    .footnote { margin-bottom: 5pt; }
     .cols { gap: 22pt; }
     .cols.three { gap: 11pt; }
     .band-split { gap: 18pt; }
     .ask ul { gap: 15pt; }
-    footer { font-size: 5.6pt; padding-top: 6pt; }
+    .ask { margin-bottom: 5pt; }
+    footer { font-size: 5.6pt; padding-top: 4pt; }
   }
 </style>
 
@@ -359,7 +382,7 @@
       <p>Your agent holds an API key, a card, a database &mdash; and an input box the outside world can write into.
       One poisoned document, and it does something expensive using credentials that are entirely legitimate. The
       API has no reason to refuse.</p>
-      <p class="tight">Afterwards the only record is the agent's own log. Agent identity products answer <b>who is
+      <p class="tight">Afterwards the only record is the agent's own log. Identity products answer <b>who is
       calling</b>; the incident is about <b>what the call was allowed to do</b>.</p>
     </div>
     <div class="col">
@@ -399,6 +422,16 @@
   configuration, spending and network limits are enforced by a separate gateway process, and the audit trail is
   committed to Bitcoin and Solana so nobody can quietly rewrite it, us included.</p>
 
+  <div class="attacks">
+    <span class="label">The 16 refused, by name</span>
+    <p>A1 forged token &middot; A2 token replay &middot; A3 call-signature replay &middot; A4 cross-endpoint token
+    reuse &middot; A5 body tampered after signing &middot; A6 stale timestamp &middot; A7 another agent's key
+    &middot; A8 admin call without the key &middot; A9 revoked agent still acting &middot; A10 scope creep on
+    delegation &middot; A11 concurrent double-claim of a consent token &middot; A12 registration flooding
+    &middot; A13 CORS origin fallback &middot; A14 audit log tampered after the fact &middot; A15 timing oracle on
+    session compare &middot; A16 agent config drift.</p>
+  </div>
+
   <div class="rule-row"><span class="label">Business</span><span class="line"></span><span class="hex">0x003</span></div>
 
   <div class="band">
@@ -416,8 +449,9 @@
       </div>
       <div>
         <h2>Why the position holds</h2>
-        <p class="tight">Clients are Apache-2.0 and act as the funnel; the gateway is source-visible for buyers
-        but licensed so no cloud vendor resells it. Copyright is founder-owned.</p>
+        <p class="tight">Client libraries are <b>Apache-2.0</b> and act as the funnel. The gateway is
+        <b>BUSL-1.1</b>: buyers read and audit every line, no cloud vendor resells it as their own service.
+        Copyright is founder-owned.</p>
       </div>
     </div>
     <div class="money">
@@ -456,12 +490,12 @@
     <div class="headline"><b>500k &euro; pre-seed</b> &mdash; to turn a working product into one a security team
     can buy without an exception.</div>
     <ul>
-      <li><b>Independent audit.</b> The gate that turns "you can read the source" into a procurement pass, and
-      the line item your audit cover funds directly.</li>
-      <li><b>High availability and the managed option.</b> Removes the two objections that stall self-hosted
-      deals today.</li>
-      <li><b>First design partners to paid references.</b> Two named production deployments in the money-agent
-      wedge makes the next round a different conversation.</li>
+      <li><b>Independent audit.</b> The gate that turns "you can read the source" into a procurement pass &mdash;
+      and the line item your audit cover funds directly.</li>
+      <li><b>Hosted on our own compute.</b> A cloud option beside the self-host, the way n8n sells both: teams
+      start in minutes, the regulated ones still run it themselves.</li>
+      <li><b>Marketing.</b> Turn an open-source funnel into pipeline, and the first design partners into named
+      references in the money-agent wedge.</li>
     </ul>
   </div>
 

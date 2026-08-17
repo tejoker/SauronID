@@ -694,3 +694,83 @@ fn single_use_security_tables_enforce_replay_protection_on_postgres() {
     clear_backend_env();
     let _ = std::fs::remove_file(&path);
 }
+
+// multi_thread deliberately: the r2d2 Postgres pool closes its connections
+// with the blocking driver when it drops, and on a current-thread runtime that
+// runs `block_on` on the reactor thread — "cannot start a runtime from within a
+// runtime", in a destructor, which aborts rather than fails. Production is
+// #[tokio::main], i.e. multi-thread, so this matches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// The guard is deliberately held across the awaits: it serialises mutation of
+// SAURON_DB_BACKEND/DATABASE_URL, which are process-global and must stay set
+// for the whole of `Repo::from_env`. Releasing early to satisfy the lint would
+// let a sibling test clear them mid-connect, which is the race the lock exists
+// to prevent. Tests are single-threaded here, so there is nothing to starve.
+#[allow(clippy::await_holding_lock)]
+async fn call_nonce_replay_is_refused_on_postgres() {
+    // `agent_call_nonces` is the per-call replay defence: every signed request
+    // burns a nonce, and a captured request replayed against the gateway must
+    // fail on the second attempt. It goes through `Repo::consume_call_nonce`,
+    // which has its own Postgres branch rather than travelling through AnyConn.
+    //
+    // Nothing covered it on Postgres. The drift test prints an
+    // `agent_call_nonces` count, but it never makes a signed call, so that
+    // count was always 0 and proved nothing — a reassuring zero rather than an
+    // assertion. The sibling replay test covers ajwt_used_jtis and
+    // agent_pop_challenges and stops short of this one.
+    let Some(url) = pg_url() else {
+        eprintln!("skipped: set SAURON_TEST_PG_URL to run");
+        return;
+    };
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let path = temp_sqlite_path("callnonce");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("SAURON_DB_BACKEND", "postgres");
+    std::env::set_var("DATABASE_URL", &url);
+
+    let sqlite = std::sync::Arc::new(sauron_core::db::open_db_at(path.to_str().unwrap(), 4));
+    let repo = sauron_core::repository::Repo::from_env(sqlite)
+        .await
+        .expect("repo picks up the Postgres backend");
+    assert!(repo.is_postgres(), "repo did not select Postgres");
+
+    let agent_id = format!("agt_nonce_{}", std::process::id());
+    let nonce = format!("nonce-{}-{}", std::process::id(), 1);
+    let exp = sauron_core::ajwt_support::now_secs() + 3600;
+
+    // First use burns it.
+    repo.consume_call_nonce(&agent_id, &nonce, exp)
+        .await
+        .expect("first use of a fresh nonce must succeed");
+
+    // Replaying the same nonce is the attack, and must be refused.
+    let replay = repo.consume_call_nonce(&agent_id, &nonce, exp).await;
+    match replay {
+        Err(sauron_core::repository::RepoError::Replay(_)) => {}
+        other => panic!(
+            "replaying a consumed call nonce must be refused as Replay on Postgres, got {other:?}"
+        ),
+    }
+
+    // A different nonce for the same agent still works — the guard is the
+    // (agent_id, nonce) pair, not the agent.
+    repo.consume_call_nonce(&agent_id, &format!("{nonce}-b"), exp)
+        .await
+        .expect("a distinct nonce must still be accepted");
+
+    // And it really is in Postgres, not the sidecar.
+    let leaked: i64 = rusqlite::Connection::open(&path)
+        .expect("open sidecar")
+        .query_row(
+            "SELECT COUNT(*) FROM agent_call_nonces WHERE agent_id = ?1",
+            rusqlite::params![&agent_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(leaked, 0, "call nonces went to the SQLite sidecar");
+
+    std::env::remove_var("SAURON_DB_BACKEND");
+    std::env::remove_var("DATABASE_URL");
+    let _ = std::fs::remove_file(&path);
+}
