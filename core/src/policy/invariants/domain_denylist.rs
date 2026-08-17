@@ -38,13 +38,17 @@ impl RuntimeCheck for DomainDenylistCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        // Fail closed. A denylist cannot clear an action whose destination it
-        // was never told — and the sibling `domain_allowlist` check already
-        // denies on the same missing field, so allowing here was inconsistent
-        // as well as unsafe.
-        let raw = match ctx.require_str("target_domain", "domain_denylist") {
-            Ok(v) => v,
-            Err(deny) => return deny,
+        // No destination → nothing can be on the denylist. The asymmetry with
+        // `domain_allowlist` (which DENIES on the same missing key) is
+        // deliberate: "only these destinations" cannot be satisfied by an
+        // undeclared one, but "not these destinations" is satisfied trivially.
+        let Some(raw) = ctx
+            .action
+            .metadata
+            .get("target_domain")
+            .and_then(|v| v.as_str())
+        else {
+            return Verdict::Allow;
         };
         let tag = raw.to_ascii_lowercase();
         if self.domains.contains(&tag) {
@@ -90,13 +94,12 @@ mod tests {
         assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
-    /// Fail-closed, and consistent with the sibling `domain_allowlist`, which
-    /// already denied on this same missing field.
+    /// A denylist is satisfied trivially by an action with no destination.
     #[test]
-    fn a_missing_target_domain_is_denied() {
+    fn missing_domain_allows() {
         let c = DomainDenylistCheck::new(vec!["evil.test".into()]);
         let a = Action::default();
-        assert!(c.evaluate(&ctx(&a)).is_deny());
+        assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
     #[test]

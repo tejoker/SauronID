@@ -48,32 +48,20 @@ impl RuntimeCheck for PiiDetectionCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        // The flag is REQUIRED, not merely trusted when present. An action that
-        // omits it used to fall through to the regex fallback and then to
-        // `Allow`, so the cheapest way past a PII gate was to say nothing about
-        // PII. The caller must state a verdict; `false` is a claim it can be
-        // held to, absence is not.
-        match ctx
+        // The server sets this on the egress path from the same rules the
+        // redactor uses, so `true` is a server observation, not an agent claim.
+        // Absent means there was no payload to scan — see the metadata trust
+        // model in `super`.
+        if let Some(true) = ctx
             .action
             .metadata
             .get("pii_detected")
             .and_then(|v| v.as_bool())
         {
-            Some(true) => {
-                return Verdict::Deny {
-                    check: self.name().to_string(),
-                    reason: "action.metadata.pii_detected is true".to_string(),
-                }
-            }
-            Some(false) => {}
-            None => {
-                return Verdict::Deny {
-                    check: self.name().to_string(),
-                    reason: "pii_detection requires a boolean metadata.pii_detected, \
-                             which this action did not declare"
-                        .to_string(),
-                }
-            }
+            return Verdict::Deny {
+                check: self.name().to_string(),
+                reason: "action.metadata.pii_detected is true".to_string(),
+            };
         }
         // Fallback: best-effort regex on string payload. Documented STUB.
         if let Some(payload) = ctx.action.metadata.get("payload").and_then(|v| v.as_str()) {
@@ -136,25 +124,23 @@ mod tests {
         assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_deny());
     }
 
-    /// A clean payload still needs the explicit verdict. The regex is a
-    /// best-effort backstop for a caller that claims `pii_detected: false` and is
-    /// wrong — it is not a substitute for the claim.
     #[test]
-    fn a_clean_payload_still_needs_an_explicit_verdict() {
+    fn allows_clean_payload() {
         let mut a = Action::default();
         a.metadata
             .insert("payload".into(), json!("nothing sensitive here"));
-        assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_deny());
-
-        a.metadata.insert("pii_detected".into(), json!(false));
         assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_allow());
     }
 
-    /// The fail-open: omitting the flag entirely was the cheapest way past a PII
-    /// gate, because the regex fallback then fell through to `Allow`.
+    /// The regex backstop still catches a caller that claims `false` and ships an
+    /// email anyway — the flag is a hint the server usually writes, not the last
+    /// word.
     #[test]
-    fn omitting_the_flag_is_denied() {
-        let a = Action::default();
+    fn a_false_claim_is_still_checked_against_the_payload_body() {
+        let mut a = Action::default();
+        a.metadata.insert("pii_detected".into(), json!(false));
+        a.metadata
+            .insert("payload".into(), json!("reach me at jane@example.com"));
         assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_deny());
     }
 

@@ -10,18 +10,24 @@
 //! `"spend_total <= max_budget_usd"`) ARE compiled: `super::expressions` parses
 //! them and `super::compiler` wraps each one in an `ExpressionCheck`.
 //!
-//! ## Declared metadata is required, not optional
+//! ## Who fills `Action.metadata`
 //!
-//! Several checks read their per-action signal from `Action.metadata`, a bag the
-//! CALLER fills. Each of those checks used to return `Verdict::Allow` when its
-//! key was absent, on the reasoning that an undeclared payload is a zero-byte
-//! payload. Applied to a security control that reading is backwards: it means an
-//! action omitting `payload_bytes` satisfies every payload cap, omitting
-//! `recipient_count` satisfies every fanout cap, and so on — the constraint is
-//! waived by the party it constrains. Compiling a check is an operator saying
-//! "this action must demonstrate it is under the cap", so an action that cannot
-//! demonstrate it is denied. [`EvaluationContext::require_u64`] and
-//! [`EvaluationContext::require_str`] are the single place that decision lives.
+//! Several checks read their per-action signal from `metadata`, and whether an
+//! absent key means "allow" or "deny" depends entirely on who writes the bag.
+//! On every enforcement path the SERVER builds the `Action` — see
+//! `super::handlers::gate_action_on_bound_policy` and its callers — so an absent
+//! key means "this action has no such dimension" (a payment has no
+//! `payload_bytes`; a sandboxed `file_read` has no `target_domain`), and reading
+//! it as zero or not-applicable is correct. The one caller-authored `Action` is
+//! `POST /v1/policy/evaluate`, which is admin-gated and explicitly a simulator.
+//!
+//! That is a load-bearing assumption, so it is written down here. A future route
+//! that let an AGENT supply metadata would invert it: absence would then mean
+//! "the constrained party declined to say", and every numeric cap in this module
+//! would be waived by omission. Populate these keys server-side from what the
+//! gateway observed — as `egress_gateway::agent_egress_proxy` does for
+//! `target_domain`, `payload_bytes`, `content_type` and `pii_detected` — rather
+//! than accepting them from the caller.
 
 use std::collections::HashMap;
 
@@ -175,43 +181,6 @@ pub struct EvaluationContext<'a> {
 }
 
 impl<'a> EvaluationContext<'a> {
-    /// Read a required unsigned-integer metadata field, or produce the deny.
-    ///
-    /// Fail-closed by construction: a check that calls this cannot be satisfied
-    /// by an action that simply does not mention the field. The deny names both
-    /// the check and the missing key, so an operator whose policy declares a cap
-    /// their action kind cannot report gets told exactly that instead of a
-    /// silent pass.
-    pub fn require_u64(&self, key: &str, check: &'static str) -> Result<u64, Verdict> {
-        match self.action.metadata.get(key) {
-            Some(v) => v.as_u64().ok_or_else(|| Verdict::Deny {
-                check: check.to_string(),
-                reason: format!("metadata.{key} must be a non-negative integer"),
-            }),
-            None => Err(Verdict::Deny {
-                check: check.to_string(),
-                reason: format!(
-                    "{check} requires metadata.{key}, which this action did not declare"
-                ),
-            }),
-        }
-    }
-
-    /// Read a required string metadata field, or produce the deny. Same contract
-    /// as [`Self::require_u64`]; an empty string counts as absent, because a
-    /// blank `target_domain` cannot be matched against an allowlist.
-    pub fn require_str(&self, key: &str, check: &'static str) -> Result<&str, Verdict> {
-        match self.action.metadata.get(key).and_then(|v| v.as_str()) {
-            Some(s) if !s.trim().is_empty() => Ok(s),
-            _ => Err(Verdict::Deny {
-                check: check.to_string(),
-                reason: format!(
-                    "{check} requires a non-empty metadata.{key}, which this action did not declare"
-                ),
-            }),
-        }
-    }
-
     /// Build a context with the given `action` and safe defaults for the
     /// rest. Lets call sites that only care about one or two fields skip
     /// the `..Default::default()` dance while still benefiting from the

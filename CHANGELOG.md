@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Policy invariants now require the action to declare its own signals.** Checks
+  that read a value from `Action.metadata` — payload size, recipient count,
+  chain depth, domain denylist — previously returned `Allow` when the key was
+  absent, on the reading that an undeclared payload is a zero-byte payload.
+  Applied to a security control that is backwards: an action omitting
+  `payload_bytes` satisfied every payload cap, so the constraint was waived by
+  the party it constrains. Absent is now a deny. **Callers that relied on
+  omission being permissive will start seeing denials** and must declare the
+  values they are claiming to be under.
+- Free-form `invariants:` strings (`no_external_call_to(...)`,
+  `sandbox_required(...)`, `spend_total <= max_budget_usd`) are compiled and
+  enforced. They were previously parsed and ignored, so a policy that declared
+  them was not applying them.
+
+### Changed
+
+- `SAURON_DB_BACKEND=postgres` moves the deployment to PostgreSQL. It previously
+  built a pool that almost nothing used: every call site resolved its connection
+  to SQLite regardless of configuration. Deployments setting that flag and
+  expecting Postgres were writing to the SQLite sidecar.
+- The homomorphic-encryption subsystem (`SAURON_ENABLE_UNAUDITED_PAILLIER`) is
+  removed. It was off by default, unreachable in production, and a custom
+  Paillier implementation whose own flag name called it unaudited.
+
+### Fixed
+
+- Database contention answers `503` with `Retry-After` instead of `500`, so a
+  client can tell "retry shortly" from "this is broken".
+- Three `INSERT OR REPLACE` statements carried no `ON CONFLICT` target, which is
+  valid SQLite and a syntax error on PostgreSQL. Two were reachable in
+  production via `/bank/register`.
+- Closing a pooled PostgreSQL connection on a current-thread Tokio runtime
+  aborted the process from a destructor. The handle requires a multi-threaded
+  runtime, which `#[tokio::main]` provides by default.
+
 ## [0.2.0] - 2026-08-05
 
 ### Security

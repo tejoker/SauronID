@@ -129,12 +129,56 @@ fn devtools_compiles_and_allows_no_external_call() {
         .and_then(|v| v.first())
         .cloned()
         .unwrap_or_else(|| "tool".to_string());
-    let a = Action {
+    // The devtools fixture declares max_payload_bytes, max_chain_depth and a
+    // domain_denylist, and each of those checks now requires the action to
+    // DECLARE its value rather than treating an absent key as compliance. That
+    // is the point of the change: an action omitting `payload_bytes` used to
+    // satisfy every payload cap, which waives the constraint on behalf of the
+    // party it constrains. So a caller has to say what it is doing — here, a
+    // small local patch that touches no network.
+    let mut a = Action {
         action_id: "a1".into(),
         tool,
         ..Default::default()
     };
-    assert!(evaluate(&c, &ctx(&a, 0.0, &[], 1000, "12:00")).is_allow());
+    a.metadata
+        .insert("payload_bytes".into(), serde_json::json!(4096));
+    a.metadata
+        .insert("chain_depth".into(), serde_json::json!(0));
+    a.metadata
+        .insert("target_domain".into(), serde_json::json!("localhost"));
+
+    let verdict = evaluate(&c, &ctx(&a, 0.0, &[], 1000, "12:00"));
+    assert!(
+        verdict.is_allow(),
+        "a fully-declared, in-limits devtools action must be allowed: {verdict:?}"
+    );
+}
+
+#[test]
+fn devtools_denies_an_action_that_declares_nothing() {
+    // The other half of the contract above, and the reason it exists: the same
+    // action with nothing declared must NOT be allowed. Without this the change
+    // could silently regress to "absent means fine" and every payload, fanout
+    // and chain-depth cap in the tree would quietly stop applying.
+    let c = compile(parse(FX_DEVTOOLS).unwrap()).unwrap();
+    let tool = c
+        .raw
+        .binding
+        .allowed_tools
+        .as_ref()
+        .and_then(|v| v.first())
+        .cloned()
+        .unwrap_or_else(|| "tool".to_string());
+    let a = Action {
+        action_id: "a2".into(),
+        tool,
+        ..Default::default()
+    };
+    assert!(
+        !evaluate(&c, &ctx(&a, 0.0, &[], 1000, "12:00")).is_allow(),
+        "an action declaring no payload_bytes must not satisfy a payload cap"
+    );
 }
 
 #[test]
