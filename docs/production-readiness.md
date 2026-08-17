@@ -93,27 +93,33 @@ Verified the only way that cannot be argued with: rename the function and see
 whether anything fails to compile. Nothing does.
 
 ```
-186  any_conn() statements  → still resolved against whatever the caller holds
-  5  DbHandle::conn() sites → dispatch, each verified against a real PostgreSQL
+190  any_conn() statements  → resolved against whatever the caller happens to hold
+  4  DbHandle::conn() sites → dispatch, verified against a real PostgreSQL
   0  callers of DbHandle::any()  → the closure-based dispatcher, still unused
+```
 
-Converted so far: audit/store.rs, agent_checksum.rs, the agent-registration
-block in agent.rs (the path postgres_backend_drift.sh uses to demonstrate the
-split), and risk.rs — the global rate limiter, whose eight call sites across
-agent.rs, egress_gateway.rs and main.rs now pass a dispatching connection.
+Converted so far, and only where the table's whole lifecycle moved with it:
+`audit/store.rs` (`audit_reports`, read and written nowhere else) and `risk.rs`
+(`risk_rate_counters`, likewise). `agent_checksum`'s helpers take `&mut AnyConn`
+so they follow their caller, but their callers still pass SQLite — see below.
 
-**The first conversion to run against Postgres found a dialect bug.** The
+**The first conversion to run against Postgres found a dialect bug.** The rate
 limiter's upsert said `DO UPDATE SET cnt = cnt + 1`, which SQLite accepts and
 Postgres rejects as an ambiguous column reference — in a `DO UPDATE` the bare
 name could mean the target row or `excluded`. It had never failed because it had
 never executed against Postgres. Qualifying it as `risk_rate_counters.cnt + 1`
-satisfies both. Notably `Repo::risk_increment`'s Postgres branch already spelled
-it that way, so the knowledge existed; the shared path just never exercised it.
+satisfies both. `Repo::risk_increment`'s Postgres branch already spelled it that
+way, so the knowledge existed; the shared path just never exercised it.
 
-That is the argument for the round-trip tests. Compiling, passing 643 unit tests
-and reading correctly all held while the statement was invalid on the backend it
-claimed to support.
-```
+That is the argument for the round-trip tests: compiling, 643 passing unit tests
+and code that reads correctly all held while the statement was invalid on the
+backend it claimed to support.
+
+**And one conversion had to be reverted.** Dispatching the agent-registration
+write while `agents` was still read from 40 SQLite call sites meant an agent
+registered into Postgres and then failed every signed call with 401
+`call_sig_unknown_agent`. Before it, the flag did nothing, which was harmless;
+after it, the flag broke authentication. A table moves whole or not at all.
 
 So the dual-backend work is *finished and unplugged*. `sql_translate.rs`
 rewrites the dialect, `AnyConn` abstracts the rows and parameters, all 55 tables
@@ -128,10 +134,8 @@ this document cannot drift away from the code again.
 This is worth stating plainly because the code sets the trap: a reviewer reads
 `db.any_conn().query_row(...)` as backend-agnostic, and it is not.
 
-The good news is that it makes the remaining task one repeated edit rather than
-186 separate ports. `DbHandle::conn()` returns a `DbConn` guard whose
-`any_conn()` dispatches, so a call site changes only where it acquires the
-connection:
+`DbHandle::conn()` returns a `DbConn` guard whose `any_conn()` dispatches, so
+where a call site only needs its acquisition changed, the edit is small:
 
 ```rust
 let db = st.db.lock().unwrap();     →   let mut db = st.db.conn()?;
@@ -152,6 +156,56 @@ in Postgres *and absent from the SQLite sidecar*. Every converted slice gets one
 `core/tests/postgres_backend_drift.sh` is the empirical check, and its passing
 is the proof the gap is real: it registers an agent, sees the row in SQLite, and
 sees the Postgres `agents` table still empty.
+
+### The port cannot be done incrementally
+
+This was tried, table by table, and the attempt is what proved it impossible.
+Record it here so nobody plans it that way again.
+
+A connection is acquired per request-block, not per table, and one block usually
+touches several tables. So converting a table means converting every block that
+reads it — and those blocks drag in whatever else they touch, transitively.
+Measuring that closure over `core/src` (union-find over tables sharing a
+`lock()` acquisition, filtered to names that really exist in the schema):
+
+```
+55 tables in the schema, 34 reachable from a shared connection
+3 connected components:
+
+  29 tables  <-- contains `agents`
+     agent_action_anchors, agent_action_nonces, agent_action_receipts,
+     agent_call_nonces, agent_checksum_audit, agent_checksum_inputs,
+     agent_egress_log, agent_payment_authorizations, agent_pop_challenges,
+     agent_vcs, agents, ajwt_used_jtis, api_usage, bank_attestation_nonces,
+     bank_kyc_links, bitcoin_merkle_anchors, client_tenant_bindings, clients,
+     consent_log, credential_codes, customer_stats, requests_log,
+     risk_rate_counters, security_audit_log, solana_merkle_anchors,
+     spend_ledger, spend_log, stats_submission_receipts, zk_proof_checkpoints
+
+   3 tables  user_auth_challenges, user_auth_credentials, user_auth_tenant_bindings
+   2 tables  user_registrations, users
+```
+
+`agents` sits in a component of **29**. Converting it converts all 29, because
+they share connections. "One table at a time" is not a smaller version of this
+job; it is the same job with a misleading name.
+
+Two components are genuinely separable — the user-auth trio and the users pair —
+and could move on their own. They are also the least interesting.
+
+**So the change is atomic and should be scheduled as such.** Reproduce the
+measurement before starting, since the components shift as code moves:
+
+```bash
+python3 scripts/dev/pg-port-components.py
+```
+
+The shape of the work, measured by making `lock()` return the dispatching guard
+and reading the compiler: **168 errors, of which ~92 are real rewrites** — not
+`.any_conn()` insertions, because the raw sites use rusqlite's `[]` params and
+`r.get(0)`, while `AnyConn` wants `sql_params![]`, `r.get_i64(0)`, and returns
+`Result<Option<T>>` rather than `Result<T>`. Every one of those changes error
+handling at the call site.
 
 **The receipts and anchors subsystem must move as one unit.**
 `agent_action_receipts` plus `bitcoin_merkle_anchors` / `solana_merkle_anchors`

@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 /// Statements written in the portable idiom but pinned to SQLite.
 /// Update together with the figure in docs/production-readiness.md.
-const EXPECTED_PINNED: usize = 186;
+const EXPECTED_PINNED: usize = 190;
 /// Tolerance for incidental refactors; a real sweep moves this far more.
 const SLACK: usize = 5;
 
