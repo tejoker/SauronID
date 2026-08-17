@@ -34,18 +34,19 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build && npm test",
-    "test": "npm run build && node dist/test/e2e.test.js && node dist/test/signed-agent.test.js",
+    "test": "npm run build && node dist/test/e2e.test.js && node dist/test/signed-agent.test.js && node dist/test/ring.test.js",
     "test:integration": "npm run build && node dist/test/integration-shim.test.js",
     "test:enforcement": "npm run build && node dist/test/enforcement.test.js",
     "test:stats": "npm run build && node dist/test/local-aggregate.test.js && node dist/test/integrity-proof.test.js && node dist/test/scheduler.test.js && node dist/test/transparent-stats.test.js"
   },
   "dependencies": {
+    "@noble/curves": "^2.3.0",
     "@noble/ed25519": "^2.0.0",
     "@noble/hashes": "^1.7.1",
     "jose": "^5.2.0"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
   }
 }

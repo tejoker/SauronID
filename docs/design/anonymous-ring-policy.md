@@ -56,7 +56,7 @@ shared = a·T   (agent, knows a)   ==   t·A   (operator, knows t)
 Per-ring scalar offset (domain-separated by ring id):
 
 ```
-h_R = H_to_scalar( "SAURON_RING_PSEUDONYM:" ‖ shared.compress() ‖ ring_id )
+h_R = H_to_scalar( "SAURON_RING_PSEUDONYM:" ‖ shared.compress() ‖ "|" ‖ ring_id )
 ```
 
 Per-ring keypair:
