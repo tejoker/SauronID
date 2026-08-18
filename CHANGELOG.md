@@ -174,6 +174,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The dev-only endpoints moved out of `main.rs` into `core/src/dev_endpoints.rs`.**
+  They were 876 of its 3,648 lines — a quarter of the entrypoint, with
+  `dev_leash_demo` alone larger than most modules in the crate — sitting beside
+  `agent_payment_authorize` and `user_auth`, so nothing in the file separated
+  demo scaffolding from the enforcement path. The block needed exactly two items
+  from the rest of `main.rs`, which is why this is a move rather than a
+  refactor. `main.rs` is now 2,777 lines. No behaviour changes: same handlers,
+  same routes, same two-layer gate.
+- `core/tests/dev_endpoints_are_gated.rs` pins that gate now that the handlers
+  live somewhere easier to forget. One test asserts every dev handler still
+  checks `is_development_runtime()`; the other asserts the routes are mounted
+  only inside `if enable_dev_endpoints`, and exactly once — a second
+  unconditional `.route()` would quietly undo the flag. Both were confirmed to
+  fail when the guard they check is removed.
+
+
 - `SAURON_DB_BACKEND=postgres` moves the deployment to PostgreSQL. It previously
   built a pool that almost nothing used: every call site resolved its connection
   to SQLite regardless of configuration. Deployments setting that flag and

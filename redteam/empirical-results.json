@@ -6,7 +6,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=200 valid=false",
-      "latency_ms": 33,
+      "latency_ms": 31,
       "pass": true,
       "dynamic": true
     },
@@ -36,7 +36,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 4,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -76,7 +76,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 5,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true
     },
@@ -106,7 +106,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "N=20 winners=1 already_consumed=19",
-      "latency_ms": 765,
+      "latency_ms": 665,
       "pass": true,
       "dynamic": true,
       "evidence": "Promise.all(20) → 1 × HTTP 200 + 19 × HTTP 409 authorization_already_consumed"
@@ -116,11 +116,11 @@
       "description": "Rate limit on /agent/register: burst 125 requests against limit=60",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "limit=60 sent=125 status_200=78 status_429=47",
-      "latency_ms": 14301,
+      "detail": "limit=60 sent=125 status_200=60 status_429=65",
+      "latency_ms": 12899,
       "pass": true,
       "dynamic": true,
-      "evidence": "47/125 requests returned HTTP 429 (risk::check_and_increment denied)"
+      "evidence": "65/125 requests returned HTTP 429 (risk::check_and_increment denied)"
     },
     {
       "id": "A13",
@@ -138,22 +138,22 @@
       "description": "Audit-log integrity: tampered receipt leaf invalidates merkle inclusion proof",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "receipt_id=ar_032d96e6e… orig_match=false tampered_match=false root_diff=true",
-      "latency_ms": 4,
+      "detail": "receipt_id=ar_101c9696a… orig_match=false tampered_match=false root_diff=true",
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true,
-      "evidence": "tree_size=2 leaf_index=1 batch_root=87bbba3ab507ed24… flipped first nibble → root mismatch"
+      "evidence": "tree_size=2 leaf_index=1 batch_root=e2c6024eb392f208… flipped first nibble → root mismatch"
     },
     {
       "id": "A15",
       "description": "HMAC compare timing oracle: 2000 iters early-diff vs late-diff session sig",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "early_mean=4157.55µs σ=304.20 | late_mean=4170.09µs σ=316.53 | paired Δ=-10.15µs σ=261.52 n=1800 t=1.65 | detector_control_t=2032.59",
-      "latency_ms": 26184,
+      "detail": "early_mean=4181.30µs σ=260.01 | late_mean=4170.79µs σ=249.72 | paired Δ=4.28µs σ=253.09 n=1800 t=0.72 | detector_control_t=2032.59",
+      "latency_ms": 21862,
       "pass": true,
       "dynamic": true,
-      "evidence": "paired |t|=1.65 over 1800 back-to-back pairs, mean Δ=-10.15µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
+      "evidence": "paired |t|=0.72 over 1800 back-to-back pairs, mean Δ=4.28µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
     },
     {
       "id": "A16",
@@ -171,11 +171,11 @@
   "total": 16,
   "skipped": 0,
   "dynamic": 16,
-  "generated_at": "2026-08-18T12:12:38.278Z",
+  "generated_at": "2026-08-18T12:20:49.753Z",
   "provenance": {
-    "commit": "6b52be585ced269b5a07fe8de8022b8738f659ae-dirty",
+    "commit": "16e044b237442c61be5cc08b5c1d8f1a6a0eb751-dirty",
     "enforce_mode": true,
     "db_backend": "sqlite",
-    "base_url": "http://127.0.0.1:3170"
+    "base_url": "http://127.0.0.1:3180"
   }
 }
