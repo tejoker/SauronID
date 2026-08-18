@@ -18,9 +18,19 @@ sqlite_tables() {
     | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u
 }
 
-pg_tables() {
-  grep -hoiE 'create table (if not exists )?[a-z_][a-z0-9_]*' migrations/postgres/*.sql \
+# Migrations are append-only, so a table that a later migration DROPs still has
+# its CREATE text in an earlier file. Subtract the drops, or every future cleanup
+# migration reports a false mismatch against the SQLite schema it just matched.
+pg_dropped() {
+  grep -hoiE 'drop table (if exists )?[a-z_][a-z0-9_]*' migrations/postgres/*.sql \
     | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u
+}
+
+pg_tables() {
+  comm -23 \
+    <(grep -hoiE 'create table (if not exists )?[a-z_][a-z0-9_]*' migrations/postgres/*.sql \
+        | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u) \
+    <(pg_dropped)
 }
 
 only_sqlite=$(comm -23 <(sqlite_tables) <(pg_tables))
