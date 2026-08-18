@@ -477,8 +477,8 @@ schemas/               Shared JSON schemas + OpenAPI spec (schemas/openapi.yaml)
 transparent-zk/        RISC Zero guests (stats + action-policy), journal types, customer
                        verifier, pinned image-ids.json, and verify.sh. Self-contained and
                        published on its own so the proofs stay verifiable without this repo.
-                       NOTE: the stats guest's submission route left with the cohort
-                       subsystem; only the action-policy guest is on a live path
+                       Both guests are on live paths: action-policy via
+                       /v1/proofs/transparent/verify, stats via /v1/stats/submit-transparent
 site/                  Single static landing page (index.html)
 
 scripts/dev/           Dev orchestration shell scripts (quickstart, launch, start, ...)

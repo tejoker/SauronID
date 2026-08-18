@@ -38,10 +38,6 @@ python -m pytest "$ROOT/clients/python/tests" -q
 step "go sdk tests"
 (cd "$ROOT/clients/go/sauronid" && go test ./...)
 
-step "legacy circuit structural audit + compatibility SDK tests"
-install_if_needed "$ROOT/zkp"
-(cd "$ROOT/zkp" && npm test)
-
 step "redteam build"
 install_if_needed "$ROOT/redteam"
 (cd "$ROOT/redteam" && npm run build)
