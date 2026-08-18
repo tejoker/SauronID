@@ -14,6 +14,15 @@ core:
   image:
     repository: sauronid-backend
     tag: latest
+    # Set to a sha256:... digest to pin the exact image and ignore `tag`. A tag
+    # is mutable and can be repointed after you verified it; a digest cannot.
+    # Verify before pinning, then pin what you verified:
+    #   cosign verify --certificate-oidc-issuer \
+    #     https://token.actions.githubusercontent.com \
+    #     --certificate-identity-regexp \
+    #     '^https://github.com/<owner>/<repo>/\.github/workflows/' \
+    #     ghcr.io/<owner>/<repo>/core@sha256:...
+    digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
   service:
@@ -54,6 +63,8 @@ dashboard:
   image:
     repository: sauronid-dashboard
     tag: latest
+    # As above: a digest here overrides `tag`.
+    digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
   service:

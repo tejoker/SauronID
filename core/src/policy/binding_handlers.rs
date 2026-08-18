@@ -18,6 +18,8 @@
 //! the `Repo::Postgres` arm grows a `bind_agent_policy_tenant` helper
 //! (deferred to S11.6 alongside per-tenant batching).
 
+use crate::any_db::AnyRowGet;
+use crate::sql_params;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,7 +27,6 @@ use axum::{
     extract::{Extension, Path, State},
     response::Json,
 };
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::DbHandle;
@@ -134,16 +135,15 @@ pub async fn bind_policy_with_handles(
         )));
     }
     {
-        let db = db_handle
+        let mut db = db_handle
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
-        let exists: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
-                params![agent_id, tenant_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| AppError::Internal(format!("agent lookup: {e}")))?;
+        let exists: i64 = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
+            sql_params![&agent_id, &tenant_id],
+            |r| r.get(0),
+            0,
+        );
         if exists == 0 {
             return Err(AppError::BadRequest(format!(
                 "agent_id {agent_id} not found in this tenant"
@@ -157,18 +157,19 @@ pub async fn bind_policy_with_handles(
         .unwrap_or(0);
 
     {
-        let db = db_handle
+        let mut db = db_handle
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
-        db.execute(
-            "INSERT INTO agent_policy_bindings (tenant_id, agent_id, policy_id, bound_at) \
+        db.any_conn()
+            .execute(
+                "INSERT INTO agent_policy_bindings (tenant_id, agent_id, policy_id, bound_at) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(tenant_id, agent_id) DO UPDATE SET \
                 policy_id = excluded.policy_id, \
                 bound_at  = excluded.bound_at",
-            params![tenant_id, agent_id, body.policy_id, now],
-        )
-        .map_err(|e| AppError::Internal(format!("binding upsert: {e}")))?;
+                sql_params![&tenant_id, &agent_id, &body.policy_id, &now],
+            )
+            .map_err(|e| AppError::Internal(format!("binding upsert: {e}")))?;
     }
 
     Ok(Json(PolicyBindingRecord {
@@ -213,17 +214,19 @@ pub async fn get_binding_with_handle(
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    let db = db_handle
+    let mut db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
     let row = db
+        .any_conn()
         .query_row(
             "SELECT policy_id, bound_at FROM agent_policy_bindings \
              WHERE tenant_id = ?1 AND agent_id = ?2",
-            params![tenant_id, agent_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            sql_params![&tenant_id, &agent_id],
+            |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)),
         )
-        .ok();
+        .ok()
+        .flatten();
     match row {
         Some((policy_id, bound_at)) => Ok(Json(PolicyBindingRecord {
             agent_id: agent_id.to_string(),
@@ -271,14 +274,15 @@ pub async fn unbind_policy_with_handle(
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    let db = db_handle
+    let mut db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
-    db.execute(
-        "DELETE FROM agent_policy_bindings WHERE tenant_id = ?1 AND agent_id = ?2",
-        params![tenant_id, agent_id],
-    )
-    .map_err(|e| AppError::Internal(format!("binding delete: {e}")))?;
+    db.any_conn()
+        .execute(
+            "DELETE FROM agent_policy_bindings WHERE tenant_id = ?1 AND agent_id = ?2",
+            sql_params![&tenant_id, &agent_id],
+        )
+        .map_err(|e| AppError::Internal(format!("binding delete: {e}")))?;
     Ok(Json(UnbindResponse { unbound: true }))
 }
 
@@ -297,19 +301,18 @@ pub fn lookup_bound_policy_id(
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    let db = db_handle
+    let mut db = db_handle
         .lock()
         .map_err(|_| AppError::Internal("db lock".into()))?;
-    let row: rusqlite::Result<String> = db.query_row(
+    let row: Result<Option<String>, String> = db.any_conn().query_row(
         "SELECT policy_id FROM agent_policy_bindings WHERE tenant_id = ?1 AND agent_id = ?2",
-        params![tenant_id, agent_id],
-        |r| r.get::<_, String>(0),
+        sql_params![&tenant_id, &agent_id],
+        |r| r.get::<String>(0),
     );
-    match row {
-        Ok(pid) => Ok(Some(pid)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(AppError::Internal(format!("binding lookup: {e}"))),
-    }
+    // `query_row` distinguishes the two cases itself: Ok(None) means no binding,
+    // Err means the lookup failed. The old code had to match
+    // rusqlite::Error::QueryReturnedNoRows to tell them apart.
+    row.map_err(|e| AppError::Internal(format!("binding lookup: {e}")))
 }
 
 #[cfg(test)]
@@ -322,6 +325,7 @@ mod tests {
     use crate::policy::compiler::compile;
     use crate::policy::parser::parse;
     use crate::policy::PolicyStore;
+    use rusqlite::params;
 
     const FX_MINIMAL: &str = include_str!("../../../schemas/fixtures/policy_minimal.yaml");
 
@@ -346,7 +350,8 @@ mod tests {
     }
 
     fn seed_agent(db: &Arc<DbHandle>, tenant_id: &str, agent_id: &str) {
-        let conn = db.lock().unwrap();
+        // lock_sqlite: raw rusqlite fixture against the SQLite handle under test.
+        let conn = db.lock_sqlite().unwrap();
         conn.execute(
             "INSERT INTO agents
              (agent_id, human_key_image, agent_checksum, issued_at, expires_at, tenant_id)

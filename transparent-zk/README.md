@@ -20,29 +20,50 @@ The reviewed stats guest proves all of the following in one statement:
 
 ## Build and publish the image ID
 
-Install the version-pinned RISC Zero 3.0 toolchain, then build:
+The published IDs come from a containerised build, and only that build
+reproduces them. A guest ELF compiled directly on your machine embeds that
+machine's absolute paths, so its image ID changes with the directory it was
+built in — same source, same toolchain, different ID. Docker builds the guest
+inside `risczero/risc0-guest-builder:r0.1.88.0` at a fixed path, which is what
+makes the ID a property of the program instead of a property of one laptop.
+
+Requires Docker with Buildx (any recent Docker Desktop or docker-ce; GitHub's
+`ubuntu-latest` has both), plus the pinned toolchain — risc0-build 3.0.5 checks
+for it before dispatching to Docker, even though the container's compiler is the
+one that builds the ELF:
 
 ```sh
 rzup install rust 1.97.0
 rzup install cargo-risczero 3.0.6
-cargo build --locked --release --manifest-path transparent-zk/Cargo.toml
-cargo run --locked --release --manifest-path transparent-zk/Cargo.toml --bin sauron-transparent-prover -- --image-ids
+
+SAURON_ZK_DOCKER_BUILD=1 cargo run --locked \
+  --manifest-path transparent-zk/Cargo.toml \
+  --bin sauron-transparent-prover -- --image-ids
 ```
 
-The generated `SAURON_STATS_GUEST_ID` is the cryptographic identity of the
-compiled guest. Publish the source, reproducible build instructions and image
-ID. Configure production with both reviewed program IDs:
+That must print, byte for byte, the reviewed program IDs:
 
 ```json
 {
-  "sauron-stats-v1": "dd4bf48ed1cc4d62d51b153075a438048d03e832c3a8d50fdf4db9c0240a8060",
-  "sauron-action-policy-v1": "4e7ad7997c31f4a4a9e870e40f5a059306803fca724e14d2e3fa7bf90cdd9aa5"
+  "sauron-stats-v1": "fb43470bbfef04746b8c6f72899555ae58698378823fa18b7f2904e8be3da121",
+  "sauron-action-policy-v1": "729a9ffb74f51a623c825a9630b7a49f8df1441d66e57c3d4102d75cb98d5c7a"
 }
 ```
 
-The build metadata and lock-file digests are committed in `image-ids.json`.
-Rebuild and compare rather than trusting the manifest. Both IDs are generated
-from source in this directory. The action-policy guest
+`scripts/ci/verify-transparent-zk.sh` runs exactly this and fails on any
+difference. Rebuild and compare rather than trusting the manifest.
+
+Without `SAURON_ZK_DOCKER_BUILD=1` the guest builds locally with that same
+toolchain — much faster, fine for development, and it will NOT match the pins
+above.
+
+The builder image ships rustc 1.88, so the two guest lockfiles are held to crate
+versions that compile under it. Running `cargo update` in a guest workspace can
+raise an MSRV past that and break the containerised build; the error names the
+crate, and `cargo update -p <crate> --precise <older>` fixes it.
+
+The build metadata and lock-file digests are committed in `image-ids.json`. Both
+IDs are generated from source in this directory. The action-policy guest
 supports complete-batch action allowlists, total-amount bounds, count ranges,
 presence/absence checks, and time windows.
 

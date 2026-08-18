@@ -11,6 +11,134 @@ Minimum requirements for the reverse proxy:
 - Strict `Host` header validation matching `SAURON_ALLOWED_ORIGINS`
 - Forward `X-Forwarded-For` so the rate limiter sees real client IPs (read by `risk.rs`)
 - Connection timeout ≤30s (per-call signature window is 60s; longer connections add no value)
+- **Must not rewrite the request line** — see below. This is the one that bites.
+
+## Database TLS
+
+Ingress TLS (above) and database TLS are separate problems; terminating one does
+nothing for the other. The link from core to Postgres carries owner mandates,
+action receipts and session material, so on anything but a loopback socket it
+must be encrypted.
+
+It is configured entirely through `sslmode` in `DATABASE_URL`:
+
+| `sslmode` | Behaviour |
+|---|---|
+| `disable` | No TLS. Local development only. |
+| absent / `prefer` | TLS when the server offers it, plaintext otherwise. |
+| `require` | TLS mandatory, **chain and hostname verified**. |
+| `verify-ca`, `verify-full` | Accepted; normalised to `require`. |
+
+`require` is stricter here than in libpq. libpq's `require` encrypts without
+checking who is on the other end; core uses rustls, which verifies the chain
+against the trust store and matches the hostname either way. So `require`,
+`verify-ca` and `verify-full` all give you libpq's `verify-full`, and the
+normalisation of the latter two loses nothing.
+
+**Production deployments should set `sslmode=require` explicitly.** `prefer`
+silently accepts plaintext if the server does not offer TLS, which is the state
+a misconfigured server is in.
+
+Roots come from the **system trust store**, for both the async (sqlx) and
+blocking pools. A private or enterprise CA is installed the normal way
+(`update-ca-certificates`), or pointed at with `SSL_CERT_FILE`/`SSL_CERT_DIR`:
+
+```bash
+SSL_CERT_FILE=/etc/ssl/private/internal-ca.crt \
+DATABASE_URL='postgres://sauronid:...@db.internal:5432/sauronid?sslmode=require' \
+SAURON_DB_BACKEND=postgres sauron-core
+```
+
+Startup fails closed. If `SAURON_DB_BACKEND=postgres` is set and the pool cannot
+be built — bad URL, unverifiable certificate, server refusing TLS under
+`require` — the process exits with `[FATAL]` rather than starting. It used to
+log and continue on SQLite, which was worse than a crash: the repository layer
+builds its own pool from the same `DATABASE_URL` and would still be on Postgres,
+so the process served two databases at once and split writes between them.
+
+Look for this line at boot to confirm the mode in effect:
+
+```
+INFO sauron::db: postgres pool ready pool_size=16 ssl_mode=require
+```
+
+## Reverse proxy requirements
+
+Read this before you put anything in front of the core. It is the most common
+cause of a deployment that worked locally and returns `401 call_sig_invalid`
+the moment it goes behind a proxy.
+
+The call-signature payload binds `target_uri` as the **exact bytes** of the
+request line's path and query, with no normalisation on either side. That is
+deliberate: canonicalising a URI is a notorious source of client/server
+disagreement, and a signature over the literal bytes cannot disagree. The cost
+is that any intermediary which *rewrites* those bytes invalidates the signature
+the client computed over the original.
+
+Rewrites that break every signed call:
+
+| Rewrite | Example | Who does it by default |
+|---|---|---|
+| Collapsing duplicate slashes | `/agent//egress/log` → `/agent/egress/log` | nginx (`merge_slashes on`) |
+| Decoding percent-escapes in the path | `/agent/a%2Fb` → `/agent/a/b` | nginx, Apache |
+| Re-encoding unreserved characters | `/agent/a~b` → `/agent/a%7Eb` | some CDNs and WAFs |
+| Resolving dot segments | `/agent/x/../egress/log` → `/agent/egress/log` | nginx, Envoy |
+| Sorting, deduplicating or stripping query parameters | `?b=2&a=1` → `?a=1&b=2` | caching CDNs |
+| Appending or removing a trailing slash | `/agent/token` → `/agent/token/` | many ingress controllers |
+
+TLS termination, header addition, and load balancing are all fine. Only the
+request line is sensitive.
+
+### nginx
+
+```nginx
+# Off, so nginx forwards the path exactly as received.
+merge_slashes off;
+
+location / {
+    # $request_uri is the raw, un-decoded original. Using $uri here instead
+    # would forward nginx's normalised copy and break every signature.
+    proxy_pass http://127.0.0.1:3001$request_uri;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+### Caddy
+
+Caddy's `reverse_proxy` preserves the request line as received, so the default
+is already correct. Do not add `uri strip_prefix`, `uri replace`, or
+`rewrite` on the proxied route — each of those edits the signed bytes.
+
+```caddy
+core.example.com {
+    reverse_proxy 127.0.0.1:3001
+}
+```
+
+### Envoy / Istio
+
+Set `normalize_path: false` and `merge_slashes: false` on the HTTP connection
+manager. Both default to normalising.
+
+### AWS ALB, Cloudflare, other managed edges
+
+Managed edges vary by configuration and change behaviour between versions, so
+verify rather than assume. The check takes one command against a deployed
+instance — a signed call whose path contains a character a normaliser would
+touch:
+
+```bash
+# Should return the same status as the same call without the %2F.
+# A 401 with code "call_sig_invalid" here means the edge is rewriting the path.
+curl -i "https://core.example.com/agent/egress/log?probe=a%2Fb"   # + your signed headers
+```
+
+If you cannot stop an edge from normalising, terminate TLS at something that
+does not (Caddy, or nginx configured as above) and put that between the edge
+and the core.
 
 ## Deployment profiles
 
@@ -32,8 +160,6 @@ export SAURON_REQUIRE_CALL_SIG=1                           # MANDATORY in produc
 # export SAURON_ACCEPT_DPOP_IN_PROD=1                      # required acknowledgment before SAURON_ACCEPT_DPOP takes effect in production (fail-closed otherwise)
 export SAURON_REQUIRE_AGENT_TYPE=1                         # MANDATORY in production — /agent/register must carry agent_type + checksum_inputs (server-computed digest)
 export SAURON_POLICY_ENFORCEMENT_MODE=enforce              # MANDATORY in production — bound policy denies short-circuit action endpoints with 403
-export SAURON_DISABLE_BANK_KYC=1
-export SAURON_DISABLE_USER_KYC=1
 export SAURON_DISABLE_ZKP=1
 export SAURON_DISABLE_COMPLIANCE=1
 export SAURON_BITCOIN_ANCHOR_PROVIDER=opentimestamps       # real Bitcoin anchoring, no key custody
@@ -42,6 +168,10 @@ export SAURON_SOLANA_RPC_URL=https://api.devnet.solana.com
 export SAURON_SOLANA_NETWORK=devnet
 export SAURON_SOLANA_KEYPAIR_PATH=/etc/sauronid/solana-keypair.json
 export SAURON_ACCEPT_SINGLE_NODE_SQLITE=1                  # acknowledge single-node DB until Postgres swap
+# Leave the following unset unless you specifically need it.
+# export SAURON_NITRO_ALLOW_STUB=1                         # lets the `nitro-enclave` binary start WITHOUT real NSM access, in which
+#                                                          # case every attestation document it emits is a placeholder no production
+#                                                          # verifier accepts. Local plumbing work only — never a deployment.
 
 # Sprint 11 multi-tenancy (see docs/multi-tenancy.md). SauronID is
 # single-operator multi-tenant out-of-the-box: every legacy request lands
@@ -56,12 +186,18 @@ export SAURON_ACCEPT_SINGLE_NODE_SQLITE=1                  # acknowledge single-
 
 ### Profile B: Full identity stack (legacy / regulated deployments)
 
-Everything in profile A plus optional KYC consent flow, sanctions/PEP screening (operator wires provider), ZKP credentials.
+Everything in profile A plus sanctions/PEP screening (operator wires provider)
+and ZKP credentials.
+
+> The bank-KYC ingest and end-user KYC consent flow (`/bank/register`,
+> `/register`, `/kyc/*`, `/agent/kyc/consent`) were **removed**. They were the
+> last of the 2025 banking pivot, disabled by default, and reachable only when
+> an operator explicitly turned them back on. Nothing replaces them: SauronID
+> binds agents, not human identities. Deployments that need human KYC keep it in
+> their own IdP.
 
 ```bash
 # all of profile A, then:
-unset SAURON_DISABLE_BANK_KYC
-unset SAURON_DISABLE_USER_KYC
 unset SAURON_DISABLE_ZKP
 unset SAURON_DISABLE_COMPLIANCE
 export SAURON_COMPLIANCE_JURISDICTION_MODE=enforce
@@ -149,7 +285,7 @@ Suggested alerts:
 | Alert | Condition |
 |---|---|
 | Spike in 401 on `/agent/payment/authorize` | rate > 10/min sustained 5 min — possible call-sig brute force |
-| Spike in 409 on `/kyc/retrieve` or `/merchant/payment/consume` | rate > 1/min sustained 1 min — possible TOCTOU race attempt |
+| Spike in 409 on `/agent/payment/consume` | rate > 1/min sustained 1 min — possible TOCTOU race attempt |
 | OTS upgrader silent | `bitcoin_merkle_anchors WHERE ots_upgraded=0 AND created_at < NOW() - 24h` count > 0 — calendar may be down |
 | GC silent | No `[sauron::gc] pruned` log line in 30 min — task may have crashed |
 
@@ -177,6 +313,43 @@ Agents may rotate at any time:
 3. Agent stops using the old A-JWT; outstanding tokens expire naturally.
 
 Recommended cadence: per process restart, or weekly.
+
+### Owner sessions (leaked-session response)
+
+The owner session (`x-sauron-session`, one hour, stateless HMAC) authorises
+`POST /agent/register` and `POST /agent/{agent_id}/checksum/update`. Whoever
+holds one can register a *new* agent with an intent it writes itself, including
+its own egress allowlist and PoP keypair. Treat a leaked owner session as an
+agent-authority compromise, not as an ordinary web session.
+
+Cut the owner off:
+
+```bash
+curl -sS -X POST \
+  -H "x-admin-key: $SAURON_ADMIN_KEY" \
+  -H "x-tenant-id: $TENANT" \
+  "$SAURON_URL/admin/users/$KEY_IMAGE/revoke_sessions"
+# {"revoked":true,"key_image":"...","session_epoch":1}
+```
+
+This bumps the owner's `session_epoch`, which is inside the signed token
+payload and is compared against the stored value on every request — so every
+session already issued for that key image stops authenticating on its next use,
+not in an hour.
+
+What it does **not** do:
+
+- **Already-registered agents keep working.** They authenticate with their own
+  proof-of-possession keys, not with the owner session. Revoke those
+  individually with `POST /admin/agents/{agent_id}/revoke`.
+- **It does not un-register anything the attacker already created.** Audit
+  `GET /admin/agents` for agents registered under that owner since the
+  suspected leak, and revoke them too.
+
+The owner signs in again to get a session under the new epoch; nothing needs to
+be re-onboarded. A tenant-locked admin may only revoke owners bound to its own
+tenant (via `user_auth_tenant_bindings`); reaching another tenant's owner
+requires a cross-tenant super-admin.
 
 ### Admin key
 

@@ -87,7 +87,7 @@ This doc complements `docs/threat-model.md`. The threat model says *what* attack
 | Assumption | Soundness and zero knowledge of RISC Zero's native STARK/FRI construction in the Fiat-Shamir random-oracle model; correct guest and verifier implementations. No per-circuit trusted setup. |
 | Source | RISC Zero proof-system specification and implementation pinned to `risc0-zkvm = 3.0.5`. |
 | Used for | Production stats and action-policy statements in `transparent-zk/`, verified by `core/src/transparent_proof.rs` or the standalone client verifier. |
-| Public identity | Clients pin the compiled guest image IDs in `transparent-zk/image-ids.json` and can reproduce them from committed source and lock files. |
+| Public identity | Clients pin the compiled guest image IDs in `transparent-zk/image-ids.json` and reproduce them from committed source and lock files with `SAURON_ZK_DOCKER_BUILD=1`, which builds the guest inside the pinned `risczero/risc0-guest-builder` image. A guest built outside that container embeds host paths and yields a different, non-comparable ID. |
 | Fail-closed rule | Production accepts native `Succinct` receipts only. Composite, Groth16-compressed, fake, unknown, wrong-program and wrong-checkpoint receipts are rejected. |
 | If broken | A prover may forge the computation statement or leak witness data. External Bitcoin anchoring still timestamps the committed root but cannot rescue a forged computation proof. |
 | Scope limit | The guest proves computation over the complete finalized receipt batch. It cannot prove that real-world source data was honest or that an event omitted before ingestion occurred. |

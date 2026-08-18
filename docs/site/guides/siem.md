@@ -15,4 +15,4 @@ be re-verified against the chain at any time.
 
 Full shipper configs (Splunk, Elastic, Vector) and the pull-not-push
 rationale:
-[`docs/siem-integration.md`](https://github.com/tejoker/HackNation2026/blob/main/docs/siem-integration.md).
+[`docs/siem-integration.md`](https://github.com/tejoker/SauronID/blob/main/docs/siem-integration.md).

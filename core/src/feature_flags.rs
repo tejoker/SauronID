@@ -14,8 +14,6 @@
 //!
 //! | Surface          | Disable env                       | Effect when disabled                                |
 //! |------------------|-----------------------------------|------------------------------------------------------|
-//! | Bank KYC ingest  | `SAURON_DISABLE_BANK_KYC=1`       | `/bank/register`, `/register/bank` return 503        |
-//! | End-user KYC     | `SAURON_DISABLE_USER_KYC=1`       | `/kyc/request`, `/kyc/consent`, `/kyc/retrieve` 503  |
 //! | ZKP issuer       | `SAURON_DISABLE_ZKP=1`            | `/zkp/proof_material`, `/user/credential`,           |
 //! |                  |                                   | `/agent/vc/issue` return 503; issuer URL not contacted|
 //! | Compliance       | `SAURON_DISABLE_COMPLIANCE=1`     | jurisdiction + sanctions + PEP gates become no-ops   |
@@ -32,13 +30,10 @@ fn is_disabled(env_var: &str) -> bool {
     }
 }
 
-pub fn bank_kyc_enabled() -> bool {
-    !is_disabled("SAURON_DISABLE_BANK_KYC")
-}
-
-pub fn user_kyc_enabled() -> bool {
-    !is_disabled("SAURON_DISABLE_USER_KYC")
-}
+// `bank_kyc_enabled` / `user_kyc_enabled` lived here until the routes they
+// gated — /bank/register, /register, /kyc/* — were deleted. A flag that can no
+// longer change any behaviour is worse than no flag: an operator reads it in
+// /admin/health/detailed and believes a surface exists to be turned off.
 
 pub fn zkp_issuer_enabled() -> bool {
     !is_disabled("SAURON_DISABLE_ZKP")

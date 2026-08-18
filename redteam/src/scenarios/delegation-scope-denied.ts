@@ -1,4 +1,4 @@
-import { CoreApi, randSuffix } from "../core-api";
+import { CoreApi, createPopKeyPair, randSuffix } from "../core-api";
 
 /** Child scopes must be subset of parent; out-of-scope delegation → 400. */
 export async function scenarioDelegationScopeDenied(
@@ -6,6 +6,8 @@ export async function scenarioDelegationScopeDenied(
     bankSite: string,
     label: string
 ): Promise<void> {
+    const parentPop = createPopKeyPair();
+    const childPop = createPopKeyPair();
     const sfx = `${label}-${randSuffix()}`;
     const retail = `redteam-sub-${sfx}`;
     await api.ensureClient(bankSite, "BANK");
@@ -34,8 +36,8 @@ export async function scenarioDelegationScopeDenied(
         intent_json: JSON.stringify({ scope: ["prove_age"] }),
         public_key_hex: parentKeys.public_key_hex,
         ring_key_image_hex: parentKeys.ring_key_image_hex,
-        pop_jkt: `redteam-parent-pop-${sfx}`,
-        pop_public_key_b64u: "redteam-parent-pop-public-key",
+        pop_jkt: parentPop.thumbprint,
+        pop_public_key_b64u: parentPop.publicKeyB64u,
         ttl_secs: 3600,
     });
     if (parent.status !== 200) throw new Error(`parent register ${parent.status}: ${parent.raw}`);
@@ -48,8 +50,8 @@ export async function scenarioDelegationScopeDenied(
         intent_json: JSON.stringify({ scope: ["payment_initiation"] }),
         public_key_hex: childKeys.public_key_hex,
         ring_key_image_hex: childKeys.ring_key_image_hex,
-        pop_jkt: `redteam-child-pop-${sfx}`,
-        pop_public_key_b64u: "redteam-child-pop-public-key",
+        pop_jkt: childPop.thumbprint,
+        pop_public_key_b64u: childPop.publicKeyB64u,
         ttl_secs: 3600,
         parent_agent_id: parentId,
     });

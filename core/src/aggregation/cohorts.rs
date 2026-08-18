@@ -18,10 +18,11 @@
 //!                                                  └─► publish::publish_cohort
 //! ```
 
+use crate::any_db::AnyRowGet;
+use crate::sql_params;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::DbHandle;
@@ -220,41 +221,38 @@ impl CohortStore {
     /// Load all rows from `cohort_definitions` into the in-memory map.
     /// Returns the number of cohorts loaded.
     pub fn hydrate(&self) -> Result<usize, CohortError> {
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| CohortError::Storage(e.to_string()))?;
-        let mut stmt = conn
-            .prepare(
+        let rows = conn
+            .any_conn()
+            .query_map(
                 "SELECT cohort_id, label, vendor, sector, tenant_ids_json,
                         k_anonymity_threshold, epsilon_per_metric, delta,
                         cycle_seconds, epsilon_cap_per_cycle, delta_cap_per_cycle
                  FROM cohort_definitions",
+                sql_params![],
+                |r| {
+                    let tenant_json: String = r.get(4)?;
+                    let k_int: i64 = r.get(5)?;
+                    Ok((
+                        r.get::<String>(0)?,
+                        r.get::<String>(1)?,
+                        r.get::<Option<String>>(2)?,
+                        r.get::<Option<String>>(3)?,
+                        tenant_json,
+                        k_int,
+                        r.get::<f64>(6)?,
+                        r.get::<f64>(7)?,
+                        r.get::<Option<i64>>(8)?,
+                        r.get::<Option<f64>>(9)?,
+                        r.get::<Option<f64>>(10)?,
+                    ))
+                },
             )
             .map_err(|e| CohortError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| {
-                let tenant_json: String = r.get(4)?;
-                let k_int: i64 = r.get(5)?;
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    tenant_json,
-                    k_int,
-                    r.get::<_, f64>(6)?,
-                    r.get::<_, f64>(7)?,
-                    r.get::<_, Option<i64>>(8)?,
-                    r.get::<_, Option<f64>>(9)?,
-                    r.get::<_, Option<f64>>(10)?,
-                ))
-            })
-            .map_err(|e| CohortError::Storage(e.to_string()))?;
-        let collected: Vec<_> = rows
-            .collect::<Result<_, _>>()
-            .map_err(|e| CohortError::Storage(e.to_string()))?;
-        drop(stmt);
+        let collected = rows;
         drop(conn);
 
         let mut map = self.inner.write().map_err(|_| CohortError::Lock)?;
@@ -310,12 +308,13 @@ impl CohortStore {
         let tenants_json = serde_json::to_string(&def.tenant_ids)
             .map_err(|e| CohortError::Storage(format!("tenant_ids json: {e}")))?;
         {
-            let conn = self
+            let mut conn = self
                 .db
                 .lock()
                 .map_err(|e| CohortError::Storage(e.to_string()))?;
-            conn.execute(
-                "INSERT INTO cohort_definitions
+            conn.any_conn()
+                .execute(
+                    "INSERT INTO cohort_definitions
                    (cohort_id, label, vendor, sector, tenant_ids_json,
                     k_anonymity_threshold, epsilon_per_metric, delta,
                     created_at, updated_at,
@@ -333,22 +332,22 @@ impl CohortStore {
                    cycle_seconds = excluded.cycle_seconds,
                    epsilon_cap_per_cycle = excluded.epsilon_cap_per_cycle,
                    delta_cap_per_cycle = excluded.delta_cap_per_cycle",
-                params![
-                    def.cohort_id,
-                    def.label,
-                    def.vendor,
-                    def.sector,
-                    tenants_json,
-                    def.k_anonymity_threshold as i64,
-                    def.epsilon_per_metric,
-                    def.delta,
-                    now,
-                    def.cycle_seconds.map(|v| v as i64),
-                    def.epsilon_cap_per_cycle,
-                    def.delta_cap_per_cycle,
-                ],
-            )
-            .map_err(|e| CohortError::Storage(e.to_string()))?;
+                    sql_params![
+                        &def.cohort_id,
+                        &def.label,
+                        &def.vendor,
+                        &def.sector,
+                        &tenants_json,
+                        def.k_anonymity_threshold as i64,
+                        &def.epsilon_per_metric,
+                        &def.delta,
+                        &now,
+                        def.cycle_seconds.map(|v| v as i64),
+                        &def.epsilon_cap_per_cycle,
+                        &def.delta_cap_per_cycle,
+                    ],
+                )
+                .map_err(|e| CohortError::Storage(e.to_string()))?;
         }
         let mut map = self.inner.write().map_err(|_| CohortError::Lock)?;
         map.insert(def.cohort_id.clone(), def);
@@ -374,15 +373,16 @@ impl CohortStore {
     /// is absent (matches the policy store contract).
     pub fn delete(&self, id: &str) -> Result<(), CohortError> {
         {
-            let conn = self
+            let mut conn = self
                 .db
                 .lock()
                 .map_err(|e| CohortError::Storage(e.to_string()))?;
-            conn.execute(
-                "DELETE FROM cohort_definitions WHERE cohort_id = ?1",
-                params![id],
-            )
-            .map_err(|e| CohortError::Storage(e.to_string()))?;
+            conn.any_conn()
+                .execute(
+                    "DELETE FROM cohort_definitions WHERE cohort_id = ?1",
+                    sql_params![&id],
+                )
+                .map_err(|e| CohortError::Storage(e.to_string()))?;
         }
         let mut map = self.inner.write().map_err(|_| CohortError::Lock)?;
         map.remove(id);

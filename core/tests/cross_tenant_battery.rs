@@ -137,7 +137,7 @@ fn cross_tenant_smoke_policy_evaluate_spend_audit() {
     ensure_audit_reports_schema(&db).expect("schema");
     // Seed a row directly under acme_corp.
     {
-        let conn = db.lock().unwrap();
+        let conn = db.lock_sqlite().unwrap();
         conn.execute(
             "INSERT INTO audit_reports
                 (report_id, tenant_id, agent_ids_json, period_start, period_end,

@@ -12,7 +12,7 @@ import (
 	"log"
 	"os"
 
-	sauronid "github.com/sauronid/go-sdk"
+	sauronid "github.com/tejoker/SauronID/clients/go/sauronid"
 )
 
 const coreURL = "http://localhost:3001"

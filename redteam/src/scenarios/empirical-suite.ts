@@ -13,8 +13,43 @@
 
 import { generateKeyPairSync, randomBytes, createHash, sign as edSign } from "crypto";
 import { writeFileSync } from "fs";
+import { execFileSync } from "child_process";
 import { CoreApi, randSuffix, createPopKeyPair, signPopJws } from "../core-api";
 import { signCallV2 } from "../call-sig-v2";
+
+/**
+ * Revision the suite ran against, for the report's provenance block.
+ *
+ * Prefers the CI-supplied SHA so a container without a `.git` directory still
+ * records one. Returns "unknown" rather than throwing: a missing commit should
+ * weaken the evidence, never fail the run that produced it.
+ *
+ * A dirty tree gets a `-dirty` suffix, and that suffix is the point. A bare SHA
+ * on a run whose binary included uncommitted edits is not merely imprecise, it
+ * is wrong in the direction that matters: a reader checks out that commit,
+ * cannot reproduce the result, and has no way to tell whether the difference is
+ * their environment or a diff that was never published.
+ */
+function git(args: string[]): string | null {
+    try {
+        return execFileSync("git", args, {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+    } catch {
+        return null;
+    }
+}
+
+function gitCommit(): string {
+    const fromCi = process.env.GITHUB_SHA || process.env.CI_COMMIT_SHA;
+    // CI checks out a clean tree at a known ref, so its SHA needs no suffix.
+    if (fromCi) return fromCi;
+    const head = git(["rev-parse", "HEAD"]);
+    if (!head) return "unknown";
+    const dirty = git(["status", "--porcelain"]);
+    return dirty ? `${head}-dirty` : head;
+}
 
 interface TestResult {
     id: string;
@@ -130,6 +165,186 @@ function signCallHeaders(opts: {
         timestampMs: opts.ts,
         nonce: opts.nonce,
     });
+}
+
+/**
+ * Provision an agent and drive the full ceremony that mints ONE real payment
+ * authorization: PoP challenge, call-sig-signed action challenge, ring signature
+ * over that challenge, then `/agent/payment/authorize`.
+ *
+ * Extracted because two attacks need a genuine authorization and the ceremony is
+ * ~80 lines of exact ordering. A11 races the authorization; A14 anchors the
+ * receipt it produces.
+ */
+async function mintPaymentAuthorization(
+    api: CoreApi,
+    label: string
+): Promise<{
+    agentId: string;
+    ajwt: string;
+    popPrivateKey: any;
+    configDigest: string;
+    authorizationId: string;
+    receiptId?: string;
+    sfx: string;
+}> {
+    const sfx = `${label}-${randSuffix()}`;
+    const retail = `redteam-emp-${sfx}`;
+    await api.ensureClient(bankSite, "BANK");
+    await api.ensureClient(retail, "ZKP_ONLY");
+    await api.devBuyTokens(retail, 4);
+
+    const email = `emp_${sfx}@sauron.local`;
+    const password = `Pass!${sfx}`;
+    await api.devRegisterUser({
+        site_name: bankSite,
+        email,
+        password,
+        first_name: "Pay",
+        last_name: "Auth",
+        date_of_birth: "1990-01-01",
+        nationality: "FRA",
+    });
+    const auth = await api.userAuth(email, password);
+    const keys = api.agentActionKeygen();
+    const pop = createPopKeyPair();
+    const merchantId = `mch-${sfx}`;
+    const amountMinor = 50;
+    const currency = "EUR";
+
+    const reg = await api.agentRegister(auth.session, {
+        human_key_image: auth.key_image,
+        agent_type: "llm",
+        checksum_inputs: {
+            model_id: "claude-opus-4-7",
+            system_prompt: `Payment agent ${sfx}`,
+            tools: ["payment_initiation"],
+        },
+        agent_checksum: "",
+        intent_json: JSON.stringify({
+            scope: ["payment_initiation"],
+            maxAmount: amountMinor / 100,
+            currency,
+            constraints: { merchant_allowlist: [merchantId] },
+        }),
+        public_key_hex: keys.public_key_hex,
+        ring_key_image_hex: keys.ring_key_image_hex,
+        pop_jkt: `pay-pop-${sfx}`,
+        ttl_secs: 3600,
+        pop_public_key_b64u: pop.publicKeyB64u,
+    });
+    if (reg.status !== 200) throw new Error(`${label} register: ${reg.status} ${reg.raw}`);
+    const agentId = reg.data.agent_id as string;
+    const ajwt = reg.data.ajwt as string;
+    const record = (await fetch(`${baseUrl}/agent/${agentId}`).then((r) => r.json())) as {
+        agent_checksum?: string;
+    };
+    const configDigest = record.agent_checksum ?? "";
+    if (!configDigest) throw new Error(`${label}: server did not return agent_checksum`);
+
+    const ch = await api.agentPopChallenge(auth.session, agentId);
+    const ajwtJti = (() => {
+        const part = ajwt.split(".")[1];
+        if (!part) throw new Error("malformed A-JWT");
+        return (JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Record<string, unknown>)
+            .jti as string;
+    })();
+
+    const challengePath = "/agent/action/challenge";
+    const challengeBody = JSON.stringify({
+        agent_id: agentId,
+        human_key_image: auth.key_image,
+        action: "payment_initiation",
+        resource: `pay-${sfx}`,
+        merchant_id: merchantId,
+        amount_minor: amountMinor,
+        currency,
+        ajwt_jti: ajwtJti,
+        ttl_secs: 120,
+    });
+    const chR = await fetch(`${baseUrl}${challengePath}`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            ...signCallV2({
+                agentId,
+                privateKey: pop.privateKey,
+                method: "POST",
+                targetUri: challengePath,
+                body: challengeBody,
+                configDigest,
+            }),
+        },
+        body: challengeBody,
+    });
+    const chText = await chR.text();
+    if (chR.status !== 200) {
+        throw new Error(`${label} action/challenge: ${chR.status} ${chText.slice(0, 200)}`);
+    }
+
+    const { execFileSync } = await import("node:child_process");
+    const { resolve } = await import("node:path");
+    const { existsSync } = await import("node:fs");
+    const toolPath =
+        process.env.AGENT_ACTION_TOOL ||
+        resolve(process.cwd(), "../core/target/release/agent-action-tool");
+    const toolBin = existsSync(toolPath)
+        ? toolPath
+        : resolve(process.cwd(), "../core/target/debug/agent-action-tool");
+    const agentAction = JSON.parse(
+        execFileSync(
+            toolBin,
+            ["sign-challenge", "--secret-hex", keys.secret_hex, "--challenge-json", chText],
+            { encoding: "utf8" }
+        ).trim()
+    );
+
+    const authPath = "/agent/payment/authorize";
+    const authBody = JSON.stringify({
+        ajwt,
+        amount_minor: amountMinor,
+        currency,
+        merchant_id: merchantId,
+        payment_ref: `pay-${sfx}`,
+        pop_challenge_id: ch.pop_challenge_id,
+        pop_jws: signPopJws(ch.challenge, pop.privateKey),
+        agent_action: agentAction,
+    });
+    const authResp = await fetch(`${baseUrl}${authPath}`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            ...signCallV2({
+                agentId,
+                privateKey: pop.privateKey,
+                method: "POST",
+                targetUri: authPath,
+                body: authBody,
+                configDigest,
+            }),
+        },
+        body: authBody,
+    });
+    const authText = await authResp.text();
+    if (authResp.status !== 200) {
+        throw new Error(`${label} authorize: ${authResp.status} ${authText.slice(0, 200)}`);
+    }
+    const authJson = JSON.parse(authText) as {
+        authorization_id?: string;
+        action_receipt?: { receipt_id?: string };
+    };
+    if (!authJson.authorization_id) {
+        throw new Error(`${label}: no authorization_id in payment response`);
+    }
+    return {
+        agentId,
+        ajwt,
+        popPrivateKey: pop.privateKey,
+        configDigest,
+        authorizationId: authJson.authorization_id,
+        receiptId: authJson.action_receipt?.receipt_id,
+        sfx,
+    };
 }
 
 async function timed<T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> {
@@ -600,114 +815,75 @@ async function runEmpiricalSuite(api: CoreApi): Promise<TestResult[]> {
         );
     }
 
-    // A11 — TOCTOU: concurrent claim of the same consent_token.
+    // A11 — TOCTOU: concurrent redemption of the same payment authorization.
     //
-    // Real flow: ZKP_ONLY site /kyc/request → user /kyc/consent (gets consent_token)
-    // → fire N parallel /kyc/retrieve with dev_mock=true ZKP proof.
-    // The atomic `UPDATE consent_log SET token_used=1 WHERE token_used=0 …`
-    // (main.rs:2278) must serialize: exactly one request gets past the claim
-    // (no "already used" error), the other N-1 see 409 "Consent token already used".
-    {
-        const probeR = await fetch(`${baseUrl}/kyc/request`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ site_name: "probe" }),
-        });
-        if (probeR.status === 503) {
-            record(
-                out,
-                "A11",
-                "Consent-token TOCTOU concurrent claim (skip — user KYC disabled)",
-                "blocked",
-                "blocked",
-                0,
-                "skipped",
-                { dynamic: false, evidence: "SAURON_DISABLE_USER_KYC=1" }
-            );
-        } else {
-            const sfx = `A11-${randSuffix()}`;
-            const retail = `redteam-toctou-${sfx}`;
-            await api.ensureClient(retail, "ZKP_ONLY");
-            await api.devBuyTokens(retail, 4);
-            const email = `toctou_${sfx}@sauron.local`;
-            const password = `Pass!${sfx}`;
-            await api.devRegisterUser({
-                site_name: bankSite,
-                email,
-                password,
-                first_name: "Toc",
-                last_name: "Tou",
-                date_of_birth: "1990-01-01",
-                nationality: "FRA",
-            });
-
-            // kyc/request → request_id
-            const reqR = await fetch(`${baseUrl}/kyc/request`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                    site_name: retail,
-                    requested_claims: ["age_over_threshold"],
-                }),
-            });
-            const reqJ = (await reqR.json()) as { request_id?: string };
-            if (!reqJ.request_id) throw new Error(`A11 kyc/request: ${reqR.status} ${JSON.stringify(reqJ)}`);
-
-            // kyc/consent → consent_token
-            const consR = await fetch(`${baseUrl}/kyc/consent`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ request_id: reqJ.request_id, email, password }),
-            });
-            const consJ = (await consR.json()) as { consent_token?: string };
-            if (!consJ.consent_token) throw new Error(`A11 kyc/consent: ${consR.status} ${JSON.stringify(consJ)}`);
-            const consentToken = consJ.consent_token;
-
-            // Concurrent retrieval burst.
-            const N = 20;
-            const body = JSON.stringify({
-                consent_token: consentToken,
-                site_name: retail,
-                zkp_proof: { dev_mock: true },
-                zkp_circuit: "AgeVerification",
-                zkp_public_signals: ["1"],
-            });
-            const t0 = Date.now();
-            const responses = await Promise.all(
-                Array.from({ length: N }, () =>
-                    fetch(`${baseUrl}/kyc/retrieve`, {
-                        method: "POST",
-                        headers: { "content-type": "application/json" },
-                        body,
-                    }).then(async (r) => ({ status: r.status, text: await r.text() }))
-                )
-            );
-            const ms = Date.now() - t0;
-
-            // Count winners (anything that passed the atomic claim) vs losers (409 already used).
-            const alreadyUsed = responses.filter(
-                (r) => r.status === 409 && r.text.toLowerCase().includes("already used")
-            ).length;
-            const passedClaim = responses.filter(
-                (r) => !(r.status === 409 && r.text.toLowerCase().includes("already used"))
-            ).length;
-            // Exactly one request should win the atomic UPDATE.
-            const ok = passedClaim === 1 && alreadyUsed === N - 1;
-            const observed = ok ? "blocked" : "allowed"; // "blocked" = TOCTOU defended
-            record(
-                out,
-                "A11",
-                "Consent-token TOCTOU: concurrent /kyc/retrieve burst (atomic UPDATE serializes claims)",
-                "blocked",
-                observed,
-                ms,
-                `N=${N} winners=${passedClaim} already_used=${alreadyUsed}`,
-                {
-                    dynamic: true,
-                    evidence: `Promise.all(${N}) → 1 claim + ${N - 1} × HTTP 409 "Consent token already used"`,
-                }
-            );
-        }
+    // This used to burst /kyc/retrieve against a consent_token. That route was
+    // part of the retired banking surface, so the property it proved — atomic
+    // single-use claim under concurrency — was demonstrated on a path the
+    // product no longer sells. It now runs where it belongs: one agent mints a
+    // real payment authorization and fires N signed, independently-nonced
+    // redemptions at it. `Repo::consume_payment_authorization` flips
+    // `consumed = 0 -> 1` under BEGIN IMMEDIATE (SQLite) / FOR UPDATE
+    // (Postgres), so exactly one request may win.
+    //
+    // Each request carries its OWN call-signature nonce on purpose. A shared
+    // nonce would be refused by the replay layer (that is A3) and would prove
+    // nothing about the authorization ledger; here every request is valid at
+    // the signature layer, and only the consume may serialize them.
+    if (enforceMode) {
+        const mint = await mintPaymentAuthorization(api, "A11");
+        const consumePath = "/agent/payment/consume";
+        const consumeBody = JSON.stringify({ authorization_id: mint.authorizationId });
+        const N = 20;
+        const t0 = Date.now();
+        const responses = await Promise.all(
+            Array.from({ length: N }, () =>
+                fetch(`${baseUrl}${consumePath}`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                        ...signCallV2({
+                            agentId: mint.agentId,
+                            privateKey: mint.popPrivateKey,
+                            method: "POST",
+                            targetUri: consumePath,
+                            body: consumeBody,
+                            configDigest: mint.configDigest,
+                        }),
+                    },
+                    body: consumeBody,
+                }).then(async (r) => ({ status: r.status, text: await r.text() }))
+            )
+        );
+        const ms = Date.now() - t0;
+        const winners = responses.filter((r) => r.status === 200).length;
+        const conflicts = responses.filter(
+            (r) => r.status === 409 && r.text.toLowerCase().includes("consumed")
+        ).length;
+        const ok = winners === 1 && conflicts === N - 1;
+        record(
+            out,
+            "A11",
+            "Payment-authorization TOCTOU: concurrent /agent/payment/consume burst (atomic UPDATE serializes claims)",
+            "blocked",
+            ok ? "blocked" : "allowed",
+            ms,
+            `N=${N} winners=${winners} already_consumed=${conflicts}`,
+            {
+                dynamic: true,
+                evidence: `Promise.all(${N}) → 1 × HTTP 200 + ${N - 1} × HTTP 409 authorization_already_consumed`,
+            }
+        );
+    } else {
+        record(
+            out,
+            "A11",
+            "Payment-authorization TOCTOU (skip — needs SAURON_REQUIRE_CALL_SIG=1)",
+            "blocked",
+            "blocked",
+            0,
+            "skipped"
+        );
     }
 
     // A12 — Rate limit enforcement: burst /agent/register beyond the window quota.
@@ -1221,11 +1397,35 @@ async function runEmpiricalSuite(api: CoreApi): Promise<TestResult[]> {
         const controlStats = trimmedStats(controlPairs);
         const controlDiff = Math.abs(controlStats.mean);
         const controlT = controlDiff / Math.max(controlStats.std / Math.sqrt(controlStats.n), 1e-9);
-        const detectorControlPassed = controlT >= 3 && controlDiff >= 50;
-        // Threshold: |t| < 3 → no statistically significant timing gap at ~99.7% CI.
-        // We also require the absolute mean paired difference to be small in µs
-        // terms (< 50µs) so the verdict stays meaningful under wide network noise.
-        const ok = detectorControlPassed && tStat < 3 && meanDiff < 50;
+        // The control must exercise the DECISION RULE, not just the arithmetic:
+        // a rule that can never fire would pass every run silently. Applying the
+        // same joint test to a deliberately separated distribution has to yield
+        // "oracle detected".
+        const MATERIAL_US = 50;
+        const detectorControlPassed =
+            controlT >= 3 && controlDiff >= MATERIAL_US;
+        // An oracle has to be BOTH real and material. The previous form failed
+        // the suite when EITHER condition tripped, and with n≈1800 pairs the
+        // t-statistic resolves effects far below anything exploitable: a 27µs
+        // mean difference on a ~4,100µs baseline (0.7%, against σ≈240µs) scored
+        // t=4.91 and failed the run, then scored t=0.34 on the same binary once
+        // the host went quiet. That is ambient load being reported as a
+        // vulnerability.
+        //
+        // So: significance decides whether the difference is real, and MATERIAL_US
+        // decides whether it is worth anything to an attacker. Both, or no
+        // finding.
+        //
+        // What this test can and cannot see. The compare it targets
+        // (`subtle::ConstantTimeEq` over a 64-char hex signature) is
+        // sub-microsecond, while one request costs milliseconds — so a
+        // short-circuit here would be buried far below the noise floor no matter
+        // how many samples are taken. This is a screen for GROSS timing oracles,
+        // the kind where a distinguisher costs a meaningful fraction of request
+        // time. Passing it is not proof of constant-time behaviour; that comes
+        // from the implementation and from reading it.
+        const oracleDetected = tStat >= 3 && meanDiff >= MATERIAL_US;
+        const ok = detectorControlPassed && !oracleDetected;
         record(
             out,
             "A15",
@@ -1236,7 +1436,7 @@ async function runEmpiricalSuite(api: CoreApi): Promise<TestResult[]> {
             `early_mean=${s1.mean.toFixed(2)}µs σ=${s1.std.toFixed(2)} | late_mean=${s2.mean.toFixed(2)}µs σ=${s2.std.toFixed(2)} | paired Δ=${d.mean.toFixed(2)}µs σ=${d.std.toFixed(2)} n=${d.n} t=${tStat.toFixed(2)} | detector_control_t=${controlT.toFixed(2)}`,
             {
                 dynamic: true,
-                evidence: `paired |t|=${tStat.toFixed(2)} over ${d.n} back-to-back pairs (<3 ⇒ no oracle), mean Δ=${d.mean.toFixed(2)}µs; subtle::ConstantTimeEq walks full sig regardless of first mismatch`,
+                evidence: `paired |t|=${tStat.toFixed(2)} over ${d.n} back-to-back pairs, mean Δ=${d.mean.toFixed(2)}µs; a finding needs |t|>=3 AND |Δ|>=${MATERIAL_US}µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise.`,
             }
         );
     }
@@ -1323,7 +1523,32 @@ async function main() {
     console.log(`empirical: ${passed}/${total} pass (${skipped} skipped due to env config)`);
 
     const reportPath = "empirical-results.json";
-    writeFileSync(reportPath, JSON.stringify({ results, passed, total, skipped, generated_at: new Date().toISOString() }, null, 2));
+    // Provenance, not decoration: this file is cited as release evidence, and a
+    // result set with no commit and no enforcement mode cannot demonstrate the
+    // one property that makes it evidence ("produced in fail-closed mode, at
+    // this revision"). A reader who cannot reproduce the conditions is being
+    // asked to take the numbers on trust.
+    writeFileSync(
+        reportPath,
+        JSON.stringify(
+            {
+                results,
+                passed,
+                total,
+                skipped,
+                dynamic,
+                generated_at: new Date().toISOString(),
+                provenance: {
+                    commit: gitCommit(),
+                    enforce_mode: enforceMode,
+                    db_backend: process.env.SAURON_DB_BACKEND ?? "sqlite",
+                    base_url: baseUrl,
+                },
+            },
+            null,
+            2
+        )
+    );
     console.log(`report → ${reportPath}`);
 
     // Missing dynamic evidence is a release failure, not a passing skip.

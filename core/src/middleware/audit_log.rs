@@ -11,6 +11,11 @@
 //! - `PolicyViolation` — DSL evaluation rejected an action.
 //! - `AdminKeyRotated` — operator rotated `SAURON_ADMIN_KEY{,S}`.
 //! - `RateLimitTripped` — global pre-auth rate limiter fired.
+//! - `AdminAction` — an authenticated admin request COMPLETED. Successes,
+//!   not just failures: the static admin key can target any tenant by
+//!   setting `x-sauron-tenant-id`, and until this variant existed such a
+//!   read returned 200 and left no record at all. A boundary whose
+//!   legitimate uses are invisible cannot be reviewed after the fact.
 //!
 //! ## Sinks
 //!
@@ -42,11 +47,12 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 
+use crate::any_db::{AnyConn, SqlValue};
 use crate::db::DbHandle;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::tenancy::TenantId;
 
@@ -86,6 +92,22 @@ pub enum AuditEvent {
     AdminKeyRotated { key_fingerprint: String },
     /// Global ingress rate limiter rejected a request.
     RateLimitTripped { ip: String, path: String },
+    /// An authenticated admin request ran to completion.
+    ///
+    /// `principal` names HOW the caller authenticated, never the credential
+    /// itself: `admin_jwt` (scoped, optionally tenant-locked) or `static_key`.
+    /// `cross_tenant` records whether the principal was permitted to read
+    /// beyond `tenant_id` — the pair (static_key, cross_tenant=false,
+    /// tenant_id=acme) is exactly the header-chosen-tenant access that used to
+    /// leave no trace.
+    AdminAction {
+        tenant_id: String,
+        principal: String,
+        cross_tenant: bool,
+        method: String,
+        path: String,
+        status: u16,
+    },
     /// An in-path egress attempt was denied (allowlist miss, or the target
     /// resolved to a blocked/private/metadata IP). Recorded to the
     /// tamper-evident audit chain so denials are non-repudiable — allowed egress
@@ -113,6 +135,7 @@ impl AuditEvent {
             AuditEvent::AdminKeyRotated { .. } => "admin_key_rotated",
             AuditEvent::RateLimitTripped { .. } => "rate_limit_tripped",
             AuditEvent::EgressDenied { .. } => "egress_denied",
+            AuditEvent::AdminAction { .. } => "admin_action",
         }
     }
 
@@ -124,7 +147,8 @@ impl AuditEvent {
         match self {
             AuditEvent::CrossTenantAttempt { tenant_id, .. }
             | AuditEvent::PolicyViolation { tenant_id, .. }
-            | AuditEvent::EgressDenied { tenant_id, .. } => tenant_id.clone(),
+            | AuditEvent::EgressDenied { tenant_id, .. }
+            | AuditEvent::AdminAction { tenant_id, .. } => tenant_id.clone(),
             _ => "default".to_string(),
         }
     }
@@ -168,7 +192,19 @@ static DB_SINK: OnceLock<Mutex<Option<Arc<DbHandle>>>> = OnceLock::new();
 /// breaking the chain. Audit writes are low-frequency security events, so a
 /// process-wide lock around the read-head → insert step is the simplest correct
 /// guard.
+///
+/// It is only *this* process, which is enough on SQLite (one writer) but not on
+/// Postgres. There the UNIQUE index on `seq` catches a cross-process collision
+/// and [`AUDIT_CHAIN_APPEND_ATTEMPTS`] re-reads the head.
 static AUDIT_CHAIN_LOCK: Mutex<()> = Mutex::new(());
+
+/// How many times an append re-reads the chain head after losing the `seq` race.
+///
+/// Only reachable on Postgres with concurrent writers; on SQLite
+/// `AUDIT_CHAIN_LOCK` already made the first attempt the only one. Bounded
+/// rather than unbounded so a genuinely broken constraint surfaces as a sink
+/// failure instead of spinning inside audit middleware.
+const AUDIT_CHAIN_APPEND_ATTEMPTS: usize = 4;
 
 /// Count of audit-sink write failures (DB insert / file write / serialize).
 /// A non-zero value means at least one security event may not have been durably
@@ -235,8 +271,14 @@ pub fn init_audit_sink(db: Arc<DbHandle>) {
 
 /// Create the `security_audit_log` table if missing. Idempotent — safe
 /// to call on every process start.
+/// SQLite-only, deliberately. Under Postgres this table and its hash-chain
+/// columns come from `migrations/postgres/0007_security_audit_log.sql` and
+/// `0014_audit_chain_and_schema_version.sql`; running `CREATE TABLE` /
+/// `ALTER TABLE` from application code against Postgres would fight the
+/// migration that already owns the schema. The sidecar still gets the table so
+/// a Postgres deployment can be rolled back to SQLite without losing the shape.
 pub fn ensure_security_audit_schema(db: &DbHandle) -> Result<(), rusqlite::Error> {
-    let conn = db.lock().map_err(|e| {
+    let conn = db.lock_sqlite().map_err(|e| {
         rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e.to_string())))
     })?;
     conn.execute_batch(
@@ -361,7 +403,7 @@ fn write_db_sink(record: &AuditRecord) {
             return;
         }
     };
-    let conn = match db.lock() {
+    let mut conn = match db.lock() {
         Ok(c) => c,
         Err(e) => {
             record_audit_sink_failure("db", &format!("connection pool lock: {e}"));
@@ -378,43 +420,55 @@ fn write_db_sink(record: &AuditRecord) {
     // H-2: append to the tamper-evident hash chain. `DbHandle::lock()` is a pool
     // checkout (not a global mutex), so the head-read → insert must be serialised
     // explicitly to keep `seq` monotonic and gap-free.
+    //
+    // The mutex only covers this process. Under Postgres — where more than one
+    // process is the point — two appenders can read the same head and compute
+    // the same `seq`. `uq_security_audit_seq` in
+    // `migrations/postgres/0014_audit_chain_and_schema_version.sql` is UNIQUE
+    // on `seq`, so the loser gets a unique violation rather than a silent fork,
+    // and re-reads the head instead of dropping the event. The constraint is
+    // the check; this retry is what turns "detected" into "recorded".
     let _chain = AUDIT_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (last_seq, last_hash): (i64, String) = conn
-        .query_row(
-            "SELECT seq, entry_hash FROM security_audit_log
-             WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1",
-            [],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-        )
-        .unwrap_or((0, "genesis".to_string()));
-    let seq = last_seq + 1;
     let key = audit_hmac_key();
-    let entry_hash = compute_entry_hash(
-        &key,
-        seq,
-        &last_hash,
-        &record.audit_id,
-        &record.tenant_id,
-        &record.event_type,
-        &event_json,
-        record.timestamp,
-    );
-    if let Err(e) = conn.execute(
-        "INSERT INTO security_audit_log
+    for attempt in 0..AUDIT_CHAIN_APPEND_ATTEMPTS {
+        let (last_seq, last_hash): (i64, String) =
+            chain_head_raw(&mut conn.any_conn()).unwrap_or((0, "genesis".to_string()));
+        let seq = last_seq + 1;
+        let entry_hash = compute_entry_hash(
+            &key,
+            seq,
+            &last_hash,
+            &record.audit_id,
+            &record.tenant_id,
+            &record.event_type,
+            &event_json,
+            record.timestamp,
+        );
+        match conn.any_conn().execute(
+            "INSERT INTO security_audit_log
          (audit_id, tenant_id, event_type, event_json, timestamp, seq, prev_hash, entry_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            record.audit_id,
-            record.tenant_id,
-            record.event_type,
-            event_json,
-            record.timestamp,
-            seq,
-            last_hash,
-            entry_hash
-        ],
-    ) {
-        record_audit_sink_failure("db", &format!("insert: {e}"));
+            sql_params![
+                &record.audit_id,
+                &record.tenant_id,
+                &record.event_type,
+                &event_json,
+                record.timestamp,
+                seq,
+                &last_hash,
+                &entry_hash
+            ],
+        ) {
+            Ok(_) => return,
+            Err(e) => {
+                let msg = e.to_lowercase();
+                let lost_the_race = msg.contains("unique") || msg.contains("duplicate key");
+                if !lost_the_race || attempt + 1 == AUDIT_CHAIN_APPEND_ATTEMPTS {
+                    record_audit_sink_failure("db", &format!("insert: {e}"));
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -430,45 +484,54 @@ fn write_db_sink(record: &AuditRecord) {
 /// this head into an external timestamp is what closes that: the head published
 /// at time T cannot be changed after T, so any later rewrite contradicts a
 /// commitment the operator does not control.
-pub fn audit_chain_head(conn: &rusqlite::Connection) -> Option<(i64, String)> {
+pub fn audit_chain_head(conn: &mut AnyConn<'_>) -> Option<(i64, String)> {
+    chain_head_raw(conn).filter(|(_, hash)| !hash.is_empty())
+}
+
+/// The raw head row, shared by the append path and [`audit_chain_head`].
+///
+/// These were two copies of the same query with different fallbacks. They must
+/// agree — the appender links to whatever this returns, and an anchor commits
+/// it — so one of them drifting would break the chain silently.
+fn chain_head_raw(conn: &mut AnyConn<'_>) -> Option<(i64, String)> {
     conn.query_row(
         "SELECT seq, entry_hash FROM security_audit_log
          WHERE seq IS NOT NULL ORDER BY seq DESC LIMIT 1",
-        [],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+        sql_params![],
+        |r| Ok((r.get_i64(0)?, r.get_string(1)?)),
     )
     .ok()
-    .filter(|(_, hash)| !hash.is_empty())
+    .flatten()
 }
 
-pub fn verify_audit_chain(conn: &rusqlite::Connection) -> Result<u64, String> {
+pub fn verify_audit_chain(conn: &mut AnyConn<'_>) -> Result<u64, String> {
     let key = audit_hmac_key();
-    let mut stmt = conn
-        .prepare(
+    let rows = conn
+        .query_map(
             "SELECT seq, prev_hash, entry_hash, audit_id, tenant_id, event_type, event_json, timestamp
              FROM security_audit_log WHERE seq IS NOT NULL ORDER BY seq ASC",
+            sql_params![],
+            |r| {
+                Ok((
+                    r.get_i64(0)?,
+                    r.get_string(1)?,
+                    r.get_string(2)?,
+                    r.get_string(3)?,
+                    r.get_string(4)?,
+                    r.get_string(5)?,
+                    r.get_string(6)?,
+                    r.get_i64(7)?,
+                ))
+            },
         )
-        .map_err(|e| format!("prepare: {e}"))?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, i64>(7)?,
-            ))
-        })
         .map_err(|e| format!("query: {e}"))?;
     let mut expected_seq = 1i64;
     let mut prev = "genesis".to_string();
     let mut count = 0u64;
-    for row in rows {
-        let (seq, prev_hash, entry_hash, audit_id, tenant_id, event_type, event_json, ts) =
-            row.map_err(|e| format!("row: {e}"))?;
+    // query_map already collected and propagated decode failures, so a row that
+    // cannot be read aborts verification instead of being skipped — which for a
+    // tamper-evidence check is the whole point.
+    for (seq, prev_hash, entry_hash, audit_id, tenant_id, event_type, event_json, ts) in rows {
         if seq != expected_seq {
             return Err(format!(
                 "seq gap: expected {expected_seq}, got {seq} (row deleted/reordered)"
@@ -541,7 +604,7 @@ pub fn query_audit_events(
     tenant: &str,
     q: &AuditQuery,
 ) -> Result<Vec<AuditRecord>, String> {
-    let conn = db
+    let mut conn = db
         .lock()
         .map_err(|e| format!("audit query: db lock: {e}"))?;
     let limit = q.limit.unwrap_or(200).min(1000) as i64;
@@ -549,64 +612,39 @@ pub fn query_audit_events(
     let until = q.until.unwrap_or(i64::MAX);
     let event_type_filter = q.event_type.clone();
 
+    // Filters are optional, so the placeholder numbers depend on which ones are
+    // present. Building the argument list alongside the SQL numbers them from
+    // its length instead of by hand — the previous version wrote "?3" or "?4"
+    // for event_type depending on the tenant branch, and needed a four-arm match
+    // at the end purely because `params!` takes a fixed arity.
     let mut sql = String::from(
         "SELECT audit_id, tenant_id, event_type, event_json, timestamp \
          FROM security_audit_log WHERE timestamp >= ?1 AND timestamp <= ?2",
     );
+    let mut args: Vec<SqlValue> = vec![since.into(), until.into()];
     if tenant != "*" {
-        sql.push_str(" AND tenant_id = ?3");
+        args.push(tenant.into());
+        sql.push_str(&format!(" AND tenant_id = ?{}", args.len()));
     }
-    if event_type_filter.is_some() {
-        sql.push_str(if tenant != "*" {
-            " AND event_type = ?4"
-        } else {
-            " AND event_type = ?3"
-        });
+    if let Some(ref et) = event_type_filter {
+        args.push(et.as_str().into());
+        sql.push_str(&format!(" AND event_type = ?{}", args.len()));
     }
-    sql.push_str(" ORDER BY timestamp DESC LIMIT ");
-    sql.push_str(&limit.to_string());
+    args.push(limit.into());
+    sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT ?{}", args.len()));
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("audit query: prepare: {e}"))?;
-
-    let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<AuditRecord> {
-        let audit_id: String = row.get(0)?;
-        let tenant_id: String = row.get(1)?;
-        let event_type: String = row.get(2)?;
-        let event_json: String = row.get(3)?;
-        let timestamp: i64 = row.get(4)?;
-        let event: AuditEvent = serde_json::from_str(&event_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        Ok(AuditRecord {
-            audit_id,
-            tenant_id,
-            event_type,
-            event,
-            timestamp,
+    conn.any_conn()
+        .query_map(&sql, &args, |row| {
+            let event_json = row.get_string(3)?;
+            Ok(AuditRecord {
+                audit_id: row.get_string(0)?,
+                tenant_id: row.get_string(1)?,
+                event_type: row.get_string(2)?,
+                event: serde_json::from_str(&event_json).map_err(|e| format!("event_json: {e}"))?,
+                timestamp: row.get_i64(4)?,
+            })
         })
-    };
-
-    let rows: Vec<AuditRecord> = match (tenant != "*", event_type_filter.as_deref()) {
-        (true, Some(et)) => stmt
-            .query_map(params![since, until, tenant, et], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-        (true, None) => stmt
-            .query_map(params![since, until, tenant], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-        (false, Some(et)) => stmt
-            .query_map(params![since, until, et], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-        (false, None) => stmt
-            .query_map(params![since, until], map)
-            .and_then(|r| r.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(|e| format!("audit query: {e}"))?,
-    };
-    Ok(rows)
+        .map_err(|e| format!("audit query: {e}"))
 }
 
 /// Axum middleware that records auth/policy failures after the handler
@@ -759,17 +797,18 @@ mod tests {
                 reason: "test".into(),
             });
         }
-        let conn = db.lock().unwrap();
+        let mut conn = db.lock().unwrap();
         // Intact chain verifies.
-        let n = verify_audit_chain(&conn).expect("chain should verify");
+        let n = verify_audit_chain(&mut conn.any_conn()).expect("chain should verify");
         assert!(n >= 3, "expected >=3 chained rows, got {n}");
         // Tamper a row's payload in place — verification must now fail.
-        conn.execute(
-            "UPDATE security_audit_log SET event_json = '{\"tampered\":true}' WHERE seq = 2",
-            [],
-        )
-        .unwrap();
-        let err = verify_audit_chain(&conn).expect_err("tampering must be detected");
+        conn.any_conn()
+            .execute(
+                "UPDATE security_audit_log SET event_json = '{\"tampered\":true}' WHERE seq = 2",
+                sql_params![],
+            )
+            .unwrap();
+        let err = verify_audit_chain(&mut conn.any_conn()).expect_err("tampering must be detected");
         assert!(err.contains("seq 2"), "got: {err}");
     }
 

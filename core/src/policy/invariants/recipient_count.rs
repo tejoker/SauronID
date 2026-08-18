@@ -33,7 +33,8 @@ impl RuntimeCheck for RecipientCountCheck {
             .get("recipient_count")
             .and_then(|v| v.as_u64())
         else {
-            // No recipient_count declared → treat as zero → allow.
+            // No recipient_count declared → treat as zero → allow. See the
+            // metadata trust model in `super`.
             return Verdict::Allow;
         };
         if n > self.max_recipients as u64 {

@@ -4,12 +4,13 @@
 //! Writes go through [`PolicyStore::upsert`] which persists to the
 //! supplied DB handle and refreshes both indices.
 
+use crate::any_db::AnyRowGet;
+use crate::sql_params;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::db::DbHandle;
@@ -120,20 +121,22 @@ impl PolicyStore {
     /// was at shutdown. Legacy rows (pre-S11) backfill to the default
     /// tenant via the column DEFAULT and round-trip transparently.
     pub fn hydrate(&self) -> Result<usize, StoreError> {
-        let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
-        let mut stmt =
-            conn.prepare("SELECT policy_id, raw_yaml, updated_at, tenant_id FROM policies")?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(stmt);
+        let mut conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+        let rows = conn
+            .any_conn()
+            .query_map(
+                "SELECT policy_id, raw_yaml, updated_at, tenant_id FROM policies",
+                sql_params![],
+                |row| {
+                    Ok((
+                        row.get::<String>(0)?,
+                        row.get::<String>(1)?,
+                        row.get::<i64>(2)?,
+                        row.get::<String>(3)?,
+                    ))
+                },
+            )
+            .map_err(StoreError::Db)?;
         drop(conn);
 
         let mut idx = self.inner.write().map_err(|_| StoreError::Lock)?;
@@ -179,8 +182,8 @@ impl PolicyStore {
             .map_err(|e| StoreError::Db(format!("serialize: {e}")))?;
 
         {
-            let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
-            conn.execute(
+            let mut conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+            conn.any_conn().execute(
                 "INSERT INTO policies (policy_id, agent, version, raw_yaml, created_at, updated_at, tenant_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
                  ON CONFLICT(policy_id) DO UPDATE SET
@@ -189,8 +192,8 @@ impl PolicyStore {
                      raw_yaml = excluded.raw_yaml,
                      updated_at = excluded.updated_at,
                      tenant_id = excluded.tenant_id",
-                params![id, agent, version, raw_yaml, now, tenant_id],
-            )?;
+                sql_params![&id, &agent, &version, &raw_yaml, &now, &tenant_id],
+            ).map_err(StoreError::Db)?;
         }
 
         let key = (tenant_id.to_string(), id.clone());
@@ -284,11 +287,13 @@ impl PolicyStore {
     /// id was not present for that tenant (idempotent); DB errors surface.
     pub fn delete_tenant(&self, tenant_id: &str, id: &str) -> Result<(), StoreError> {
         {
-            let conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
-            conn.execute(
-                "DELETE FROM policies WHERE policy_id = ?1 AND tenant_id = ?2",
-                params![id, tenant_id],
-            )?;
+            let mut conn = self.db.lock().map_err(|e| StoreError::Db(e.to_string()))?;
+            conn.any_conn()
+                .execute(
+                    "DELETE FROM policies WHERE policy_id = ?1 AND tenant_id = ?2",
+                    sql_params![&id, &tenant_id],
+                )
+                .map_err(StoreError::Db)?;
         }
         let key = (tenant_id.to_string(), id.to_string());
         let mut idx = self.inner.write().map_err(|_| StoreError::Lock)?;

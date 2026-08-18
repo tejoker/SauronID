@@ -212,53 +212,6 @@ fn prop_ledger_no_metric_exceeds_its_individual_cap() {
     }
 }
 
-// ─── Sprint 13-14 Tier 2: HE property tests ────────────────────────────────
-//
-// NEEDS_CRYPTO_REVIEW: these properties cover algebraic correctness only.
-// They do NOT verify side-channel resistance, randomness distribution, or
-// any side of the security argument. See `docs/homomorphic-encryption.md`.
-
-#[test]
-fn prop_he_homomorphic_add_commutative() {
-    use num_bigint::BigUint;
-    use rand::rngs::StdRng;
-    use rand::SeedableRng;
-    use sauron_core::he::paillier::PaillierPrivateKey;
-
-    let sk = PaillierPrivateKey::from_primes(&BigUint::from(17u32), &BigUint::from(19u32)).unwrap();
-    let mut rng = StdRng::seed_from_u64(555);
-    // For 8 (a,b) pairs verify add(Enc(a), Enc(b)) and add(Enc(b), Enc(a))
-    // decrypt to the same sum.
-    for seed in 0..8u32 {
-        let a = BigUint::from(7u32 + seed * 3);
-        let b = BigUint::from(11u32 + seed * 5);
-        let ca = sk.public.encrypt(&a, &mut rng).unwrap();
-        let cb = sk.public.encrypt(&b, &mut rng).unwrap();
-        let s1 = sk.public.add(&ca, &cb);
-        let s2 = sk.public.add(&cb, &ca);
-        let p1 = sk.decrypt(&s1).unwrap();
-        let p2 = sk.decrypt(&s2).unwrap();
-        assert_eq!(p1, p2, "commutativity broken at seed={seed}");
-        assert_eq!(p1, (&a + &b) % &sk.public.n);
-    }
-}
-
-#[test]
-fn prop_he_encrypt_decrypt_identity() {
-    use num_bigint::BigUint;
-    use rand::rngs::StdRng;
-    use rand::SeedableRng;
-    use sauron_core::he::paillier::PaillierPrivateKey;
-
-    let sk = PaillierPrivateKey::from_primes(&BigUint::from(17u32), &BigUint::from(19u32)).unwrap();
-    let mut rng = StdRng::seed_from_u64(556);
-    for m in [0u32, 1, 2, 7, 50, 100, 200, 322] {
-        let pt = BigUint::from(m);
-        let ct = sk.public.encrypt(&pt, &mut rng).unwrap();
-        assert_eq!(sk.decrypt(&ct).unwrap(), pt, "identity broken at m={m}");
-    }
-}
-
 #[test]
 fn prop_budget_balance() {
     // 15 charges of 0.05·i summed = 0.05·(1+...+15) = 6.0 < budget 10.0.

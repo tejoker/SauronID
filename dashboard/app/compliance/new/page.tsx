@@ -88,10 +88,10 @@ export default function NewCompliancePage() {
       <Card>
         <CardBody>
           <form onSubmit={onSubmit} className="space-y-6">
-            <div>
-              <label className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
+            <fieldset>
+              <legend className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
                 Agents (optional — leave empty for all)
-              </label>
+              </legend>
               {agents.length === 0 ? (
                 <p className="text-mono-sm text-[var(--text-muted)]">
                   No agents discovered yet.
@@ -117,14 +117,15 @@ export default function NewCompliancePage() {
                   })}
                 </div>
               )}
-            </div>
+            </fieldset>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
+                <label htmlFor="report-from" className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
                   From
                 </label>
                 <input
+                  id="report-from"
                   type="date"
                   value={fromDate}
                   onChange={(e) => setFromDate(e.target.value)}
@@ -132,10 +133,11 @@ export default function NewCompliancePage() {
                 />
               </div>
               <div>
-                <label className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
+                <label htmlFor="report-to" className="block text-mono-sm text-[var(--text-muted)] uppercase mb-2">
                   To
                 </label>
                 <input
+                  id="report-to"
                   type="date"
                   value={toDate}
                   onChange={(e) => setToDate(e.target.value)}

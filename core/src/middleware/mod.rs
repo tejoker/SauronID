@@ -18,6 +18,7 @@
 //! `Cargo.toml` dependencies, per the S12 constraint sheet.
 
 pub mod audit_log;
+pub mod panic;
 pub mod rate_limit;
 pub mod security_headers;
 
@@ -25,5 +26,6 @@ pub use audit_log::{
     audit_log_middleware, ensure_security_audit_schema, init_audit_sink, query_audit_events,
     record, AuditEvent, AuditQuery, AuditRecord,
 };
+pub use panic::handle_request_panic;
 pub use rate_limit::{global_rate_limit_middleware, GlobalRateLimitConfig, GlobalRateLimiter};
 pub use security_headers::security_headers_middleware;

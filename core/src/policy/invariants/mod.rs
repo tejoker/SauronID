@@ -6,9 +6,28 @@
 //! function runs them in order against an [`EvaluationContext`].
 //!
 //! `DataFlowCheck` is a fail-closed sentinel until real taint tracking is
-//! available. Free-form `invariants:` strings (e.g.,
-//! `"spend_total <= max_budget_usd"`) are intentionally not compiled — an
-//! expression parser will land in a later sprint.
+//! available. Free-form `invariants:` strings (e.g.
+//! `"spend_total <= max_budget_usd"`) ARE compiled: `super::expressions` parses
+//! them and `super::compiler` wraps each one in an `ExpressionCheck`.
+//!
+//! ## Who fills `Action.metadata`
+//!
+//! Several checks read their per-action signal from `metadata`, and whether an
+//! absent key means "allow" or "deny" depends entirely on who writes the bag.
+//! On every enforcement path the SERVER builds the `Action` — see
+//! `super::handlers::gate_action_on_bound_policy` and its callers — so an absent
+//! key means "this action has no such dimension" (a payment has no
+//! `payload_bytes`; a sandboxed `file_read` has no `target_domain`), and reading
+//! it as zero or not-applicable is correct. The one caller-authored `Action` is
+//! `POST /v1/policy/evaluate`, which is admin-gated and explicitly a simulator.
+//!
+//! That is a load-bearing assumption, so it is written down here. A future route
+//! that let an AGENT supply metadata would invert it: absence would then mean
+//! "the constrained party declined to say", and every numeric cap in this module
+//! would be waived by omission. Populate these keys server-side from what the
+//! gateway observed — as `egress_gateway::agent_egress_proxy` does for
+//! `target_domain`, `payload_bytes`, `content_type` and `pii_detected` — rather
+//! than accepting them from the caller.
 
 use std::collections::HashMap;
 

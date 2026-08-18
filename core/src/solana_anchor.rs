@@ -32,8 +32,9 @@
 //!   solana airdrop 2 $(solana-keygen pubkey /etc/sauron/solana-keypair.json) \
 //!       --url https://api.devnet.solana.com
 
+use crate::any_db::AnyRowGet;
+use crate::sql_params;
 use ed25519_dalek::{Signer, SigningKey};
-use rusqlite::params;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -216,14 +217,15 @@ impl SolanaAnchorService {
         let anchor_id = format!("sol_{}", random_hex_32());
         let now = now_secs();
         {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO solana_merkle_anchors
+            let mut conn = db.lock().map_err(|e| e.to_string())?;
+            conn.any_conn()
+                .execute(
+                    "INSERT INTO solana_merkle_anchors
                  (anchor_id, merkle_root_hex, network, signature, slot, confirmed, created_at)
                  VALUES (?1, ?2, ?3, ?4, 0, 0, ?5)",
-                params![anchor_id, root_hex, self.network, signature_b58, now,],
-            )
-            .map_err(|e| format!("DB error: {e}"))?;
+                    sql_params![&anchor_id, &root_hex, &self.network, &signature_b58, &now,],
+                )
+                .map_err(|e| format!("DB error: {e}"))?;
         }
 
         Ok(SolanaAnchorReceipt {
@@ -297,21 +299,18 @@ pub fn spawn_solana_confirmer(db: Arc<DbHandle>, rpc_url: String) {
         loop {
             ticker.tick().await;
             let pending: Vec<(String, String)> = match db.lock() {
-                Ok(conn) => {
-                    let mut stmt = match conn.prepare(
+                // Best-effort, as in the Bitcoin confirmer: skip this round.
+                Ok(mut conn) => conn
+                    .any_conn()
+                    .query_map(
                         "SELECT anchor_id, signature
                          FROM solana_merkle_anchors
                          WHERE confirmed = 0
                          LIMIT 100",
-                    ) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                        .ok()
-                        .map(|it| it.flatten().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                }
+                        sql_params![],
+                        |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?)),
+                    )
+                    .unwrap_or_default(),
                 Err(_) => continue,
             };
             if pending.is_empty() {
@@ -359,10 +358,10 @@ pub fn spawn_solana_confirmer(db: Arc<DbHandle>, rpc_url: String) {
                         );
                         continue;
                     }
-                    if let Ok(conn) = db.lock() {
-                        let _ = conn.execute(
+                    if let Ok(mut conn) = db.lock() {
+                        let _ = conn.any_conn().execute(
                             "UPDATE solana_merkle_anchors SET confirmed = 1, slot = ?1 WHERE anchor_id = ?2",
-                            params![slot, anchor_id],
+                            sql_params![&slot, &anchor_id],
                         );
                         tracing::info!(
                             target: "sauron::solana",

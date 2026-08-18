@@ -30,6 +30,9 @@ impl RuntimeCheck for ChainDepthCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
+        // Absent → zero. See the metadata trust model in `super`: the server
+        // writes this bag, so an absent key means the action is not part of a
+        // call chain, not that the agent withheld its depth.
         let depth = ctx
             .action
             .metadata

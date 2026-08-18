@@ -15,7 +15,7 @@ export const LANG_LABELS: Record<SnippetLang, string> = {
 export const INSTALL_SNIPPETS: Record<SnippetLang, string> = {
   python: "pip install sauronid-client",
   typescript: "npm install @sauronid/agentic",
-  go: "go get github.com/sauronid/go-sdk",
+  go: "go get github.com/tejoker/SauronID/clients/go/sauronid",
 };
 
 export const REGISTER_SNIPPETS: Record<SnippetLang, string> = {
@@ -66,7 +66,7 @@ console.log(result);`,
 import (
     "fmt"
 
-    sauronid "github.com/sauronid/go-sdk"
+    sauronid "github.com/tejoker/SauronID/clients/go/sauronid"
 )
 
 func main() {

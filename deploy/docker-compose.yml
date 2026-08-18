@@ -19,6 +19,12 @@ services:
       - SAURON_ACCEPT_SINGLE_NODE_SQLITE=${SAURON_ACCEPT_SINGLE_NODE_SQLITE:-1}
       - SAURON_ISSUER_URL=${SAURON_ISSUER_URL:-http://zkp-issuer:4000}
       - SAURON_ISSUER_SHARED_SECRET=${SAURON_ISSUER_SHARED_SECRET:-sauron_issuer_shared_dev_key_change_me}
+      # The e2e suites provision their own users through /dev/register_user,
+      # which is compiled behind this flag. Without it the route 404s and the
+      # scripts fail on an empty response body — which is what "register_user
+      # failed:" with nothing after the colon meant. Dev-only by construction:
+      # the handler also refuses to run outside a development runtime.
+      - SAURON_ENABLE_DEV_ENDPOINTS=${SAURON_ENABLE_DEV_ENDPOINTS:-1}
       # Advisory by default HERE ONLY, and deliberately: this is the stack the KYA
       # e2e job drives, and redteam/dist/index.js (the scripted invariant suite)
       # posts UNSIGNED to /agent/action/challenge and /agent/vc/issue, so

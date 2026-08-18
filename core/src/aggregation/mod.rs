@@ -26,8 +26,6 @@
 
 pub mod cohorts;
 pub mod handlers;
-pub mod he_aggregator;
-pub mod he_store;
 pub mod publish;
 pub mod store;
 pub mod submission;
@@ -44,6 +42,3 @@ pub use store::{
 };
 pub use submission::{CohortRow, StatsSubmission, StatsSubmitResponse};
 pub use verify::{stats_scope_hash, verify_stats_submission, AggError, PROVABLE_METRICS};
-
-pub use he_aggregator::HeAggregator;
-pub use he_store::{get_he_aggregation, upsert_he_aggregation, HeAggregationRow, HeStoreError};

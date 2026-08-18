@@ -30,9 +30,9 @@
 //! Schema lives in `core/src/db.rs::init_schema` (SQLite) and
 //! `migrations/postgres/0009_dp_budget_ledger.sql` (Postgres).
 
+use crate::any_db::AnyRowGet;
+use crate::sql_params;
 use std::sync::Arc;
-
-use rusqlite::{params, OptionalExtension};
 
 use crate::db::DbHandle;
 
@@ -157,7 +157,7 @@ impl DpBudgetLedger {
         delta_cap: f64,
     ) -> Result<(), LedgerError> {
         validate_inputs(cohort_id, metric_id, epsilon_cap, delta_cap, cycle_start)?;
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
@@ -165,15 +165,22 @@ impl DpBudgetLedger {
         // was on the first insert; subsequent ensure_cycle calls with
         // different caps are silently a no-op (operator must explicitly
         // call rotate_cycle to change caps).
-        conn.execute(
-            "INSERT OR IGNORE INTO dp_budget_ledger
+        conn.any_conn()
+            .execute(
+                "INSERT OR IGNORE INTO dp_budget_ledger
                (cohort_id, metric_id, cycle_start,
                 epsilon_spent, delta_spent,
                 epsilon_cap, delta_cap, last_published)
              VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, 0)",
-            params![cohort_id, metric_id, cycle_start, epsilon_cap, delta_cap],
-        )
-        .map_err(|e| LedgerError::Storage(e.to_string()))?;
+                sql_params![
+                    &cohort_id,
+                    &metric_id,
+                    &cycle_start,
+                    &epsilon_cap,
+                    &delta_cap
+                ],
+            )
+            .map_err(|e| LedgerError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -206,19 +213,19 @@ impl DpBudgetLedger {
                 "requested_delta must be >= 0 and finite, got {requested_delta}"
             )));
         }
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
         let row: Option<(f64, f64, f64, f64)> = conn
+            .any_conn()
             .query_row(
                 "SELECT epsilon_spent, delta_spent, epsilon_cap, delta_cap
                  FROM dp_budget_ledger
                  WHERE cohort_id = ?1 AND metric_id = ?2 AND cycle_start = ?3",
-                params![cohort_id, metric_id, cycle_start],
+                sql_params![&cohort_id, &metric_id, &cycle_start],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
-            .optional()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
         // Missing row → treat as fresh slate. Caller should still have
         // called ensure_cycle so this branch is a defensive belt.
@@ -292,11 +299,19 @@ impl DpBudgetLedger {
             .unwrap_or(0);
         let publication_id = new_publication_id();
 
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
-        conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
+        // Statements rather than `AnyConn::transaction`: that helper fixes the
+        // error type to `String`, which would flatten `LedgerError::Invalid`
+        // ("budget exceeded") into `Storage` and lose the distinction callers
+        // map to a status code. `sql_translate` rewrites the BEGIN for
+        // Postgres, where it is READ COMMITTED — safe here because the cap
+        // guard is inside the UPDATE's WHERE clause, so the row lock does the
+        // serialising, not the isolation level.
+        conn.any_conn()
+            .execute("BEGIN IMMEDIATE TRANSACTION", &[])
             .map_err(|e| LedgerError::Storage(format!("begin immediate: {e}")))?;
 
         let txn_res = (|| -> Result<(), LedgerError> {
@@ -304,13 +319,13 @@ impl DpBudgetLedger {
             // against a row that does not exist, otherwise the FK on
             // dp_budget_publications would fail.
             let exists: Option<i64> = conn
+                .any_conn()
                 .query_row(
                     "SELECT 1 FROM dp_budget_ledger
                      WHERE cohort_id = ?1 AND metric_id = ?2 AND cycle_start = ?3",
-                    params![cohort_id, metric_id, cycle_start],
+                    sql_params![&cohort_id, &metric_id, &cycle_start],
                     |r| r.get(0),
                 )
-                .optional()
                 .map_err(|e| LedgerError::Storage(e.to_string()))?;
             if exists.is_none() {
                 return Err(LedgerError::Invalid(format!(
@@ -323,6 +338,7 @@ impl DpBudgetLedger {
             // Here the increment applies ONLY if it stays within cap; 0 rows
             // affected ⇒ the charge would exceed the budget, so reject + roll back.
             let charged = conn
+                .any_conn()
                 .execute(
                     "UPDATE dp_budget_ledger
                      SET epsilon_spent = epsilon_spent + ?4,
@@ -331,7 +347,7 @@ impl DpBudgetLedger {
                      WHERE cohort_id = ?1 AND metric_id = ?2 AND cycle_start = ?3
                        AND epsilon_spent + ?4 <= epsilon_cap
                        AND delta_spent   + ?5 <= delta_cap",
-                    params![cohort_id, metric_id, cycle_start, eps, delta, now],
+                    sql_params![&cohort_id, &metric_id, &cycle_start, &eps, &delta, &now],
                 )
                 .map_err(|e| LedgerError::Storage(e.to_string()))?;
             if charged == 0 {
@@ -339,34 +355,36 @@ impl DpBudgetLedger {
                     "budget exceeded: charging eps={eps}/delta={delta} would exceed the cohort cap for cycle {cycle_start} (concurrent publish or stale can_publish)"
                 )));
             }
-            conn.execute(
-                "INSERT INTO dp_budget_publications
+            conn.any_conn()
+                .execute(
+                    "INSERT INTO dp_budget_publications
                    (publication_id, cohort_id, metric_id, cycle_start,
                     epsilon, delta, noise_scale, published_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    publication_id,
-                    cohort_id,
-                    metric_id,
-                    cycle_start,
-                    eps,
-                    delta,
-                    noise_scale,
-                    now,
-                ],
-            )
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
+                    sql_params![
+                        &publication_id,
+                        &cohort_id,
+                        &metric_id,
+                        &cycle_start,
+                        &eps,
+                        &delta,
+                        &noise_scale,
+                        &now,
+                    ],
+                )
+                .map_err(|e| LedgerError::Storage(e.to_string()))?;
             Ok(())
         })();
 
         match txn_res {
             Ok(()) => {
-                conn.execute_batch("COMMIT;")
+                conn.any_conn()
+                    .execute("COMMIT", &[])
                     .map_err(|e| LedgerError::Storage(format!("commit: {e}")))?;
                 Ok(publication_id)
             }
             Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
+                let _ = conn.any_conn().execute("ROLLBACK", &[]);
                 Err(e)
             }
         }
@@ -395,7 +413,7 @@ impl DpBudgetLedger {
             new_delta_cap,
             new_cycle_start,
         )?;
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
@@ -403,8 +421,9 @@ impl DpBudgetLedger {
         // preserves the spend column (so an operator who accidentally
         // calls rotate twice for the same cycle_start cannot wipe
         // existing publications' privacy accounting).
-        conn.execute(
-            "INSERT INTO dp_budget_ledger
+        conn.any_conn()
+            .execute(
+                "INSERT INTO dp_budget_ledger
                (cohort_id, metric_id, cycle_start,
                 epsilon_spent, delta_spent,
                 epsilon_cap, delta_cap, last_published)
@@ -412,15 +431,15 @@ impl DpBudgetLedger {
              ON CONFLICT(cohort_id, metric_id, cycle_start) DO UPDATE SET
                epsilon_cap = excluded.epsilon_cap,
                delta_cap   = excluded.delta_cap",
-            params![
-                cohort_id,
-                metric_id,
-                new_cycle_start,
-                new_eps_cap,
-                new_delta_cap,
-            ],
-        )
-        .map_err(|e| LedgerError::Storage(e.to_string()))?;
+                sql_params![
+                    &cohort_id,
+                    &metric_id,
+                    &new_cycle_start,
+                    &new_eps_cap,
+                    &new_delta_cap,
+                ],
+            )
+            .map_err(|e| LedgerError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -431,35 +450,35 @@ impl DpBudgetLedger {
         if cohort_id.trim().is_empty() {
             return Err(LedgerError::Invalid("cohort_id empty".into()));
         }
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
-        let mut stmt = conn
-            .prepare(
+        let rows = conn
+            .any_conn()
+            .query_map(
                 "SELECT cohort_id, metric_id, cycle_start,
                         epsilon_spent, delta_spent,
                         epsilon_cap, delta_cap, last_published
                  FROM dp_budget_ledger
                  WHERE cohort_id = ?1
                  ORDER BY cycle_start ASC, metric_id ASC",
+                sql_params![&cohort_id],
+                |r| {
+                    Ok(LedgerEntry {
+                        cohort_id: r.get(0)?,
+                        metric_id: r.get(1)?,
+                        cycle_start: r.get(2)?,
+                        epsilon_spent: r.get(3)?,
+                        delta_spent: r.get(4)?,
+                        epsilon_cap: r.get(5)?,
+                        delta_cap: r.get(6)?,
+                        last_published: r.get(7)?,
+                    })
+                },
             )
             .map_err(|e| LedgerError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![cohort_id], |r| {
-                Ok(LedgerEntry {
-                    cohort_id: r.get(0)?,
-                    metric_id: r.get(1)?,
-                    cycle_start: r.get(2)?,
-                    epsilon_spent: r.get(3)?,
-                    delta_spent: r.get(4)?,
-                    epsilon_cap: r.get(5)?,
-                    delta_cap: r.get(6)?,
-                    last_published: r.get(7)?,
-                })
-            })
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
-        Ok(rows.flatten().collect())
+        Ok(rows)
     }
 }
 

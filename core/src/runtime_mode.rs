@@ -183,7 +183,6 @@ pub fn assert_production_enforcement_safe() -> Result<(), String> {
     for legacy_flag in [
         "SAURON_ENABLE_LEGACY_OPRF",
         "SAURON_ENABLE_LEGACY_OPRF_AUTH",
-        "SAURON_ENABLE_UNAUDITED_PAILLIER",
         "SAURON_ENABLE_VOLUNTARY_EGRESS_LOG",
         "SAURON_ALLOW_SERVER_DERIVED_POP",
         "SAURON_ALLOW_CUSTOM_CHECKSUM",

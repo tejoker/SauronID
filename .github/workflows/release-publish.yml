@@ -122,7 +122,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -151,6 +151,28 @@ jobs:
           path: packaging/npm-agent-action-tool/*.tgz
           if-no-files-found: error
 
+  # The verifiability claim needs the guest source public: a customer must be
+  # able to rebuild both guests and compare image IDs, or the IDs pinned in every
+  # proof mean nothing. Only transparent-zk/ is required for that, so the
+  # gateway, dashboard and deployment stay private. Depends on
+  # independent-signoff so the gate has already reproduced the IDs — an
+  # unreproducible guest must never be published as a reviewed one.
+  transparent-zk-mirror:
+    needs: independent-signoff
+    name: Mirror reproducible guest source
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Push squashed snapshot to the public mirror
+        env:
+          # owner/name of the public mirror, and a PAT with contents:write on it
+          # and nothing else. Absent credentials fail the release rather than
+          # silently shipping without the verification path.
+          MIRROR_REPO: ${{ vars.SAURON_PUBLIC_ZK_REPO }}
+          MIRROR_TOKEN: ${{ secrets.SAURON_PUBLIC_ZK_TOKEN }}
+        run: bash scripts/release/mirror-transparent-zk.sh "$GITHUB_REF_NAME"
+
   images:
     needs: independent-signoff
     name: Push images to GHCR
@@ -159,10 +181,17 @@ jobs:
     strategy:
       matrix:
         include:
+          # core/Dockerfile builds from the REPOSITORY ROOT, not from core/: it
+          # copies core/Cargo.toml and transparent-zk/types, neither of which is
+          # visible with core/ as the context. docker-compose.yml already pairs
+          # `context: .` with `dockerfile: core/Dockerfile`; this job did not,
+          # so the core image build failed on every release tag.
           - name: core
-            context: ./core
+            context: .
+            dockerfile: core/Dockerfile
           - name: dashboard
             context: ./dashboard
+            dockerfile: ./dashboard/Dockerfile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -179,82 +208,111 @@ jobs:
             type=semver,pattern={{version}}
             type=sha,format=long
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
+          # The Dockerfile splits dependencies into their own layer, but on an
+          # ephemeral runner that layer is rebuilt from nothing every time
+          # unless it is exported somewhere. GitHub's cache backend is that
+          # somewhere: with it, a release whose Cargo.lock is unchanged reuses
+          # the ~600-crate dependency layer instead of recompiling it.
+          #
+          # Safe for a release artifact because the cache keys on layer content,
+          # not on a tag — a changed lockfile changes the layer and misses the
+          # cache. The final `cargo build --locked` still pins the exact
+          # dependency graph either way.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
 
-  npm:
-    needs: independent-signoff
-    name: Publish @sauronid/agentic
-    runs-on: ubuntu-latest
-    environment: production-release
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
-        working-directory: agentic
-      - run: npm run build && npm test
-        working-directory: agentic
-      - name: Require npm publishing credential
+      # Provenance and an SBOM were already attached, but nothing bound them to
+      # this repository: an attacker who can push to the registry can attach
+      # their own. Keyless signing puts a Fulcio certificate on the digest
+      # carrying the workflow identity, so a customer can verify the image they
+      # are about to run was built by this workflow from this repository, and
+      # refuse it otherwise.
+      #
+      # The signed digest is the image INDEX digest, which references the
+      # provenance and SBOM attestation manifests, so pinning it transitively
+      # pins those too.
+      #
+      # This is what closes gateway integrity for a self-hosted customer: they
+      # verify the digest, pin the digest, and start the process themselves, so
+      # they know exactly what is running without reading our source. It proves
+      # nothing about an instance somebody else operates — see
+      # docs/attestation-scope.md.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign the image digest (keyless, GitHub OIDC)
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: test -n "$NODE_AUTH_TOKEN" || { echo "NPM_TOKEN is required for a release" >&2; exit 1; }
-      - name: Publish
-        run: npm pack && npm publish ./*.tgz --access public
-        working-directory: agentic
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: npm-agentic
-          path: agentic/*.tgz
-          if-no-files-found: error
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-  pypi:
-    name: Publish sauronid-client
+      - name: Verify the signature we just made
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+        # Publishing a signature nobody has ever verified is how an unusable
+        # verification path ships. This runs the customer's own command against
+        # the identity documented for them, so a mismatch fails the release
+        # rather than the customer.
+        run: |
+          cosign verify \
+            --certificate-identity-regexp \
+              "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${DIGEST}" >/dev/null
+          printf 'signed and verified %s@%s\n' "$IMAGE" "$DIGEST"
+
+  pypi-wheels:
+    name: Publish sauronid-client platform wheels
     needs: [security-gate, wheels]
     runs-on: ubuntu-latest
     environment: pypi
+    # Wheels only. The pure-Python sdist ships from publish-clients.yml, which
+    # does not wait on the assessment, because the client holds no keys and
+    # enforces nothing. These wheels are different: each one bundles the
+    # `agent-action-tool` workstation binary byte-for-byte, and a binary that
+    # signs actions is exactly what "publishes only from release-publish.yml,
+    # behind the assessment" was written for.
+    #
+    # PyPI accepts additional files for a version that already exists, so the
+    # sdist landing first is not a conflict — these upload alongside it under the
+    # same version once the release is signed off.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-      # sdist has no bundled binary; it falls back to env/PATH/repo lookup.
-      - run: python -m pip install "build==1.2.2.post1" && python -m build --sdist
-        working-directory: clients/python
-      - name: Assert source distribution has no workstation binary
-        run: |
-          if tar -tzf dist/*.tar.gz | grep -E '/agent-action-tool(\.exe)?$'; then
-            echo "source distribution contains a platform binary" >&2
-            exit 1
-          fi
-        working-directory: clients/python
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: python-sdist
-          path: clients/python/dist/*.tar.gz
-          if-no-files-found: error
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: wheel-*
           merge-multiple: true
-          path: clients/python/dist/
+          path: dist/
+      - name: Refuse to publish a wheel with no bundled binary
+        run: |
+          shopt -s nullglob
+          found=0
+          for w in dist/*.whl; do
+            if python3 -c "
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          sys.exit(0 if any(n.endswith(('agent-action-tool','agent-action-tool.exe')) for n in names) else 1)
+          " "$w"; then found=$((found+1)); else
+              echo "$w has no agent-action-tool; it belongs in the sdist lane" >&2; exit 1
+            fi
+          done
+          test "$found" -gt 0 || { echo "no wheels to publish" >&2; exit 1; }
+          echo "$found wheel(s) carry the binary"
       - name: Publish via trusted publishing
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
         with:
-          packages-dir: clients/python/dist
+          packages-dir: dist
 
   github-release:
     name: Immutable release assets and checksums
-    needs: [tool-binaries, wheels, npm-tool, images, npm, pypi]
+    needs: [tool-binaries, wheels, npm-tool, images, pypi-wheels, transparent-zk-mirror]
     runs-on: ubuntu-latest
     environment: production-release
     steps:
@@ -275,10 +333,24 @@ jobs:
           pattern: npm-*
           merge-multiple: true
           path: release-assets/npm
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      # The sdist is built here rather than downloaded. It used to come from the
+      # `pypi` job, which now lives in publish-clients.yml — but the GitHub
+      # release still has to carry it, because that is where the checksums are
+      # computed and the assets are immutable. Rebuilding it costs nothing (pure
+      # Python) and keeps the release complete without a cross-workflow artifact.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          name: python-sdist
-          path: release-assets/python
+          python-version: "3.12"
+      - name: Rebuild the source distribution for the release assets
+        working-directory: clients/python
+        run: |
+          python -m pip install "build==1.2.2.post1"
+          python -m build --sdist
+          if tar -tzf dist/*.tar.gz | grep -E '/agent-action-tool(\.exe)?$'; then
+            echo "source distribution contains a platform binary" >&2
+            exit 1
+          fi
+      - run: mkdir -p release-assets/python && cp clients/python/dist/*.tar.gz release-assets/python/
       - name: Verify annotated tag and create checksums
         run: |
           test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag || {

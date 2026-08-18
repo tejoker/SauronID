@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tejoker/HackNation2026.git",
+    "url": "git+https://github.com/tejoker/SauronID.git",
     "directory": "mcp-server"
   },
   "keywords": [
@@ -38,7 +38,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "^22",
     "typescript": "^5.4.0"
   }
 }

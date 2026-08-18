@@ -100,8 +100,15 @@ services:
     environment:
       - SAURON_URL=http://backend:3001
       - SAURON_ADMIN_KEY=dev-only-admin-key-not-for-production
+      # Throwaway owner keys for the seeded demo users. Written into the data
+      # volume, which the image already chowns to the runtime user — a host bind
+      # mount is owned by the host user and the container (uid 10001) cannot
+      # write to it. Copy them out with:
+      #   docker compose exec -T backend cat /var/lib/sauronid/demo-owner-keys.json
+      - SAURON_DEMO_OWNER_KEYS=/var/lib/sauronid/demo-owner-keys.json
     volumes:
       - ./scripts:/scripts:ro
+      - sauron_data:/var/lib/sauronid
     depends_on:
       backend:
         condition: service_healthy

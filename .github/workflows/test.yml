@@ -79,6 +79,27 @@ jobs:
         with:
           toolchain: 1.91.1
 
+      # MUST come before the first cargo invocation in this job. It used to sit
+      # after the dual-backend test, so the restore dropped a stale core/target
+      # on top of one cargo had already built: the merged tree carried
+      # fingerprints claiming freshness for a dependency rlib that era no longer
+      # had, and every later cargo command failed with
+      # "can't find crate for sauron_transparent_types" — which then cascaded
+      # into a wall of unresolved-const errors in transparent_proof.rs. Because
+      # the key is keyed on Cargo.lock and the lock had not changed, the poisoned
+      # entry was reused on every run, so the job failed deterministically in CI
+      # and never locally. The key is bumped to abandon that entry.
+      - name: Cache cargo registry + target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+          key: cargo-test-pg-v2-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-pg-v2-${{ runner.os }}-
+
       - name: Install postgres client
         run: |
           sudo apt-get update -qq
@@ -104,6 +125,27 @@ jobs:
               -v ON_ERROR_STOP=1 -f "$m"
           done
 
+      # The port routes call-site SQL through one translator instead of porting
+      # 55 tables by hand. Unit tests pin each rewrite's text; this pins that the
+      # rewritten statement returns the same rows from a real PostgreSQL.
+      # Same Rust code, both backends: binds through SqlValue, reads through
+      # AnyRow, asserts identical output. This is what the remaining call-site
+      # sweep leans on, so it runs on every push rather than by hand.
+      - name: AnyConn dual-backend equivalence
+        working-directory: core
+        run: cargo test --locked --test any_db_dual_backend
+        env:
+          SAURON_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/sauron_test
+
+      - name: SQL translation differential (SQLite vs PostgreSQL)
+        run: python3 core/tests/sql_translation_differential.py
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: sauron_test
+
       - name: Assert schema parity with SQLite
         run: bash scripts/ops/check-schema-parity.sh
         env:
@@ -112,17 +154,6 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: postgres
           PGDATABASE: sauron_test
-
-      - name: Cache cargo registry + target
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            core/target
-          key: cargo-test-pg-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
-          restore-keys: |
-            cargo-test-pg-${{ runner.os }}-
 
       - name: cargo test --lib (M1 ported modules)
         working-directory: core
@@ -138,7 +169,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: redteam/package-lock.json
 

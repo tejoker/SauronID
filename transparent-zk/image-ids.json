@@ -1,16 +1,18 @@
 {
   "manifest_version": 1,
   "risc0_zkvm": "3.0.5",
-  "risc0_guest_rust": "1.97.0",
+  "guest_builder_image": "risczero/risc0-guest-builder:r0.1.88.0",
+  "risc0_guest_rust": "1.88.0",
   "cargo_risczero": "3.0.6",
+  "build_mode": "docker",
   "lock_sha256": {
     "Cargo.lock": "644f342a21f99333af171b79e8f023d852b80e53ba109639bfa17a4b78489aea",
     "verifier/Cargo.lock": "32cb27561f011a6be39775835481b073fde16271a500760645603c3bd18af33c",
-    "methods/guest/Cargo.lock": "38b7b406d175e4d54a93f17059e5ba42ed670ff8013b4f0f4c4d5fb335d0b46a",
-    "methods/action-policy-guest/Cargo.lock": "0a1c32474796e9bf3c39d9a7f79fcc7f44d81c66da9c5fb239fb2a7cd809b6f4"
+    "methods/guest/Cargo.lock": "1bf5f300f994227cfb3e515513f85e2220f4fb3d871f2c05154a66f65f6c31a6",
+    "methods/action-policy-guest/Cargo.lock": "24ddf66ff645c5cfe4c079b3e2158135e7cb2c0fc6de8445d695d01ff454e941"
   },
   "programs": {
-    "sauron-stats-v1": "dd4bf48ed1cc4d62d51b153075a438048d03e832c3a8d50fdf4db9c0240a8060",
-    "sauron-action-policy-v1": "4e7ad7997c31f4a4a9e870e40f5a059306803fca724e14d2e3fa7bf90cdd9aa5"
+    "sauron-stats-v1": "fb43470bbfef04746b8c6f72899555ae58698378823fa18b7f2904e8be3da121",
+    "sauron-action-policy-v1": "729a9ffb74f51a623c825a9630b7a49f8df1441d66e57c3d4102d75cb98d5c7a"
   }
 }

@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: core
-          image: "{{ .Values.core.image.repository }}:{{ .Values.core.image.tag }}"
+          image: "{{ .Values.core.image.repository }}{{ if .Values.core.image.digest }}@{{ .Values.core.image.digest }}{{ else }}:{{ .Values.core.image.tag }}{{ end }}"
           imagePullPolicy: {{ .Values.core.image.pullPolicy }}
           ports:
             - name: http
@@ -51,8 +51,6 @@ spec:
             - name: SAURON_ENABLE_LEGACY_OPRF
               value: "0"
             - name: SAURON_ENABLE_LEGACY_OPRF_AUTH
-              value: "0"
-            - name: SAURON_ENABLE_UNAUDITED_PAILLIER
               value: "0"
             - name: SAURON_ENABLE_VOLUNTARY_EGRESS_LOG
               value: "0"

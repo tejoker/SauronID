@@ -1,7 +1,7 @@
 # API reference
 
 The canonical, machine-readable reference is the OpenAPI 3.1 spec at
-[`schemas/openapi.yaml`](https://github.com/tejoker/HackNation2026/blob/main/schemas/openapi.yaml)
+[`schemas/openapi.yaml`](https://github.com/tejoker/SauronID/blob/main/schemas/openapi.yaml)
 in the repo — generated from the core router and kept in lockstep with the
 handlers. This page summarizes the auth model so you can read the spec
 fluently.

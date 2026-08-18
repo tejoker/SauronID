@@ -63,6 +63,46 @@ single-node store with no cross-region HA. Two guards keep this honest:
 This turns a data-corruption footgun into an explicit, auditable
 acknowledgement.
 
+## Sweep progress
+
+**The call-site sweep is complete (2026-08-13).** Every production statement in
+`core/src` now goes through `AnyConn`, so the SQL dialect is translated and the
+backend choice lives in one place instead of at each call site.
+
+Exactly one production statement stays on rusqlite, deliberately:
+`db.rs` runs `PRAGMA table_info` to verify the SQLite schema bootstrap. PRAGMA is
+SQLite-only introspection with no PostgreSQL equivalent — that would be
+`information_schema` — and the check exists to validate the SQLite path itself.
+The surrounding `execute_batch` DDL is in the same position: PostgreSQL gets its
+schema from `migrations/postgres/`, so routing DDL through the translator would
+serve nothing.
+
+The primitives that made it tractable, in the order they became necessary:
+
+| Primitive | Replaces |
+| --- | --- |
+| `AsAnyConn::any_conn()` | `AnyConn::Sqlite(&db)` written at every site, which would have needed editing again at the switch |
+| `AnyConn::require` | `.map_err(\|_\| e())?.ok_or_else(e)?` plus a named closure per site |
+| `AnyConn::scalar_or` | `.ok().flatten().unwrap_or(d)`, and it *names* deliberate error-swallowing so those sites are greppable |
+| `AnyConn::transaction` | `rusqlite::Connection::transaction()`, which needs `&mut Connection` |
+| `AnyRowGet` + `FromAnyRow` | rewriting every field of every row closure into a named getter |
+| `From<&&str>`, `From<&Option<T>>`, borrowed scalars | a compile-fix cycle per parameter depending on owned vs Copy |
+
+What the sweep found, beyond the port itself: **six silent-truncation bugs**,
+all the same shape — `.flatten()` over a row iterator dropping rows that fail to
+decode. They were in merkle-leaf construction (twice, where a dropped row changes
+a published batch root), agent listing, ZKP proof listing, audit-chain
+verification, and ring usage. All now propagate the error.
+
+A scripted pass is safe for the receiver rewrite, the `params!` rename and the
+generic-argument fix. It is NOT safe for anything rewriting surrounding
+expressions: rules touching `.unwrap_or_default()` chains and a blanket
+`&`-prefix each mangled unrelated code — a `tenant.map(..)` chain, an
+`Option::map` on a request field, three legitimate non-database call sites,
+`allowed as i64`, and the inside of a `format!` string literal. Most were caught
+by the compiler; the rest by reading every diff hunk that did not mention a
+database call. Do both, before running the tests.
+
 ## Remaining work to make Postgres production-primary
 
 In dependency order (sizes: S/M/L):

@@ -56,7 +56,7 @@ shared = a·T   (agent, knows a)   ==   t·A   (operator, knows t)
 Per-ring scalar offset (domain-separated by ring id):
 
 ```
-h_R = H_to_scalar( "SAURON_RING_PSEUDONYM:" ‖ shared.compress() ‖ ring_id )
+h_R = H_to_scalar( "SAURON_RING_PSEUDONYM:" ‖ shared.compress() ‖ "|" ‖ ring_id )
 ```
 
 Per-ring keypair:
@@ -194,3 +194,41 @@ pseudonyms.
   attestation (gap #4).
 - **Reported-count honesty** for `config_digest` and tokens — unchanged caveat.
 - **No global-per-agent accounting** (consequence of #2) — accepted.
+
+## Obtaining the signing set (added 2026-08-16)
+
+`GET /agent/rings/{ring_id}/members` returns the ring's member points, its rule,
+and its `ring:{id}:v{n}` policy version, with **no admin key and no per-call
+signature**.
+
+This closes the gap that made the whole path unusable. An LSAG is computed
+across every member's key, so a signer needs the full set before it can sign —
+and the only endpoint that returned it was `GET /admin/rings/{id}/members`,
+behind operator authentication. An agent holding an admin key is not an agent,
+and could enumerate the ring anyway, so there was no client that could reach the
+feature: the endpoints to *use* a ring existed while the read they depend on did
+not.
+
+Serving it unauthenticated is a deliberate call, not an oversight:
+
+- The rows are per-ring stealth pseudonyms `P_R = A + h_R·G`. Recovering the
+  master key behind one, or linking two pseudonyms of the same agent across
+  rings, needs the operator trapdoor `t`. Without it the set is a bag of
+  unlinkable curve points.
+- What it does reveal is ring size — the anonymity-set size, which a signer must
+  know anyway to judge whether a signature is worth producing.
+- Secrecy of the ring was never the security property. Unforgeability and
+  unlinkability of the *signature* are, and neither depends on hiding members.
+  Monero publishes ring members on a public chain for the same reason.
+- Requiring a call signature would be actively harmful: it carries
+  `x-sauron-agent-id`, so every agent would announce which rings it is about to
+  sign for — precisely the correlation the pseudonym scheme prevents.
+
+The exemption in `CALL_SIG_EXEMPT_PATHS` is matched by shape rather than prefix:
+the verb is pinned to GET and both literal segments are checked, so a future
+`POST /agent/rings/{id}/subscribe` stays protected.
+
+**Member order is part of the protocol.** The array is sorted by point hex,
+because `ring::verify` walks the ring in sequence and a signer that orders
+members differently produces a signature that fails for no visible reason.
+Clients must sign over the array as returned.

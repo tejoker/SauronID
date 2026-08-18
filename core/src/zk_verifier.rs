@@ -682,6 +682,71 @@ mod tests {
         assert!(matches!(r, Err(ZkVerifyError::Invalid(msg)) if msg.contains("valid")));
     }
 
+    /// Groth16 must be unreachable in a production runtime.
+    ///
+    /// This is the property that lets the subsystem stay in the tree at all. It
+    /// ships DEV verification keys and has had no trusted-setup ceremony, so a
+    /// production runtime reaching it would be verifying proofs against keys
+    /// whose toxic waste nobody can account for. Two red-team scenario families
+    /// and two integration-test files exercise the Groth16 paths, which is why
+    /// the code is still here — but nothing pinned the refusal itself, so a
+    /// future edit to the gate would have gone unnoticed by every one of them.
+    ///
+    /// The gate lives at this one choke point on purpose: the stats submission
+    /// path in `aggregation::verify` does not re-check, it delegates here.
+    /// Asserting it here therefore covers both entry points.
+    ///
+    /// `ENV` is process-global, so this test sets and restores it and must not
+    /// run beside another test that reads it — hence `serial`-by-construction:
+    /// no other test in this module touches `ENV`.
+    #[tokio::test]
+    async fn groth16_is_refused_in_a_production_runtime() {
+        let previous = std::env::var("ENV").ok();
+
+        // A payload that passes every earlier check, so the gate is provably the
+        // reason for the rejection and not a side effect. The root binding runs
+        // BEFORE the runtime gate, so `public_inputs[1]` ("42" decimal) has to be
+        // the expected root hex-padded, or the test proves nothing about Groth16.
+        let root = format!("{:064x}", 42);
+
+        std::env::set_var("ENV", "production");
+        let p = payload("ActionSumBound", vec!["1", "42"], "{}");
+        let r = verify_action_log_proof(
+            &p,
+            &root,
+            &StubLoader {
+                path: PathBuf::from("/tmp/never-exists.vkey.json"),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&r, Err(ZkVerifyError::KeyNotFound(m)) if m.contains("development-only")),
+            "production must refuse Groth16 outright, got {r:?}"
+        );
+
+        // And the refusal is the runtime, not the env flag: opting in explicitly
+        // must not resurrect it outside development.
+        std::env::set_var("SAURON_ENABLE_GROTH16", "1");
+        let r = verify_action_log_proof(
+            &p,
+            &root,
+            &StubLoader {
+                path: PathBuf::from("/tmp/never-exists.vkey.json"),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&r, Err(ZkVerifyError::KeyNotFound(m)) if m.contains("development-only")),
+            "SAURON_ENABLE_GROTH16=1 must not re-enable Groth16 in production, got {r:?}"
+        );
+        std::env::remove_var("SAURON_ENABLE_GROTH16");
+
+        match previous {
+            Some(v) => std::env::set_var("ENV", v),
+            None => std::env::remove_var("ENV"),
+        }
+    }
+
     #[tokio::test]
     async fn root_mismatch_rejected() {
         // public_inputs = ["1" (valid), "42" (root)] → "42" hex-padded ≠ all-FF

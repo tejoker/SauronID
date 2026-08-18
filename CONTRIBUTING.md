@@ -2,7 +2,14 @@
 
 ## Prerequisites
 
-- Rust 1.88+ (stable toolchain with `rustfmt` and `clippy`)
+- Rust 1.91.1 — pinned exactly by `rust-toolchain.toml`, so rustup installs it
+  for you on first `cargo` invocation. `rustfmt` and `clippy` come with the pin.
+- A C toolchain. Several dependencies compile C, and every binary needs a
+  linker; without `cc` on `PATH` the build fails inside a build script rather
+  than at the start.
+  - Debian/Ubuntu: `sudo apt-get install build-essential pkg-config`
+  - Fedora/RHEL: `sudo dnf install gcc gcc-c++ make pkgconf`
+  - macOS: `xcode-select --install`
 - Node.js 20+
 - Python 3.12+ recommended for development (the Python SDK itself supports >=3.9)
 
@@ -33,5 +40,28 @@ Before opening a PR, run `make verify`. It is the same bar CI applies.
 
 ## Contribution model
 
-No CLA, no DCO sign-off: submitting a PR means you license your contribution
-under the repository's Apache-2.0 license (see `LICENSE`, section 5).
+No CLA and no DCO sign-off. Opening a pull request means you agree to the terms
+below, which exist because this repository is not under one licence (see
+`LICENSE`).
+
+1. **You license your contribution under the licence of the component you are
+   contributing to** — Apache-2.0 for the SDKs, the MCP server and
+   `transparent-zk/`; Business Source License 1.1 for `core/` and `dashboard/`.
+
+2. **You grant Nicolas Bigeard a perpetual, worldwide, irrevocable, royalty-free
+   licence to use, modify, sublicense and relicense your contribution**,
+   including under commercial terms.
+
+   This second grant is what makes the project's own licensing possible. The
+   gateway is sold commercially and converts to Apache-2.0 on its Change Date;
+   both require the right to place contributed code under a licence other than
+   the one it arrived under. Without it, a single contributed patch would be
+   unsellable and unconvertible, and the only remedy afterwards is tracking down
+   every past contributor for permission.
+
+3. **You confirm you have the right to make that grant** — the work is yours, or
+   your employer has authorised it.
+
+If you would rather not grant clause 2, say so in the pull request. Small fixes
+can usually be reimplemented independently, and it is much easier to sort out
+before a merge than after.

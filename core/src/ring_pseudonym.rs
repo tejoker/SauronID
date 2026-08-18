@@ -16,7 +16,7 @@
 //! - ECDH shared point, computable by both, nobody else:
 //!     `shared = a·T == t·A`
 //! - Per-ring scalar offset (domain-separated by `ring_id`):
-//!     `h_R = H_to_scalar("SAURON_RING_PSEUDONYM:" ‖ shared ‖ ring_id)`
+//!     `h_R = H_to_scalar("SAURON_RING_PSEUDONYM:" ‖ shared ‖ "|" ‖ ring_id)`
 //! - Per-ring keypair:
 //!     `x_R = a + h_R`   (only the agent can compute — needs `a`)
 //!     `P_R = x_R·G = A + h_R·G`   (the operator can compute — needs `t` → shared)

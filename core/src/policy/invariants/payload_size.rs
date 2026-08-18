@@ -33,7 +33,10 @@ impl RuntimeCheck for PayloadSizeCheck {
             .get("payload_bytes")
             .and_then(|v| v.as_u64())
         else {
-            // No payload declared → treat as zero-byte → allow.
+            // No payload declared → treat as zero-byte → allow. Safe because the
+            // SERVER writes this bag on every enforcement path (see the trust
+            // model in `super`), so an absent key means "this action has no
+            // payload", not "the agent declined to say".
             return Verdict::Allow;
         };
         if bytes > self.max_bytes {
@@ -84,6 +87,9 @@ mod tests {
         assert!(c.evaluate(&ctx(&a)).is_allow());
     }
 
+    /// Absent means "no payload", which is a server observation on every
+    /// enforcement path — a payment action legitimately has none, and a policy
+    /// that also carries a payload cap must not deny it for that.
     #[test]
     fn missing_payload_allows() {
         let c = PayloadSizeCheck::new(1024);

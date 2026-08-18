@@ -1,5 +1,27 @@
 # SauronID — AWS Nitro Enclave deployment
 
+> **Status: scaffolding, not a supported deployment mode.**
+>
+> NSM access is not compiled in — `aws-nitro-enclaves-nsm-api` is not a
+> dependency — so every attestation document `nitro-enclave` produces is a
+> placeholder. It cannot pass a production verifier: the Nitro verifier requires
+> certificate-chain validation by default and refuses a request when
+> `SAURON_NITRO_ROOT_PEM` is unset, so the placeholder fails closed rather than
+> being accepted. The binary now refuses to start unless
+> `SAURON_NITRO_ALLOW_STUB=1` is set, so it cannot look alive while proving
+> nothing.
+>
+> Two further things this directory does **not** yet do, both scoped in
+> `docs/attestation-scope.md`:
+>
+> - what it attests is an **agent's** enclave-held key, not the SauronID gateway
+>   itself, so it does not answer "which gateway binary is running";
+> - no step here has been exercised against real Nitro hardware.
+>
+> Do not represent enclave attestation as available on the strength of this
+> directory. Follow it to understand the shape of the work, or to do local
+> plumbing.
+
 This directory ships the scaffolding to build and run the SauronID enclave
 binary on AWS, then verify the resulting attestation document through the
 core API.

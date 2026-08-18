@@ -12,6 +12,7 @@
 //!   policy           policy DSL helpers (subcommand: `validate <file>`)
 //!   verify-audit     verify the keyed SQLite security-audit chain
 //!   verify-receipts  verify the KEYLESS receipt hash chain (no secret needed)
+//!   owner-keygen     generate an Ed25519 owner keypair (for demo seeding)
 //!
 //! Usage:
 //!   sauronid-cli keypair                            # writes ./agent.priv + agent.pub
@@ -50,6 +51,7 @@ fn main() -> ExitCode {
         "policy" => cmd_policy(&args[2..]),
         "verify-audit" => cmd_verify_audit(&args[2..]),
         "verify-receipts" => cmd_verify_receipts(&args[2..]),
+        "owner-keygen" => cmd_owner_keygen(),
         "help" | "-h" | "--help" => {
             print_usage();
             Ok(())
@@ -86,6 +88,7 @@ SUBCOMMANDS:
     health            GET $SAURON_CORE_URL/health and pretty-print
     policy validate <file>   parse a policy YAML/JSON file and report errors
     verify-audit --database <path>  verify audit sequence, linkage, and HMACs
+    owner-keygen                   print a fresh Ed25519 owner keypair as JSON
     verify-receipts --database <path> [--tenant <id>]
                                    verify the receipt hash chain — needs NO key,
                                    so a customer can run it against a vendor
@@ -99,6 +102,7 @@ ENV:
 
 fn cmd_verify_audit(args: &[String]) -> Result<(), String> {
     use rusqlite::{Connection, OpenFlags};
+    use sauron_core::any_db::AsAnyConn;
 
     let path = require_arg(args, "database")?;
     if env::var("SAURON_AUDIT_HMAC_KEY")
@@ -112,8 +116,34 @@ fn cmd_verify_audit(args: &[String]) -> Result<(), String> {
     }
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open audit database {path}: {e}"))?;
-    let count = sauron_core::middleware::audit_log::verify_audit_chain(&conn)?;
+    let count = sauron_core::middleware::audit_log::verify_audit_chain(&mut conn.any_conn())?;
     println!("audit chain OK: {count} records");
+    Ok(())
+}
+
+/// Generate an Ed25519 owner keypair, base64url, as JSON.
+///
+/// Exists so the dev seed can give demo users real owner keys without adding a
+/// Python crypto dependency to the runtime image. A production owner generates
+/// their key in their own process and never sends the private half anywhere —
+/// this is the same key type, produced by the same library the server verifies
+/// with, just for throwaway demo identities.
+fn cmd_owner_keygen() -> Result<(), String> {
+    use base64::Engine;
+    use ed25519_dalek::SigningKey;
+    use rand::RngCore;
+
+    let mut seed = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    let key = SigningKey::from_bytes(&seed);
+    let b64u = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+    println!(
+        "{}",
+        serde_json::json!({
+            "private_b64u": b64u(&key.to_bytes()),
+            "public_b64u": b64u(&key.verifying_key().to_bytes()),
+        })
+    );
     Ok(())
 }
 
@@ -123,12 +153,13 @@ fn cmd_verify_audit(args: &[String]) -> Result<(), String> {
 /// checking the operator.
 fn cmd_verify_receipts(args: &[String]) -> Result<(), String> {
     use rusqlite::{Connection, OpenFlags};
+    use sauron_core::any_db::AsAnyConn;
 
     let path = require_arg(args, "database")?;
     let tenant = arg_value(args, "tenant").unwrap_or_else(|| "default".to_string());
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open database {path}: {e}"))?;
-    let count = sauron_core::agent_action::verify_receipt_chain(&conn, &tenant)?;
+    let count = sauron_core::agent_action::verify_receipt_chain(&mut conn.any_conn(), &tenant)?;
     println!("receipt chain OK: {count} chained receipts for tenant {tenant}");
     Ok(())
 }

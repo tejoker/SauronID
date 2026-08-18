@@ -35,6 +35,21 @@ RESULTS_FILE="$RESULTS_DIR/run-$STAMP.json"
 # Fresh DB every run — soak numbers on a pre-grown DB are a different test.
 rm -f "$DB" "$DB-wal" "$DB-shm"
 
+# Backend selection. Default stays SQLite so existing runs are comparable; set
+# SAURON_DB_BACKEND=postgres + DATABASE_URL to soak the Postgres tier instead.
+# The SQLite path is still handed a DATABASE_PATH because the core opens that
+# pool either way — under Postgres it is the dev-only default, not the store.
+BACKEND="${SAURON_DB_BACKEND:-sqlite}"
+if [[ "$BACKEND" == "postgres" || "$BACKEND" == "pg" || "$BACKEND" == "postgresql" ]]; then
+    if [[ -z "${DATABASE_URL:-}" ]]; then
+        echo "[run.sh] SAURON_DB_BACKEND=$BACKEND needs DATABASE_URL" >&2
+        exit 1
+    fi
+    echo "[run.sh] backend=postgres ($( echo "$DATABASE_URL" | sed -E 's#//[^@]*@#//***@#' ))"
+else
+    echo "[run.sh] backend=sqlite"
+fi
+
 echo "[run.sh] booting core on :$PORT (db=$DB, log=$CORE_LOG)"
 ENV=development \
 SAURON_REQUIRE_CALL_SIG=1 \
@@ -43,6 +58,8 @@ SAURON_ADMIN_CROSS_TENANT=1 \
 SAURON_GLOBAL_RATE_LIMIT_RPS=5000 \
 SAURON_GLOBAL_RATE_LIMIT_BURST=2000 \
 SAURON_ADMIN_KEY="$SAURON_ADMIN_KEY" \
+SAURON_DB_BACKEND="$BACKEND" \
+DATABASE_URL="${DATABASE_URL:-}" \
 PORT="$PORT" \
 DATABASE_PATH="$DB" \
 "$CORE_BIN" >"$CORE_LOG" 2>&1 &

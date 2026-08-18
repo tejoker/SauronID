@@ -29,14 +29,15 @@
 //! `ed25519-dalek` + `base64` + `serde_json` stack.
 
 use crate::agent::{call_sig_skew_ms, VerifiedCallSig};
+use crate::any_db::AnyRowGet;
 use crate::error::AppError;
+use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
 use crate::tenancy::TenantId;
 use axum::http::StatusCode;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -357,19 +358,19 @@ pub async fn verify_dpop_request(
     // config digest (see module doc for why this surface is opt-in).
     let pop_pk_b64u: String = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
-        db.query_row(
+        let mut db = st.db.lock().unwrap();
+        db.any_conn().require(
             "SELECT IFNULL(pop_public_key_b64u, '')
              FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2 AND expires_at > ?3",
-            params![agent_id, tenant_id, now],
-            |r| r.get::<_, String>(0),
-        )
-        .map_err(|_| AppError::with_hint(
-            StatusCode::UNAUTHORIZED,
-            "call_sig_unknown_agent",
-            "unknown, revoked, or expired agent",
-            "register the agent (or re-register after expiry/revocation) and send its exact agent_id and tenant in x-sauron-agent-id / x-sauron-tenant-id",
-        ))?
+            sql_params![&agent_id, &tenant_id, &now],
+            |r| r.get::<String>(0),
+            || AppError::with_hint(
+                StatusCode::UNAUTHORIZED,
+                "call_sig_unknown_agent",
+                "unknown, revoked, or expired agent",
+                "register the agent (or re-register after expiry/revocation) and send its exact agent_id and tenant in x-sauron-agent-id / x-sauron-tenant-id",
+            ),
+        )?
     };
     if pop_pk_b64u.is_empty() {
         return Err(AppError::with_hint(

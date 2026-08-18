@@ -110,11 +110,17 @@ tarpaulin-report.html
 .env*
 
 # Container-built Rust artifacts (root-owned; see the containerized cargo loop).
-target-docker/
+# Also covers ad-hoc CARGO_TARGET_DIR scratch dirs (target-repro, target-localcheck…).
+**/target-*/
 
 # Local dev-only generated secrets (admin key, etc.) — never commit.
 .dev-secrets
 prod.secrets.env
+# Throwaway owner keys the seed generates so the DEMO can sign agent mandates
+# with the production code path. Disposable by construction, but they are still
+# private keys and have no business in a public repository.
+core/.demo-owner-keys.json
+deploy/demo/
 
 # Internal-only material. This repository is public: prospect lists, outreach
 # plans, unreviewed legal templates and internal assessments stay local.

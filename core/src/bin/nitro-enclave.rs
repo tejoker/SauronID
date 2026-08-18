@@ -93,6 +93,30 @@ struct AttestationRequest {
 fn main() -> std::io::Result<()> {
     init_logging();
 
+    // Refuse to run silently as a stub. Everything below serves attestation
+    // documents, and without the NSM dependency compiled in, every document is
+    // the placeholder in `request_attestation_document` — it cannot pass a
+    // production verifier, which is correct, but an operator following
+    // deploy/nitro/README.md end to end would otherwise get a listener that
+    // looks alive and discover the truth late. Make the operator state the
+    // intent, so "we support Nitro enclaves" can never rest on this binary
+    // having started.
+    if !nsm_compiled_in() && !stub_explicitly_allowed() {
+        eprintln!(
+            "nitro-enclave: refusing to start. NSM access is not compiled in \
+             (aws-nitro-enclaves-nsm-api is not a dependency), so every attestation \
+             document this binary produces is a placeholder that no production \
+             verifier accepts.\n\
+             \n\
+             This is scaffolding, not a supported deployment mode — see \
+             deploy/nitro/README.md and docs/tee-deployment.md.\n\
+             \n\
+             To run it anyway for local plumbing work, set \
+             SAURON_NITRO_ALLOW_STUB=1."
+        );
+        std::process::exit(2);
+    }
+
     // ── Step 1: ephemeral Ed25519 keypair (lives only in enclave memory).
     let mut rng = OsRng;
     let signing_key = SigningKey::generate(&mut rng);
@@ -220,6 +244,22 @@ fn build_user_data(public_key: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
 /// `core/Cargo.toml`), we emit a recognisable placeholder + log a warning.
 /// Parent-side `verify_nitro_enclave` will reject this with `Malformed` so
 /// no operator can accidentally trust a stub document.
+/// Whether a real NSM path is compiled in.
+///
+/// Hard-coded `false` while `aws-nitro-enclaves-nsm-api` is not a dependency.
+/// Wiring the dep means flipping this to a `cfg!(feature = ...)` check in the
+/// same commit that replaces `request_attestation_document`, so the startup
+/// guard and the document path can never disagree.
+fn nsm_compiled_in() -> bool {
+    false
+}
+
+fn stub_explicitly_allowed() -> bool {
+    std::env::var("SAURON_NITRO_ALLOW_STUB")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 fn request_attestation_document(_public_key: &[u8; 32], _user_data: &[u8]) -> AttestationDocument {
     log_warn(
         "NSM access not compiled in (aws-nitro-enclaves-nsm-api not a Cargo dep). \

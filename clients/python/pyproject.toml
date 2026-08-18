@@ -35,9 +35,9 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.25"]
 
 [project.urls]
-"Homepage" = "https://github.com/tejoker/HackNation2026"
-"Repository" = "https://github.com/tejoker/HackNation2026"
-"Documentation" = "https://github.com/tejoker/HackNation2026/tree/main/docs"
+"Homepage" = "https://github.com/tejoker/SauronID"
+"Repository" = "https://github.com/tejoker/SauronID"
+"Documentation" = "https://github.com/tejoker/SauronID/tree/main/docs"
 
 [build-system]
 requires = ["setuptools>=77", "wheel"]

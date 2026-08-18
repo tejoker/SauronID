@@ -1,8 +1,9 @@
 //! Shared A-JWT / KYA helpers: intent scopes, JTI replay store, PoP JWS verification.
 
+use crate::any_db::{AnyConn, AnyRowGet};
+use crate::sql_params;
 use rand::rngs::OsRng;
 use rand::RngCore;
-use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -75,9 +76,13 @@ pub fn assert_child_scopes_subset_of_parent(
 /// Wrapped in `BEGIN IMMEDIATE TRANSACTION` to acquire the SQLite writer lock
 /// for the duration of the delete+insert pair. Combined with `journal_mode =
 /// WAL` + `busy_timeout` this gives single-writer serialisable semantics.
-/// On Postgres callers SHOULD route through `Repo::consume_ajwt_jti` which
-/// runs the same operation under `ISOLATION LEVEL SERIALIZABLE` with retry.
-pub fn consume_ajwt_jti(db: &Connection, jti: &str, exp: i64) -> Result<(), String> {
+/// On Postgres the transaction is a plain `BEGIN` — READ COMMITTED, not
+/// SERIALIZABLE. That is sufficient here because replay detection is the
+/// PRIMARY KEY on `jti`, not anything this transaction reads: two concurrent
+/// consumes of the same jti both attempt the INSERT and exactly one survives.
+/// `Repo::consume_ajwt_jti` upgrades the isolation for callers that already
+/// hold an async context.
+pub fn consume_ajwt_jti(db: &mut AnyConn<'_>, jti: &str, exp: i64) -> Result<(), String> {
     if jti.is_empty() {
         return Err("missing jti".into());
     }
@@ -85,77 +90,27 @@ pub fn consume_ajwt_jti(db: &Connection, jti: &str, exp: i64) -> Result<(), Stri
         return Err("jti too long (max 256 chars)".into());
     }
     let now = now_secs();
-    db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
-        .map_err(|e| format!("begin immediate: {e}"))?;
-    let res = (|| -> Result<(), String> {
-        db.execute("DELETE FROM ajwt_used_jtis WHERE exp < ?", params![now])
-            .map_err(|e| e.to_string())?;
-        db.execute(
+    db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM ajwt_used_jtis WHERE exp < ?1",
+            sql_params![&now],
+        )?;
+        tx.execute(
             "INSERT INTO ajwt_used_jtis (jti, exp) VALUES (?1, ?2)",
-            params![jti, exp],
+            sql_params![&jti, &exp],
         )
         .map_err(|e| {
-            if e.to_string().contains("UNIQUE") {
+            // Each backend spells the unique violation differently; matching
+            // only SQLite's wording would turn a replay into a 500 on Postgres.
+            let msg = e.to_lowercase();
+            if msg.contains("unique") || msg.contains("duplicate key") {
                 "A-JWT jti replay (token already used)".to_string()
             } else {
-                e.to_string()
+                e
             }
         })?;
         Ok(())
-    })();
-    match res {
-        Ok(()) => {
-            db.execute_batch("COMMIT;")
-                .map_err(|e| format!("commit: {e}"))?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = db.execute_batch("ROLLBACK;");
-            Err(e)
-        }
-    }
-}
-
-/// Atomic single-use nonce consume for the DPoP-style per-call signature.
-/// Returns Err if (agent_id, nonce) already inserted (replay), or db error.
-///
-/// Legacy direct-DB path. Prefer `Repo::consume_call_nonce` (in
-/// `repository.rs`) which runs under `BEGIN IMMEDIATE` on SQLite and
-/// `ISOLATION LEVEL SERIALIZABLE` (with retry) on Postgres.
-pub fn consume_call_nonce(
-    db: &Connection,
-    agent_id: &str,
-    nonce: &str,
-    exp: i64,
-) -> Result<(), String> {
-    if nonce.is_empty() {
-        return Err("missing call nonce".into());
-    }
-    if nonce.len() > 128 {
-        return Err("call nonce too long (max 128 chars)".into());
-    }
-    db.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
-        .map_err(|e| format!("begin immediate: {e}"))?;
-    let res = db.execute(
-        "INSERT INTO agent_call_nonces (agent_id, nonce, exp) VALUES (?1, ?2, ?3)",
-        params![agent_id, nonce, exp],
-    );
-    match res {
-        Ok(_) => {
-            db.execute_batch("COMMIT;")
-                .map_err(|e| format!("commit: {e}"))?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = db.execute_batch("ROLLBACK;");
-            let s = e.to_string();
-            if s.contains("UNIQUE") || s.contains("PRIMARY KEY") {
-                Err("call nonce replay (already used)".to_string())
-            } else {
-                Err(s)
-            }
-        }
-    }
+    })
 }
 
 /// Verify compact JWS: EdDSA over `header.payload`, payload decodes to UTF-8 `challenge`.
@@ -218,7 +173,7 @@ pub fn random_challenge_id() -> String {
 
 /// Store one-time PoP challenge for an agent.
 pub fn insert_pop_challenge(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     id: &str,
     agent_id: &str,
     challenge: &str,
@@ -227,47 +182,53 @@ pub fn insert_pop_challenge(
     let now = now_secs();
     let exp = now + ttl_secs;
     db.execute(
-        "DELETE FROM agent_pop_challenges WHERE exp < ?",
-        params![now],
-    )
-    .map_err(|e| e.to_string())?;
+        "DELETE FROM agent_pop_challenges WHERE exp < ?1",
+        sql_params![&now],
+    )?;
     db.execute(
         "INSERT INTO agent_pop_challenges (id, agent_id, challenge, exp) VALUES (?1, ?2, ?3, ?4)",
-        params![id, agent_id, challenge, exp],
-    )
-    .map_err(|e| e.to_string())?;
+        sql_params![&id, &agent_id, &challenge, &exp],
+    )?;
     Ok(exp)
 }
 
 /// Load and delete challenge (one-time use).
+///
+/// The DELETE, not the SELECT, is what makes it one-time. The read validates
+/// the agent binding and expiry so the caller gets a specific error, but two
+/// concurrent takes can both pass that read — on SQLite as much as on Postgres,
+/// since this pair was never wrapped in a transaction. Only the caller whose
+/// DELETE reports a row removed may use the challenge; the loser is told it was
+/// already consumed rather than being handed a second copy.
 pub fn take_pop_challenge(
-    db: &Connection,
+    db: &mut AnyConn<'_>,
     challenge_id: &str,
     expected_agent_id: &str,
 ) -> Result<String, String> {
     let now = now_secs();
-    let (challenge, agent_id, exp): (String, String, i64) = db
-        .query_row(
-            "SELECT challenge, agent_id, exp FROM agent_pop_challenges WHERE id = ?1",
-            params![challenge_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|_| "unknown or expired pop_challenge_id".to_string())?;
+    let (challenge, agent_id, exp): (String, String, i64) = db.require(
+        "SELECT challenge, agent_id, exp FROM agent_pop_challenges WHERE id = ?1",
+        sql_params![challenge_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        || "unknown or expired pop_challenge_id".to_string(),
+    )?;
     if agent_id != expected_agent_id {
         return Err("pop challenge does not match agent".into());
     }
     if exp < now {
         let _ = db.execute(
             "DELETE FROM agent_pop_challenges WHERE id = ?1",
-            params![challenge_id],
+            sql_params![&challenge_id],
         );
         return Err("pop challenge expired".into());
     }
-    db.execute(
+    let consumed = db.execute(
         "DELETE FROM agent_pop_challenges WHERE id = ?1",
-        params![challenge_id],
-    )
-    .map_err(|e| e.to_string())?;
+        sql_params![&challenge_id],
+    )?;
+    if consumed != 1 {
+        return Err("pop challenge already used".into());
+    }
     Ok(challenge)
 }
 

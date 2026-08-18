@@ -135,6 +135,7 @@ fn format_attestation_error(e: &AttestationError) -> String {
             format!("measurement mismatch: expected {expected}, got {got}")
         }
         AttestationError::NotImplemented(k) => format!("not implemented: {k}"),
+        AttestationError::UnsupportedKind => e.to_string(),
         AttestationError::PartialImplementation(m) => format!("partial implementation: {m}"),
         AttestationError::Malformed(s) => format!("malformed: {s}"),
         AttestationError::Empty => "empty attestation".into(),

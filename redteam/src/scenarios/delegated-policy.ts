@@ -1,7 +1,8 @@
-import { CoreApi, randSuffix } from "../core-api";
+import { CoreApi, createPopKeyPair, randSuffix } from "../core-api";
 
 /** delegated_bank: payment_initiation and prove_age allowed per matrix. */
 export async function scenarioDelegatedPolicy(api: CoreApi, bankSite: string, label: string): Promise<void> {
+    const pop = createPopKeyPair();
     const sfx = `${label}-${randSuffix()}`;
     const retail = `redteam-del-${sfx}`;
     await api.ensureClient(bankSite, "BANK");
@@ -28,8 +29,8 @@ export async function scenarioDelegatedPolicy(api: CoreApi, bankSite: string, la
         intent_json: JSON.stringify({ scope: ["prove_age", "payment_initiation"] }),
         public_key_hex: keys.public_key_hex,
         ring_key_image_hex: keys.ring_key_image_hex,
-        pop_jkt: `redteam-pop-${sfx}`,
-        pop_public_key_b64u: "redteam-pop-public-key",
+        pop_jkt: pop.thumbprint,
+        pop_public_key_b64u: pop.publicKeyB64u,
         ttl_secs: 3600,
     });
     if (reg.status !== 200) throw new Error(`agent/register ${reg.status}: ${reg.raw}`);

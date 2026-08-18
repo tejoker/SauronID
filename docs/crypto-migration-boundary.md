@@ -53,7 +53,7 @@ OPAQUE service only if password authentication is a product requirement.
 ## Aggregation and key custody
 
 Production aggregation uses local computation plus the transparent stats proof;
-the quarantined Paillier route is not a commercial claim. Threshold HE is only
+the Paillier route has been removed entirely, so it is not a claim of any kind. Threshold HE is only
 needed if ciphertext aggregation itself becomes a product requirement.
 
 Partner signing keys are externally generated and retained by the partner,
