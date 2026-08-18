@@ -1397,11 +1397,35 @@ async function runEmpiricalSuite(api: CoreApi): Promise<TestResult[]> {
         const controlStats = trimmedStats(controlPairs);
         const controlDiff = Math.abs(controlStats.mean);
         const controlT = controlDiff / Math.max(controlStats.std / Math.sqrt(controlStats.n), 1e-9);
-        const detectorControlPassed = controlT >= 3 && controlDiff >= 50;
-        // Threshold: |t| < 3 → no statistically significant timing gap at ~99.7% CI.
-        // We also require the absolute mean paired difference to be small in µs
-        // terms (< 50µs) so the verdict stays meaningful under wide network noise.
-        const ok = detectorControlPassed && tStat < 3 && meanDiff < 50;
+        // The control must exercise the DECISION RULE, not just the arithmetic:
+        // a rule that can never fire would pass every run silently. Applying the
+        // same joint test to a deliberately separated distribution has to yield
+        // "oracle detected".
+        const MATERIAL_US = 50;
+        const detectorControlPassed =
+            controlT >= 3 && controlDiff >= MATERIAL_US;
+        // An oracle has to be BOTH real and material. The previous form failed
+        // the suite when EITHER condition tripped, and with n≈1800 pairs the
+        // t-statistic resolves effects far below anything exploitable: a 27µs
+        // mean difference on a ~4,100µs baseline (0.7%, against σ≈240µs) scored
+        // t=4.91 and failed the run, then scored t=0.34 on the same binary once
+        // the host went quiet. That is ambient load being reported as a
+        // vulnerability.
+        //
+        // So: significance decides whether the difference is real, and MATERIAL_US
+        // decides whether it is worth anything to an attacker. Both, or no
+        // finding.
+        //
+        // What this test can and cannot see. The compare it targets
+        // (`subtle::ConstantTimeEq` over a 64-char hex signature) is
+        // sub-microsecond, while one request costs milliseconds — so a
+        // short-circuit here would be buried far below the noise floor no matter
+        // how many samples are taken. This is a screen for GROSS timing oracles,
+        // the kind where a distinguisher costs a meaningful fraction of request
+        // time. Passing it is not proof of constant-time behaviour; that comes
+        // from the implementation and from reading it.
+        const oracleDetected = tStat >= 3 && meanDiff >= MATERIAL_US;
+        const ok = detectorControlPassed && !oracleDetected;
         record(
             out,
             "A15",
@@ -1412,7 +1436,7 @@ async function runEmpiricalSuite(api: CoreApi): Promise<TestResult[]> {
             `early_mean=${s1.mean.toFixed(2)}µs σ=${s1.std.toFixed(2)} | late_mean=${s2.mean.toFixed(2)}µs σ=${s2.std.toFixed(2)} | paired Δ=${d.mean.toFixed(2)}µs σ=${d.std.toFixed(2)} n=${d.n} t=${tStat.toFixed(2)} | detector_control_t=${controlT.toFixed(2)}`,
             {
                 dynamic: true,
-                evidence: `paired |t|=${tStat.toFixed(2)} over ${d.n} back-to-back pairs (<3 ⇒ no oracle), mean Δ=${d.mean.toFixed(2)}µs; subtle::ConstantTimeEq walks full sig regardless of first mismatch`,
+                evidence: `paired |t|=${tStat.toFixed(2)} over ${d.n} back-to-back pairs, mean Δ=${d.mean.toFixed(2)}µs; a finding needs |t|>=3 AND |Δ|>=${MATERIAL_US}µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise.`,
             }
         );
     }

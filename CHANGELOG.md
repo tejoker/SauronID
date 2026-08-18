@@ -58,6 +58,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Eight `Repo` methods that duplicated a live write path and had no caller.**
+  `risk_increment`, `prune_call_nonces`, `prune_pop_challenges`,
+  `insert_bitcoin_anchor`, `insert_solana_anchor`, `insert_merkle_leaf`,
+  `agent_action_receipt_exists` and `consume_bank_attestation_nonce` were the
+  ported-but-never-wired half of the Postgres migration: each wrote a table that
+  a live `AnyConn` path already wrote, through the other connection pool, with
+  different isolation and no transaction spanning the two. Tables written by
+  **both** pools went from six to three. Of the three left, `agent_call_nonces`
+  is not a conflict (`Repo` claims, the GC only deletes already-expired rows),
+  and `ajwt_used_jtis` / `agent_pop_challenges` stay deliberately — they are the
+  landing zone the deferred M2 call-site sweep points at, named in the TODOs in
+  `agent.rs` and `main.rs`. `repository.rs` lost 1,064 lines.
+- The consent-token family (`consume_consent_token`, `grant_consent_token`,
+  `insert_pending_consent`, `get_consent_by_token`, `get_consent_info`,
+  `pending_consent_site`) and `insert_user_if_absent`, orphaned when the
+  `/kyc/*` and `/register` routes went.
+- `ajwt_support::consume_call_nonce`, a bare-INSERT duplicate of the
+  replay-protection primitive. Its only live caller was the dashboard's
+  "replay" demo, so the console was demonstrating a weaker path than the one
+  the call-signature middleware actually enforces with. The demo now calls
+  `Repo::consume_call_nonce` — `BEGIN IMMEDIATE` on SQLite, SERIALIZABLE with
+  retry on Postgres — leaving one writer for that table.
+
+
 - **The banking-pivot surface is gone.** `/oprf`, `/register` (KYC deposit),
   `/bank/register`, `/register/bank`, `/kyc/request`, `/kyc/consent`,
   `/kyc/consent_info/{request_id}`, `/kyc/retrieve` and `/agent/kyc/consent`
@@ -99,6 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A15 (HMAC timing oracle) reported ambient load as a vulnerability.** It
+  declared a finding when the paired t-statistic OR the effect size tripped, and
+  with n≈1800 pairs the t-statistic resolves effects far below anything
+  exploitable: a 27µs mean difference on a ~4,100µs baseline scored t=4.91 and
+  failed the suite, then scored t=0.34 on the same binary once the host went
+  quiet. An oracle now has to be both **real** (|t|>=3) and **material**
+  (|Δ|>=50µs). That also closes a second false-positive mode — large-but-not-
+  significant — and the detector control now exercises the decision rule rather
+  than just the arithmetic. Verified green under six busy cores.
 - **`@sauronid/mcp-server` would have published broken.** It depends on
   `@sauronid/agentic` as `file:../agentic` — correct locally, unresolvable for
   anyone installing from npm, so `npx @sauronid/mcp-server` would have failed
@@ -118,6 +151,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/ci/check-openapi-routes.py`, wired into the release gate: fails when
   `schemas/openapi.yaml` and the router disagree in either direction. It found
   `/agent/rings/{ring_id}/members` undocumented on its first run.
+- **A restart test for anonymous rings.** Ring membership surviving a process
+  restart had no automated coverage: the shell script that once drove it went
+  through `/kyc/*` and had been untracked since `10e0d67`, so it could not run
+  on a clean checkout. The replacement is a Rust test against a real on-disk
+  database — reopened after the connection is dropped — asserting the member set,
+  its **order**, the rule and the version all survive, that a signature over the
+  reloaded set still verifies, and that revocation still re-derives. It pins the
+  ordering contract explicitly rather than comparing before-to-after, because
+  both sides read through the same function and a systematic reorder would
+  otherwise pass unnoticed.
+- **A test pinning that Groth16 is refused in production.** The subsystem ships
+  DEV verification keys and has had no trusted-setup ceremony, and its gate is
+  what lets it stay in the tree at all — but nothing asserted the refusal, so an
+  edit to the gate would have gone unnoticed by all six red-team scenarios that
+  exercise those paths. The test also checks that `SAURON_ENABLE_GROTH16=1`
+  cannot resurrect it outside a development runtime.
 - `security/assessment-brief.md` — the scope to hand a prospective independent
   assessor: what the system is, what the two coverage areas the release gate
   demands actually contain, and what is already known-unfinished so nobody

@@ -1535,34 +1535,35 @@ pub async fn run_demo_scenario(
         }
         // Replay — consume the SAME single-use nonce twice against the live store.
         "replay" => {
-            let st = state
-                .read()
-                .map_err(|_| AppError::Internal("state lock".into()))?;
-            let db = st
-                .db
-                .lock()
-                .map_err(|_| AppError::Internal("db lock".into()))?;
-            let mut db = db;
+            // Through `Repo`, which is the same primitive the call-signature
+            // middleware enforces with — `BEGIN IMMEDIATE` on SQLite,
+            // SERIALIZABLE with retry on Postgres. The demo used to call the
+            // legacy `ajwt_support::consume_call_nonce` instead: a bare INSERT
+            // on the *other* connection pool. It agreed by accident, because the
+            // uniqueness constraint does the work either way, but it meant the
+            // replay-protection table had two writers with different isolation
+            // and the console demonstrated the weaker one.
+            let repo = {
+                let st = state
+                    .read()
+                    .map_err(|_| AppError::Internal("state lock".into()))?;
+                st.repo.clone()
+            };
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let nonce = format!("demo-replay-{nanos}");
             let exp = (nanos / 1_000_000_000) as i64 + 300;
-            let first_ok = crate::ajwt_support::consume_call_nonce(
-                &mut db.any_conn(),
-                "demo_scenario_agent",
-                &nonce,
-                exp,
-            )
-            .is_ok();
-            let second_err = crate::ajwt_support::consume_call_nonce(
-                &mut db.any_conn(),
-                "demo_scenario_agent",
-                &nonce,
-                exp,
-            )
-            .err();
+            let first_ok = repo
+                .consume_call_nonce("demo_scenario_agent", &nonce, exp)
+                .await
+                .is_ok();
+            let second_err = repo
+                .consume_call_nonce("demo_scenario_agent", &nonce, exp)
+                .await
+                .err()
+                .map(|e| e.to_string());
             let stopped = first_ok && second_err.is_some();
             Ok(Json(DemoScenarioOut {
                 result: if stopped { "stopped" } else { "allowed" }.into(),
