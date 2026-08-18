@@ -49,12 +49,12 @@ use std::path::{Path, PathBuf};
 const SQLITE_ONLY: &[(&str, usize, &str)] = &[
     (
         "repository.rs",
-        22,
+        14,
         "the SQLite half of Repo's own backend match; the Postgres half is sqlx",
     ),
     (
         "db.rs",
-        2,
+        1,
         "the dispatcher itself — it has to be able to name the SQLite pool",
     ),
     (
@@ -183,10 +183,6 @@ fn acquisition_dispatches_by_default() {
     assert!(
         db.contains("pub enum DbConn"),
         "the dispatching guard is gone"
-    );
-    assert!(
-        db.contains("pub fn any<T>"),
-        "DbHandle::any is gone — still the right shape for an async call site"
     );
 }
 

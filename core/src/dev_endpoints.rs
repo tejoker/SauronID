@@ -25,6 +25,12 @@
 
 use super::*;
 
+// Imported here rather than inherited through `use super::*`: these are the
+// demo scaffolding's own dependencies, and main.rs no longer needs any of them.
+use curve25519_dalek::{RistrettoPoint, Scalar};
+use sauron_core::ring;
+use sha2::{Digest, Sha256, Sha512};
+
 /// Recalcule le résultat OPRF sans le protocole blind.
 /// Équivalent à client_unblind(server_evaluate(client_blind(e,p), k), r)
 /// mais sans le masquage (k est connu, pour usage interne uniquement).
@@ -46,7 +52,6 @@ pub(crate) fn dev_oprf_eval(
 // ─────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────────────────────
-// POST /zkp/proof_material
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -803,95 +808,5 @@ pub(crate) async fn dev_leash_demo(
         "revoked_agent_fails": revoked_agent_fails,
         "out_of_ring_agent_fails": out_of_ring_agent_fails,
         "receipt_verification": receipt_verification,
-    })))
-}
-
-#[derive(Deserialize)]
-pub(crate) struct DevConsentProfileBody {
-    consent_token: String,
-    site_name: String,
-    #[serde(default)]
-    min_age: Option<i64>,
-    #[serde(default)]
-    required_fields: Vec<String>,
-}
-
-fn dev_estimated_age_years(date_of_birth: &str, now_secs: i64) -> Option<i64> {
-    let birth_year = date_of_birth.get(0..4)?.parse::<i64>().ok()?;
-    let current_year = 1970 + (now_secs / 31_556_952);
-    Some(current_year.saturating_sub(birth_year))
-}
-
-pub(crate) async fn dev_consent_profile(
-    tenant: Option<axum::Extension<sauron_tenancy::TenantId>>,
-    State(state): State<Arc<RwLock<ServerState>>>,
-    Json(payload): Json<DevConsentProfileBody>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    if !sauron_core::runtime_mode::is_development_runtime() {
-        return Err((StatusCode::FORBIDDEN, "dev routes are disabled".into()).into());
-    }
-
-    let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    // consent_log is still on the raw handle (ported separately); scope the
-    // lock so it drops before the async users read.
-    let user_key_image: String = {
-        let repo = state.read_or_recover().repo.clone();
-        repo.resolve_consent_user(&tenant_id, &payload.consent_token, &payload.site_name, now)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .ok_or((
-                StatusCode::UNAUTHORIZED,
-                "invalid, used, revoked, or expired consent token".to_string(),
-            ))?
-    };
-
-    let user = {
-        let repo = state.read_or_recover().repo.clone();
-        repo.get_user(&user_key_image)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .ok_or((StatusCode::NOT_FOUND, "consent user not found".to_string()))?
-    };
-    let (first_name, last_name, email, date_of_birth, nationality) = (
-        user.first_name,
-        user.last_name,
-        user.email,
-        user.date_of_birth,
-        user.nationality,
-    );
-
-    let mut missing_fields = Vec::new();
-    for field in payload.required_fields {
-        let missing = match field.as_str() {
-            "first_name" => first_name.trim().is_empty(),
-            "last_name" => last_name.trim().is_empty(),
-            "email" => email.trim().is_empty(),
-            "date_of_birth" => date_of_birth.trim().is_empty(),
-            "nationality" => nationality.trim().is_empty(),
-            _ => true,
-        };
-        if missing {
-            missing_fields.push(field);
-        }
-    }
-    let min_age = payload.min_age.unwrap_or(18);
-    let age_years = dev_estimated_age_years(&date_of_birth, now).unwrap_or_default();
-
-    Ok(Json(serde_json::json!({
-        "first_name": first_name,
-        "last_name": last_name,
-        "email": email,
-        "date_of_birth": date_of_birth,
-        "nationality": nationality,
-        "min_age": min_age,
-        "is_over_threshold": age_years >= min_age,
-        "profile_complete": missing_fields.is_empty(),
-        "missing_fields": missing_fields,
-        "dev_only": true,
     })))
 }

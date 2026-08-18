@@ -89,8 +89,6 @@ SAURONID_ALLOW_UNAUTHENTICATED_ADMIN_PROXY=1 \
 DASH_PID=$!
 PIDS+=("$DASH_PID")
 
-# (zkp/issuer removed Sprint 3 — OID4VCI service was orphan banking-era code,
-#  no callers in active product surface, feature-flagged off in operator profile A)
 
 # ── Résumé ───────────────────────────────────────────────────────────────────
 echo ""

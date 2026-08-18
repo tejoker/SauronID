@@ -41,8 +41,6 @@ step "go sdk tests"
 step "legacy circuit structural audit + compatibility SDK tests"
 install_if_needed "$ROOT/zkp"
 (cd "$ROOT/zkp" && npm test)
-install_if_needed "$ROOT/zkp/sdk"
-(cd "$ROOT/zkp/sdk" && npm run build && npm test)
 
 step "redteam build"
 install_if_needed "$ROOT/redteam"

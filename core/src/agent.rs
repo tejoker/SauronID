@@ -335,41 +335,14 @@ pub struct RegisterAgentRequest {
     /// JSON array/object string stored as `delegation_chain` claim in the A-JWT.
     #[serde(default)]
     pub delegation_chain_json: String,
-    // ── M1 of TPM2-bound PoP key roadmap (docs/roadmap.md Plan 1) ────────
-    // When `attestation_kind == "tpm2_quote"` all five tpm2_* fields are
-    // required. The server stores them verbatim; verification is split:
-    // M1 ships parsing (returns PartialImplementation), M2 ships the
-    // cert-chain walker against TPM-vendor roots.
-    #[serde(default)]
-    pub tpm2_quote_b64: Option<String>,
-    #[serde(default)]
-    pub tpm2_attest_b64: Option<String>,
-    #[serde(default)]
-    pub tpm2_signature_b64: Option<String>,
-    #[serde(default)]
-    pub tpm2_aik_cert_pem: Option<String>,
-    #[serde(default)]
-    pub tpm2_ek_cert_chain_pem: Option<String>,
-    /// JSON-encoded PCR selection + canonical hash the TPM2 quote is expected
-    /// to bind. Stored verbatim in `agents.attestation_pcr_set`.
-    #[serde(default)]
-    pub tpm2_pcr_set: Option<String>,
-    /// Base64url-encoded AIK public key. Stored verbatim in
-    /// `agents.attestation_pubkey_b64u`. Once M2 lands, the verifier extracts
-    /// this from the AIK cert directly — operators submitting it now make the
-    /// transition seamless.
-    #[serde(default)]
-    pub tpm2_attestation_pubkey_b64u: Option<String>,
     /// Gap #4: operator-asserted runtime measurement (hex) the attestation blob
-    /// must attest to. REQUIRED when `attestation_kind` is a hardware kind. For
-    /// ed25519_self this is the operator-signed measurement; for tpm2 / nitro it
-    /// is the expected PCR commitment. Verified at registration by
+    /// must attest to. REQUIRED for `ed25519_self`, where it is the
+    /// operator-signed measurement. Verified at registration by
     /// `enforce_registration_attestation` (signature/chain + measurement match).
     #[serde(default)]
     pub expected_measurement_hex: Option<String>,
     /// Public key (base64url) trusted to sign the attestation. For ed25519_self
-    /// this is the operator's offline root key; for tpm2 the gate falls back to
-    /// `tpm2_attestation_pubkey_b64u`.
+    /// this is the operator's offline root key.
     #[serde(default)]
     pub attestation_pubkey_b64u: Option<String>,
 }
@@ -865,7 +838,6 @@ pub async fn register_agent(
     //    making operator compromise = full agent impersonation. M1 makes the
     //    trust assumption explicit; M2 ships a TPM2-rooted alternative.
     //
-    // 2. Tpm2Quote: all five tpm2_* payload fields are required when the
     //    operator advertises this kind. The server stores them verbatim;
     //    verification is M2.
     if matches!(
@@ -875,122 +847,14 @@ pub async fn register_agent(
         crate::attestation::check_server_derived_allowed()
             .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     }
-    if matches!(kind_parsed, crate::attestation::AttestationKind::Tpm2Quote) {
-        let missing: Vec<&'static str> = [
-            ("tpm2_quote_b64", payload.tpm2_quote_b64.as_deref()),
-            ("tpm2_attest_b64", payload.tpm2_attest_b64.as_deref()),
-            ("tpm2_signature_b64", payload.tpm2_signature_b64.as_deref()),
-            ("tpm2_aik_cert_pem", payload.tpm2_aik_cert_pem.as_deref()),
-            (
-                "tpm2_ek_cert_chain_pem",
-                payload.tpm2_ek_cert_chain_pem.as_deref(),
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(name, v)| match v {
-            None => Some(name),
-            Some(s) if s.trim().is_empty() => Some(name),
-            _ => None,
-        })
-        .collect();
-        if !missing.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "attestation_kind=tpm2_quote requires all five tpm2_* fields; missing: {}",
-                    missing.join(", ")
-                ),
-            )
-                .into());
-        }
-
-        // ── H2: bound size of TPM2 payload fields ────────────────────────────
-        //
-        // Without these guards a single registration request can ship 100s of
-        // megabytes of PEM/base64 text, forcing the server to copy + persist
-        // the whole blob before any verification runs. Cert-chain PEMs are
-        // generous at 64 KiB (room for ~5 intermediate certs); raw TPM2
-        // quote/attest/signature blobs are well under 4 KiB in practice but we
-        // allow 32 KiB to leave slack for future algorithms.
-        const MAX_PEM_LEN: usize = 65_536; // 64 KiB per cert chain
-        const MAX_B64_FIELD_LEN: usize = 32_768; // 32 KiB for quote/attest/signature/pubkey
-        const MAX_PCR_SET_LEN: usize = 8_192; // 8 KiB JSON for PCR selection
-        let bounded: [(&'static str, Option<&str>, usize); 7] = [
-            (
-                "tpm2_quote_b64",
-                payload.tpm2_quote_b64.as_deref(),
-                MAX_B64_FIELD_LEN,
-            ),
-            (
-                "tpm2_attest_b64",
-                payload.tpm2_attest_b64.as_deref(),
-                MAX_B64_FIELD_LEN,
-            ),
-            (
-                "tpm2_signature_b64",
-                payload.tpm2_signature_b64.as_deref(),
-                MAX_B64_FIELD_LEN,
-            ),
-            (
-                "tpm2_aik_cert_pem",
-                payload.tpm2_aik_cert_pem.as_deref(),
-                MAX_PEM_LEN,
-            ),
-            (
-                "tpm2_ek_cert_chain_pem",
-                payload.tpm2_ek_cert_chain_pem.as_deref(),
-                MAX_PEM_LEN,
-            ),
-            (
-                "tpm2_attestation_pubkey_b64u",
-                payload.tpm2_attestation_pubkey_b64u.as_deref(),
-                MAX_B64_FIELD_LEN,
-            ),
-            (
-                "tpm2_pcr_set",
-                payload.tpm2_pcr_set.as_deref(),
-                MAX_PCR_SET_LEN,
-            ),
-        ];
-        for (name, val, max) in bounded {
-            if let Some(s) = val {
-                if s.len() > max {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        format!("{name} exceeds {max} bytes (got {})", s.len()),
-                    )
-                        .into());
-                }
-            }
-        }
-    }
-
     // ── Gap #4: enforce attestation AT REGISTRATION ─────────────────────────
     //
     // The verifiers (ed25519_self / tpm2 / nitro) existed but were only
     // reachable via the standalone /v1/attestation route — the blob was
     // previously persisted verbatim without verification. Resolve the blob per
-    // kind (tpm2 splits across five fields; other kinds use attestation_blob)
     // and run the hybrid (pre-registered / TOFU) measurement gate.
-    let attest_blob: Vec<u8> =
-        if matches!(kind_parsed, crate::attestation::AttestationKind::Tpm2Quote) {
-            serde_json::json!({
-                "quote_b64": payload.tpm2_quote_b64.as_deref().unwrap_or(""),
-                "attest_b64": payload.tpm2_attest_b64.as_deref().unwrap_or(""),
-                "signature_b64": payload.tpm2_signature_b64.as_deref().unwrap_or(""),
-                "aik_cert_pem": payload.tpm2_aik_cert_pem.as_deref().unwrap_or(""),
-                "ek_cert_chain_pem": payload.tpm2_ek_cert_chain_pem.as_deref().unwrap_or(""),
-            })
-            .to_string()
-            .into_bytes()
-        } else {
-            payload.attestation_blob.clone().into_bytes()
-        };
-    let attest_trusted_pubkey = payload
-        .attestation_pubkey_b64u
-        .as_deref()
-        .or(payload.tpm2_attestation_pubkey_b64u.as_deref())
-        .unwrap_or("");
+    let attest_blob: Vec<u8> = payload.attestation_blob.clone().into_bytes();
+    let attest_trusted_pubkey = payload.attestation_pubkey_b64u.as_deref().unwrap_or("");
     let attest_expected_measurement = payload.expected_measurement_hex.as_deref().unwrap_or("");
     let registration_attestation = crate::attestation::enforce_registration_attestation_bound(
         kind_parsed,
@@ -1275,24 +1139,15 @@ pub async fn register_agent(
         // call_sig_unknown_agent. `agents` converts as one unit — writes and
         // reads together — or not at all.
         let mut db = st.db.lock().unwrap();
-        // M1 of TPM2 PoP roadmap: persist the new hardware-attestation columns
-        // alongside the legacy blob+kind. They are NULL for non-TPM2 kinds.
+        // The operator-signed key the ed25519_self gate verified against, and
+        // the measurement it pinned. The TPM2 columns that used to be fed from
+        // request input are gone with the verifier; both stay NULL.
         let attestation_pubkey_b64u = payload
-            .tpm2_attestation_pubkey_b64u
+            .attestation_pubkey_b64u
             .as_deref()
             .filter(|s| !s.is_empty());
-        // Pin the attestation measurement commitment. For tpm2 the operator's
-        // PCR-set JSON; for ed25519_self / nitro the verified measurement the
-        // gate confirmed (gap #4). Consumed by audit + future re-attestation.
-        let attestation_pcr_set = payload
-            .tpm2_pcr_set
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .or(registration_attestation.pinned_measurement_hex.as_deref());
-        let attestation_ek_cert_chain_pem = payload
-            .tpm2_ek_cert_chain_pem
-            .as_deref()
-            .filter(|s| !s.is_empty());
+        let attestation_pcr_set = registration_attestation.pinned_measurement_hex.as_deref();
+        let attestation_ek_cert_chain_pem: Option<&str> = None;
         db.any_conn()
             .execute(
             // Plain INSERT (not OR REPLACE): agent_id is unique per registration,

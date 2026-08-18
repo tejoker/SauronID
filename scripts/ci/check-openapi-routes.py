@@ -41,7 +41,6 @@ UNDOCUMENTED_BY_DESIGN = {
     "/dev/register_user": "dev-only, refused outside a development runtime",
     "/dev/buy_tokens": "dev-only, refused outside a development runtime",
     "/dev/leash/demo": "dev-only, refused outside a development runtime",
-    "/dev/consent_profile": "dev-only, refused outside a development runtime",
 }
 
 

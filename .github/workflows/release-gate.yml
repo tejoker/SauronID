@@ -118,46 +118,6 @@ jobs:
           npm ci
           npm test
 
-      # zkp/scripts/audit_circuits.sh hard-exits when circom is absent, and no
-      # step installed it — so this gate could only ever pass on a machine that
-      # happened to have circom already. Pinned to a release binary and checked
-      # against its digest rather than built from source, which takes minutes.
-      - name: Install circom
-        run: |
-          curl -fsSL -o /usr/local/bin/circom \
-            https://github.com/iden3/circom/releases/download/v2.2.3/circom-linux-amd64
-          echo "85342c7ff332d948df7c0c50ecf201e6129349aef550ce873f3c811b79fe53a3  /usr/local/bin/circom" \
-            | sha256sum -c -
-          chmod +x /usr/local/bin/circom
-          circom --version
-
-      - name: ZKP circuit audit
-        working-directory: zkp
-        run: |
-          npm ci
-          npm test
-
-      # REDUCED COVERAGE, stated on purpose. The Groth16 proving artifacts
-      # (*.wasm, *_final.zkey) are build outputs and gitignored, so a checkout
-      # cannot generate proofs — this step had never actually run. Generating
-      # them here means downloading a large ptau and running a per-circuit
-      # ceremony on every push, for the legacy Groth16 path that ships
-      # feature-flagged off; the production proof path is transparent-zk, which
-      # IS fully reproduced and verified above.
-      #
-      # So: the key-free tests (EdDSA, Poseidon Merkle tree, credential
-      # construction) run, and the two proof tests print what they skipped. The
-      # flag is required — without it the suite fails — so this cannot silently
-      # decay into a no-op.
-      - name: ZKP SDK (proof tests skipped — see note)
-        working-directory: zkp/sdk
-        env:
-          ZKP_ALLOW_MISSING_ARTIFACTS: "1"
-        run: |
-          npm ci
-          npm run build
-          npm test
-
       - name: Dashboard
         working-directory: dashboard
         run: |

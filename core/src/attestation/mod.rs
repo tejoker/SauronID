@@ -15,12 +15,7 @@
 //!     [`AttestationKind`] / [`AttestationError`] / [`AttestationContext`]
 //!     enums and structs every backend shares.
 //!   - [`ed25519_self`] — operator-rooted Ed25519 self-attestation (M1).
-//!   - [`tpm2`] — TPM 2.0 quote parser + AIK sig verification + cert chain
 //!     walker (M2 of the TPM2 PoP roadmap).
-//!   - [`nitro`] — AWS Nitro JSON + CBOR dispatcher.
-//!   - [`nitro_pcr`] — PCR comparison helpers shared by both Nitro paths.
-//!   - [`cbor`] — hand-rolled CBOR / COSE_Sign1 parser used by [`nitro`].
-//!   - [`handlers`] — `/v1/attestation/nitro/verify` HTTP handler.
 //!
 //! The top-level `verify_attestation()` dispatcher + the public types
 //! re-exported from this `mod.rs` are the stable API surface. Internal
@@ -31,12 +26,7 @@
 //! `lib.rs`.
 
 pub mod abstraction;
-pub mod cbor;
 pub mod ed25519_self;
-pub mod handlers;
-pub mod nitro;
-pub mod nitro_pcr;
-pub mod tpm2;
 
 // ─── Public re-exports — these mirror the pre-refactor `attestation.rs`
 //     surface. Nothing outside this module should import from a sub-module
@@ -44,24 +34,9 @@ pub mod tpm2;
 
 pub use abstraction::AttestationVerifier;
 pub use ed25519_self::{measurement_hash, verify_ed25519_self, Ed25519SelfVerifier};
-pub use nitro::{
-    load_nitro_root_pem_path, parse_nitro_cose_blob, parse_nitro_dev, verify_nitro_enclave,
-    NitroAttestationDoc, NitroAttestationEnvelope, NitroEnclaveVerifier,
-};
-pub use nitro_pcr::verify_nitro_pcrs;
-pub use tpm2::{
-    detect_tpmt_signature_alg, load_trusted_tpm2_roots, parse_tpms_attest, verify_aik_cert_chain,
-    verify_aik_signature, verify_pcr_digest, Tpm2QuotePayload, Tpm2QuoteVerifier, TpmPublicKey,
-    TpmsAttest, TpmsClockInfo, TpmsPcrSelection, TpmsQuoteInfo, TPM_GENERATED_VALUE,
-    TPM_ST_ATTEST_QUOTE,
-};
 
-use base64::{
-    engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD},
-    Engine as _,
-};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 // ─── AttestationKind ─────────────────────────────────────────────────────
@@ -77,8 +52,6 @@ pub enum AttestationKind {
     /// assumption that `jwt_secret` compromise = full agent impersonation.
     ServerDerived,
     Ed25519Self,
-    Tpm2Quote,
-    NitroEnclave,
 }
 
 impl AttestationKind {
@@ -90,10 +63,6 @@ impl AttestationKind {
         ("ed25519_self", Self::Ed25519Self),
         ("server_derived", Self::ServerDerived),
         ("server", Self::ServerDerived),
-        ("tpm2_quote", Self::Tpm2Quote),
-        ("tpm2", Self::Tpm2Quote),
-        ("nitro_enclave", Self::NitroEnclave),
-        ("nitro", Self::NitroEnclave),
     ];
 
     /// Parse a caller-supplied `attestation_kind`.
@@ -122,8 +91,6 @@ impl AttestationKind {
             Self::None => "",
             Self::ServerDerived => "server_derived",
             Self::Ed25519Self => "ed25519_self",
-            Self::Tpm2Quote => "tpm2_quote",
-            Self::NitroEnclave => "nitro_enclave",
         }
     }
 
@@ -131,7 +98,7 @@ impl AttestationKind {
     /// reported by `/admin/agents`, so an operator can see an unattested agent
     /// instead of having to infer it.
     pub fn is_hardware_backed(&self) -> bool {
-        matches!(self, Self::Tpm2Quote | Self::NitroEnclave)
+        false
     }
 }
 
@@ -148,7 +115,7 @@ impl AttestationKind {
 ///   - Otherwise (production default) → refuse.
 ///
 /// This makes the previous insecure default explicit. Operators upgrading to
-/// `Ed25519Self` (today) or `Tpm2Quote` (M2) can drop the override.
+/// `Ed25519Self` can drop the override.
 pub fn check_server_derived_allowed() -> Result<(), AttestationError> {
     if let Ok(v) = std::env::var("SAURON_ALLOW_SERVER_DERIVED_POP") {
         let low = v.to_ascii_lowercase();
@@ -207,7 +174,7 @@ fn golden_measurements() -> Vec<String> {
 ///         hardware kind is mandatory).
 ///       * otherwise pass through (the separate `check_server_derived_allowed`
 ///         gate still governs `ServerDerived`).
-///   - A hardware kind (`Ed25519Self` / `Tpm2Quote` / `NitroEnclave` / …):
+///   - An attested kind (`Ed25519Self`):
 ///       1. `expected_measurement_hex` MUST be supplied — the operator asserts
 ///          the measurement the genuine blob has to attest to.
 ///       2. Mode (a) — `SAURON_REQUIRE_PREREGISTERED_MEASUREMENT=1`: the
@@ -245,20 +212,17 @@ pub fn enforce_registration_attestation(
         return Ok(RegistrationAttestation::default());
     }
 
-    // An operator-signed statement is useful evidence, but it is not hardware
-    // trust: the same operator key can sign arbitrary measurements. Production
-    // therefore accepts only the two hardware verifiers that are implemented
-    // in this build when the hardware gate is enabled.
-    if require_hw
-        && !matches!(
-            kind,
-            AttestationKind::Tpm2Quote | AttestationKind::NitroEnclave
-        )
-    {
-        return Err(AttestationError::BadCertChain(format!(
-            "SAURON_REQUIRE_HARDWARE_ATTESTATION=1: '{}' is not an implemented hardware-backed kind; use tpm2_quote or nitro_enclave",
-            kind.as_str()
-        )));
+    // This build ships no hardware verifier: the TPM2 and Nitro paths were
+    // archived because no deployment used them and neither was release-ready
+    // without real-device evidence. The gate therefore cannot be satisfied, and
+    // saying so is better than letting an operator signature pass as hardware
+    // trust — the same operator key can sign an arbitrary measurement.
+    if require_hw {
+        return Err(AttestationError::BadCertChain(
+            "SAURON_REQUIRE_HARDWARE_ATTESTATION=1 but this build ships no hardware \
+             verifier; unset it, or restore the archived TPM2/Nitro path"
+                .to_string(),
+        ));
     }
 
     let measurement = expected_measurement_hex.trim();
@@ -333,66 +297,6 @@ pub fn enforce_registration_attestation_bound(
 
     match kind {
         AttestationKind::None | AttestationKind::ServerDerived => return Ok(verified),
-        AttestationKind::Tpm2Quote => {
-            let payload = Tpm2QuotePayload::parse_json(blob)?;
-            let attest = B64
-                .decode(payload.attest_b64.as_bytes())
-                .map_err(|e| AttestationError::Malformed(format!("attest_b64 decode: {e}")))?;
-            let parsed = parse_tpms_attest(&attest)?;
-            let expected = Sha256::digest(crate::crypto_protocol::attestation_challenge_binding(
-                nonce,
-                pop_public_key_b64u,
-            ));
-            require_ct_equal(
-                &parsed.extra_data,
-                expected.as_slice(),
-                "TPM quote extraData does not bind the issued challenge and PoP key",
-            )?;
-        }
-        AttestationKind::NitroEnclave => {
-            let pop_key = URL_SAFE_NO_PAD
-                .decode(pop_public_key_b64u.trim())
-                .map_err(|e| AttestationError::Malformed(format!("PoP key base64url: {e}")))?;
-            if blob.first() == Some(&b'{') {
-                let doc = parse_nitro_dev(blob)?;
-                let doc_nonce = doc
-                    .nonce_b64
-                    .as_deref()
-                    .ok_or_else(|| {
-                        AttestationError::Malformed("Nitro document missing nonce".into())
-                    })
-                    .and_then(|v| {
-                        B64.decode(v.as_bytes()).map_err(|e| {
-                            AttestationError::Malformed(format!("Nitro nonce base64: {e}"))
-                        })
-                    })?;
-                let doc_key = B64.decode(doc.public_key_b64.as_bytes()).map_err(|e| {
-                    AttestationError::Malformed(format!("Nitro public_key base64: {e}"))
-                })?;
-                require_ct_equal(&doc_nonce, nonce.as_bytes(), "Nitro nonce mismatch")?;
-                require_ct_equal(
-                    &doc_key,
-                    &pop_key,
-                    "Nitro public key is not the agent PoP key",
-                )?;
-                require_fresh_timestamp(doc.timestamp)?;
-            } else {
-                let doc = parse_nitro_cose_blob(blob)?;
-                let doc_nonce = doc.nonce.as_deref().ok_or_else(|| {
-                    AttestationError::Malformed("Nitro document missing nonce".into())
-                })?;
-                let doc_key = doc.public_key.as_deref().ok_or_else(|| {
-                    AttestationError::Malformed("Nitro document missing public_key".into())
-                })?;
-                require_ct_equal(doc_nonce, nonce.as_bytes(), "Nitro nonce mismatch")?;
-                require_ct_equal(
-                    doc_key,
-                    &pop_key,
-                    "Nitro public key is not the agent PoP key",
-                )?;
-                require_fresh_timestamp(doc.timestamp)?;
-            }
-        }
         AttestationKind::Ed25519Self => {
             let blob_str = std::str::from_utf8(blob)
                 .map_err(|e| AttestationError::Decode(format!("blob is not utf-8: {e}")))?;
@@ -556,8 +460,6 @@ pub fn verify_attestation(
         AttestationKind::None => Err(AttestationError::Empty),
         AttestationKind::ServerDerived => check_server_derived_allowed(),
         AttestationKind::Ed25519Self => Ed25519SelfVerifier.verify(blob, ctx),
-        AttestationKind::Tpm2Quote => Tpm2QuoteVerifier.verify(blob, ctx),
-        AttestationKind::NitroEnclave => NitroEnclaveVerifier.verify(blob, ctx),
     }
 }
 
@@ -601,8 +503,6 @@ mod tests {
         for (name, kind) in AttestationKind::KNOWN {
             assert_eq!(AttestationKind::parse(name).unwrap(), *kind);
         }
-        assert!(AttestationKind::Tpm2Quote.is_hardware_backed());
-        assert!(AttestationKind::NitroEnclave.is_hardware_backed());
         assert!(!AttestationKind::None.is_hardware_backed());
         assert!(!AttestationKind::ServerDerived.is_hardware_backed());
         assert!(!AttestationKind::Ed25519Self.is_hardware_backed());

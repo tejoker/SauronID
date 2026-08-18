@@ -119,10 +119,12 @@ Be honest about who you have to trust.
 - Production agents register client-generated Ed25519 proof-of-possession keys;
   server-derived PoP is refused. Hardware attestation is not required for the
   authorization or STARK proof path.
-- TPM/Nitro can be enabled as an optional claim about where a key or program
-  executed. That claim adds vendor/hardware assumptions and requires real-device
-  release evidence; it is not a consequence of Groth16 and does not make an
-  authorized policy safe.
+- This build ships **no** hardware-attestation verifier. TPM2 and Nitro are
+  archived; a claim about where a key or program executed would add
+  vendor/hardware assumptions and needs real-device release evidence, and it
+  never made an authorized policy safe. What remains is `ed25519_self`: an
+  operator-signed runtime measurement, which is evidence about configuration,
+  not about hardware.
 - The STARK prover and agent process are untrusted. Verifiers still rely on the
   published guest source/image ID, RISC Zero's proof-system assumptions,
   collision-resistant hashing, and correct verifier software. This is
@@ -172,8 +174,9 @@ Honest table. Re-verifiable from the source.
 
 ### Implemented security path
 
-- Client-generated per-agent Ed25519 PoP keys; optional hardware-attestation
-  evidence is challenge- and key-bound when explicitly enabled.
+- Client-generated per-agent Ed25519 PoP keys. The optional `ed25519_self`
+  attestation binds an operator-signed runtime measurement to the issued
+  challenge and the PoP key.
 - A-JWT (intent + checksum + delegation depth) with single-use JTI.
 - Versioned per-call signature over tenant, method, path, canonical query,
   audience, body digest, timestamp, nonce, JTI, and runtime configuration.
@@ -184,9 +187,11 @@ Honest table. Re-verifiable from the source.
   (`SAURON_REQUIRE_OWNER_MANDATE`).
 - **Default-deny call-signature enforcement.** The requirement is a global
   middleware decision, not a per-route opt-in, so a new route is protected the
-  moment it exists. Six paths are explicitly exempt and enumerated in
+  moment it exists. Eight paths are explicitly exempt and enumerated in
   `CALL_SIG_EXEMPT_PATHS` — registration and challenge issuance, where the
-  caller cannot yet sign, plus public verification surfaces.
+  caller cannot yet sign, public verification surfaces, and the anonymous
+  ring-policy routes, where a per-call signature would carry the very
+  `x-sauron-agent-id` the ring signature exists to withhold.
 - **Hash-chained per-action receipts.** Each receipt carries `seq`, `prev_hash`
   and the owner-mandate hash, so removing or reordering one breaks the chain.
   The chain-hash domain is versioned, so extending the receipt shape does not
@@ -198,7 +203,7 @@ Honest table. Re-verifiable from the source.
   release workflow itself before the release completes.
 - Server-computed agent checksum from typed `agent_type` + `checksum_inputs`. Operators cannot supply a fake checksum.
 - Per-call `x-sauron-agent-config-digest` header check: agent runtime cannot drift from registered config without rejecting on every call.
-- Atomic single-use TOCTOU patterns on every consume table (payment authorization, credential, lightning, call-nonce, JTI).
+- Atomic single-use TOCTOU patterns on every consume table (payment authorization, call-nonce, JTI).
 - Constant-time HMAC compares (no timing oracles).
 - CORS hard-fail on empty origins (no permissive fallback).
 - Sliding-window rate limits per agent + per human.
@@ -254,15 +259,17 @@ Honest table. Re-verifiable from the source.
   SAURON_DB_POOL_SIZE` connections against the server's `max_connections`.
   Database TLS is driven by `sslmode`; see
   [docs/operations.md](docs/operations.md#database-tls).
-- **OpenTimestamps confirmation latency**: receipts are submitted instantly to public calendars; **Bitcoin block inclusion takes ~1 hour**. Solana memo finalisation is ~30 s. Dashboard surfaces three honest states per batch (ADR-001): Solana-confirmed (≤30 s), BTC-pending (≤1 h), Dually anchored. No single false "anchored" summary — both chains are reported independently on `/admin/anchor/batches` and the `/anchors` console page. Operators with stricter timing pick the Solana path or run their own calendar.
-- **ZKP issuer**: feature-flagged off by default, available behind `SAURON_DISABLE_ZKP=0`. SauronID does NOT ship a sanctions/PEP screening provider — wire your own data into `compliance_screening`. The bank-KYC ingest and end-user KYC consent routes were removed entirely; SauronID binds agents, not human identities.
+- **OpenTimestamps confirmation latency**: receipts are submitted instantly to public calendars; **Bitcoin block inclusion takes ~1 hour**. Solana memo finalisation is ~30 s. Dashboard surfaces three honest states per batch (ADR-001): Solana-confirmed (≤30 s), BTC-pending (≤1 h), Dually anchored. No single false "anchored" summary — both chains are reported independently on `/admin/anchor/batches` and the `/proofs` console page. Operators with stricter timing pick the Solana path or run their own calendar.
+- **No human-identity surface**: the bank-KYC ingest, the end-user consent routes, the credential issuer and the legacy Groth16 circuits are archived under [`archive/removed-2026-08/`](archive/removed-2026-08/). SauronID binds agents, not humans. No sanctions/PEP screening is shipped and none is stubbed.
 - **External key custody**: production secret resolution and external partner-key
   custody are fail-closed configuration obligations. Vault loopback behavior is
   covered by tests, but the deployment must supply, authorize, rotate, and
   recover its real secret backend.
-- **Optional hardware tier**: TPM2 and Nitro verification code exists, but no
-  hardware-tier claim is release-ready without real-device end-to-end evidence
-  for the exact production image and vendor roots.
+- **No hardware tier**: the TPM2 and Nitro verifiers are archived under
+  [`archive/removed-2026-08/hardware-attestation/`](archive/removed-2026-08/hardware-attestation/).
+  No deployment used them and neither was release-ready without real-device
+  evidence. `SAURON_REQUIRE_HARDWARE_ATTESTATION=1` now fails closed with that
+  explanation rather than letting an operator signature pass as hardware trust.
 
 ### Cannot do — out of scope by design
 
@@ -342,8 +349,6 @@ A branded Next.js console at `dashboard/` reads **only live data from the runnin
 | **Activity** (`/activity`) | Live feed of every real agent call (allowed + stopped), filterable by agent / result / date |
 | **Proofs** (`/proofs`) | Bitcoin (OpenTimestamps) + Solana anchor batches. Each batch's Merkle root is **one-click verifiable** — download its `.ots` proof and check it with the open-source `ots` tool (`ots upgrade` / `ots info`). Honest three-state surface per ADR-001 (Solana ≤30 s, BTC pending ≤1 h, dually anchored). |
 | **Policies** (`/policies`) | Policy invariants bound to agents, with an evaluation endpoint |
-| **Cohorts** (`/cohorts`) | Differential-privacy published cohort stats (k-anonymity gated) |
-| **Compliance** (`/compliance`) | Compliance screening surface (provider operator-supplied) |
 | **Settings** (`/settings`) | Tenant + core-connection settings |
 
 Visual identity is in [`branding/BRANDING.md`](branding/BRANDING.md): dark navy canvas (`#06090F`), Sauron Blue / Ice Blue / Cyan, Instrument Serif display, Space Mono structural labels, Satoshi UI body. Brand book: [`branding/brand-book.pdf`](branding/brand-book.pdf).
@@ -471,10 +476,10 @@ migrations/postgres/   Postgres schema
 schemas/               Shared JSON schemas + OpenAPI spec (schemas/openapi.yaml)
 transparent-zk/        RISC Zero guests (stats + action-policy), journal types, customer
                        verifier, pinned image-ids.json, and verify.sh. Self-contained and
-                       published on its own so the proofs stay verifiable without this repo
-zkp/                   Legacy Groth16 circom circuits + ceremony scripts. The ZKP issuer
-                       service has been removed from the tree
-site/                  Static landing page
+                       published on its own so the proofs stay verifiable without this repo.
+                       NOTE: the stats guest's submission route left with the cohort
+                       subsystem; only the action-policy guest is on a live path
+site/                  Single static landing page (index.html)
 
 scripts/dev/           Dev orchestration shell scripts (quickstart, launch, start, ...)
 scripts/demo/          Live-demo driver (democtl.sh) + real LLM agent-runner (agent_runner.py)
@@ -485,8 +490,10 @@ branding/              BRANDING.md, logo.svg, brand-book.pdf
 docs/                  threat-model, operations, production-readiness, SIEM integration,
                        docs site source (docs/site/), roadmap, competitive-benchmark
 
-archive/banking-2025/  Pre-pivot bank-KYC code. The core routes it paired with are gone; kept for git
-                       continuity. Do not depend on. Removed from active product surface.
+archive/banking-2025/     Pre-pivot 2025 bank-KYC prototype. Do not depend on.
+archive/removed-2026-08/  The four subsystems that were not agent constraint: KYC consent,
+                          hardware attestation, Groth16 ZKP, cohort stats + compliance.
+                          See its README for what came out and why. Do not depend on.
 ```
 
 ## Critical files
@@ -519,8 +526,6 @@ SAURON_JWT_SECRET=$(openssl rand -hex 32)
 SAURON_OPRF_SEED=$(openssl rand -hex 32)
 SAURON_ALLOWED_ORIGINS=https://your-edge.example.com
 SAURON_REQUIRE_CALL_SIG=1                        # fail-closed
-SAURON_DISABLE_ZKP=1                             # off unless you need ZKP credentials
-SAURON_DISABLE_COMPLIANCE=1                      # off unless you wire screening provider
 SAURON_BITCOIN_ANCHOR_PROVIDER=opentimestamps    # real BTC anchoring
 SAURON_SOLANA_ENABLED=1                          # dual-anchor on Solana
 SAURON_SOLANA_RPC_URL=https://api.devnet.solana.com   # mainnet later

@@ -953,10 +953,7 @@ pub struct HealthComponent {
 }
 
 #[derive(Serialize)]
-pub struct HealthFlags {
-    pub zkp_issuer_enabled: bool,
-    pub compliance_enabled: bool,
-}
+pub struct HealthFlags {}
 
 pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<HealthResponse> {
     let runtime = if crate::runtime_mode::is_development_runtime() {
@@ -1067,10 +1064,7 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
         }
     };
 
-    let feature_flags = HealthFlags {
-        zkp_issuer_enabled: crate::feature_flags::zkp_issuer_enabled(),
-        compliance_enabled: crate::feature_flags::compliance_enabled(),
-    };
+    let feature_flags = HealthFlags {};
 
     if runtime == "production" && !call_sig_enforce {
         warnings.push("Production runtime but SAURON_REQUIRE_CALL_SIG is not enforced — per-call signature is advisory only".into());
@@ -2081,32 +2075,6 @@ pub struct SiteUserRecord {
     pub timestamp: i64,
 }
 
-pub async fn get_site_users(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    authz: Option<axum::Extension<AdminAuthz>>,
-    Path(name): Path<String>,
-) -> Result<Json<Vec<SiteUserRecord>>, AppError> {
-    require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
-    let repo = state.read_or_recover().repo.clone();
-    let records: Vec<SiteUserRecord> = repo
-        .list_site_users(&name)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .into_iter()
-        .map(
-            |(first_name, last_name, email, nationality, source, timestamp)| SiteUserRecord {
-                first_name,
-                last_name,
-                email,
-                nationality,
-                source,
-                timestamp,
-            },
-        )
-        .collect();
-    Ok(Json(records))
-}
-
 // ─────────────────────────────────────────────────────
 //  GET /admin/site/:name/zkp_proofs
 // ─────────────────────────────────────────────────────
@@ -2118,57 +2086,6 @@ pub struct SiteZkpProofRecord {
     pub ring_size: u64,
     pub proved_claims: Vec<String>,
     pub raw_detail: String,
-}
-
-pub async fn get_site_zkp_proofs(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    authz: Option<axum::Extension<AdminAuthz>>,
-    Path(name): Path<String>,
-) -> Result<Json<Vec<SiteZkpProofRecord>>, AppError> {
-    require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
-    let st = state.read_or_recover();
-    let mut db = st.db.lock().unwrap();
-    let pattern = format!("site={} %", name);
-    let records: Vec<SiteZkpProofRecord> = db
-        .any_conn()
-        .query_map(
-            "SELECT id, timestamp, detail FROM requests_log \
-         WHERE action_type = 'ZKP_VERIFY' AND status = 'OK' AND detail LIKE ?1 \
-         ORDER BY id DESC LIMIT 200",
-            sql_params![pattern],
-            |row| {
-                let id: i64 = row.get(0)?;
-                let ts: i64 = row.get(1)?;
-                let detail: String = row.get(2)?;
-                Ok((id, ts, detail))
-            },
-        )
-        .map_err(AppError::internal)?
-        .into_iter()
-        .map(|(id, timestamp, detail)| {
-            // detail = "site=Discord ring=5 claims=age≥18,nationality:FRA"
-            let mut ring_size: u64 = 0;
-            let mut proved_claims: Vec<String> = vec![];
-            for part in detail.split_whitespace() {
-                if let Some(v) = part.strip_prefix("ring=") {
-                    ring_size = v.parse().unwrap_or(0);
-                } else if let Some(v) = part.strip_prefix("claims=") {
-                    proved_claims = v.split(',').map(|s| s.to_string()).collect();
-                }
-            }
-            if proved_claims.is_empty() {
-                proved_claims.push("registered_user".to_string());
-            }
-            SiteZkpProofRecord {
-                id,
-                timestamp,
-                ring_size,
-                proved_claims,
-                raw_detail: detail,
-            }
-        })
-        .collect();
-    Ok(Json(records))
 }
 
 // ─────────────────────────────────────────────────────
@@ -2256,8 +2173,6 @@ pub async fn get_stats(
     let total_tokens_b_issued = current_tokens_b + total_tokens_b_spent;
 
     let controls = serde_json::json!({
-        "compliance": st.compliance.admin_snapshot(),
-        "issuer": st.issuer_runtime.circuit_snapshots_json(&st.issuer_urls),
         "risk": { "window_secs": risk::window_secs() },
     });
 

@@ -1,8 +1,6 @@
 use crate::any_db::{AnyConn, AnyRowGet};
 use crate::bitcoin_anchor::BitcoinAnchorService;
-use crate::compliance::ComplianceConfig;
 use crate::db::DbHandle;
-use crate::issuer_runtime::IssuerRuntime;
 use crate::merkle::MerkleCommitmentLedger;
 use crate::ring;
 use crate::sql_params;
@@ -81,14 +79,6 @@ pub struct ServerState {
     pub token_secret: Vec<u8>,
     /// Clé secrète pour signer les A-JWT agents.
     pub jwt_secret: Vec<u8>,
-    /// Primary ZKP issuer base URL (first of `issuer_urls`).
-    pub issuer_url: String,
-    /// Ordered ZKP issuer base URLs (failover for `verify-proof`).
-    pub issuer_urls: Vec<String>,
-    /// Shared HTTP client + per-host circuit breakers for issuer `verify-proof`.
-    pub issuer_runtime: std::sync::Arc<IssuerRuntime>,
-    /// Operator-controlled compliance (jurisdiction allowlist, etc.).
-    pub compliance: ComplianceConfig,
     pub merkle_ledger: MerkleCommitmentLedger,
     pub bitcoin_anchor: Option<std::sync::Arc<BitcoinAnchorService>>,
     pub solana_anchor: Option<std::sync::Arc<crate::solana_anchor::SolanaAnchorService>>,
@@ -99,14 +89,6 @@ pub struct ServerState {
     /// Sprint 2 policy DSL store — in-memory cache backed by the `policies`
     /// table. Hydrated from disk on startup.
     pub policy_store: Arc<crate::policy::PolicyStore>,
-    /// Sprint 8 cohort definition registry — operator-managed, hydrated at
-    /// startup from `cohort_definitions`. Drives `/v1/cohort/published`.
-    pub cohort_store: Arc<crate::aggregation::CohortStore>,
-    /// S8 ext — persistent per-cohort per-metric ε ledger. Closes the
-    /// "No inter-period ε budget tracking" gap. See
-    /// `core/src/dp/ledger.rs` and `docs/privacy-model.md` § "Cycle
-    /// rotation".
-    pub dp_budget_ledger: Arc<crate::dp::DpBudgetLedger>,
 }
 
 fn derive_dev_secret(name: &str) -> Vec<u8> {
@@ -162,37 +144,10 @@ fn load_required_seed(name: &str) -> String {
     panic!("{} must be set in non-development environments", name);
 }
 
-fn issuer_urls_from_env() -> Vec<String> {
-    let multi = std::env::var("SAURON_ISSUER_URLS").ok().map(|s| {
-        s.split(',')
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .collect::<Vec<_>>()
-    });
-    if let Some(v) = multi {
-        if !v.is_empty() {
-            return v;
-        }
-    }
-    vec![std::env::var("SAURON_ISSUER_URL").unwrap_or_else(|_| "http://localhost:4000".to_string())]
-}
-
 impl ServerState {
     pub async fn new(db: Arc<DbHandle>) -> Self {
         let token_secret = load_required_secret("SAURON_TOKEN_SECRET");
         let jwt_secret = load_required_secret("SAURON_JWT_SECRET");
-        let issuer_urls = issuer_urls_from_env();
-        if issuer_urls.is_empty() {
-            panic!("[FATAL] no ZKP issuer URLs (set SAURON_ISSUER_URL or SAURON_ISSUER_URLS)");
-        }
-        let issuer_url = issuer_urls[0].clone();
-
-        let issuer_runtime = std::sync::Arc::new(
-            IssuerRuntime::from_env()
-                .unwrap_or_else(|e| panic!("[FATAL] cannot build issuer HTTP client: {e}")),
-        );
-        let compliance = ComplianceConfig::from_env();
-
         // ── Restore ring groups from DB ──────────────────────────────────────
         fn load_pubkeys(conn: &mut AnyConn<'_>, sql: &str) -> Vec<String> {
             // Best-effort by design: a ring that cannot be restored leaves the
@@ -279,20 +234,6 @@ impl ServerState {
             }
         }
 
-        // Sprint 8: hydrate the cohort definition store from `cohort_definitions`.
-        let cohort_store = Arc::new(crate::aggregation::CohortStore::new(Arc::clone(&db)));
-        match cohort_store.hydrate() {
-            Ok(n) => {
-                tracing::info!(target: "sauron::startup", cohorts = n, "hydrated cohort store")
-            }
-            Err(e) => {
-                tracing::warn!(target: "sauron::startup", error = %e, "cohort store hydrate failed")
-            }
-        }
-
-        // S8 ext: build the ε ledger handle. Lazy — no I/O until used.
-        let dp_budget_ledger = Arc::new(crate::dp::DpBudgetLedger::new(Arc::clone(&db)));
-
         Self {
             db,
             k: oprf_k,
@@ -301,18 +242,12 @@ impl ServerState {
             agent_group,
             token_secret,
             jwt_secret,
-            issuer_url,
-            issuer_urls,
-            issuer_runtime,
-            compliance,
             merkle_ledger,
             bitcoin_anchor: BitcoinAnchorService::from_env().map(std::sync::Arc::new),
             solana_anchor: crate::solana_anchor::SolanaAnchorService::from_env()
                 .map(std::sync::Arc::new),
             repo,
             policy_store,
-            cohort_store,
-            dp_budget_ledger,
         }
     }
 

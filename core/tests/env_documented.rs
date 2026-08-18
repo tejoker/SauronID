@@ -116,10 +116,15 @@ fn the_extractor_still_finds_a_plausible_configuration_surface() {
     // environment (a helper, a config crate, a macro), the extractor above
     // would quietly find nothing and the test would pass by vacuity — which is
     // exactly the silent-drift failure it exists to prevent.
+    //
+    // The floor is a vacuity check, not a target: it was lowered from 80 to 70
+    // when the KYC, hardware-attestation, Groth16 and cohort subsystems were
+    // archived, because each read its own configuration. Fewer knobs is the
+    // point. Lower it again only alongside a real removal.
     let found = env_vars_read_by_core();
     assert!(
-        found.len() >= 80,
-        "expected the core to read at least 80 SAURON_* variables, found {}: \
+        found.len() >= 70,
+        "expected the core to read at least 70 SAURON_* variables, found {}: \
          has environment access moved behind a helper the extractor does not know?",
         found.len()
     );

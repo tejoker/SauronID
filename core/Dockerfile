@@ -61,7 +61,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/core/target/release/sauron-core .
-COPY --from=builder /app/core/target/release/client ./client
 # The receipt/audit chain verifier ships with the runtime image: it is meant to
 # be run by whoever holds the database, including a customer checking the
 # operator, and `verify-receipts` needs no key at all.
