@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 const SQLITE_ONLY: &[(&str, usize, &str)] = &[
     (
         "repository.rs",
-        34,
+        22,
         "the SQLite half of Repo's own backend match; the Postgres half is sqlx",
     ),
     (
