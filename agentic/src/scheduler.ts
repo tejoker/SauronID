@@ -16,8 +16,12 @@
  * `runOnce()` is the imperative entry point used by tests and one-shot
  * `submitWeeklyStats(opts)`. `start()` / `stop()` wraps it on a timer.
  *
- * @deprecated Production rejects this endpoint. Use `submitTransparentStats`
- * with a receipt from the version-pinned `transparent-zk` prover.
+ * @deprecated The server no longer serves `/v1/stats/submit`. Production already
+ * rejected it (Groth16 verification was development-only), and the verifier is
+ * archived under `archive/removed-2026-08/groth16-zkp/`, so a current core
+ * returns 404. Use `submitTransparentStats` with a receipt from the
+ * version-pinned `transparent-zk` prover, which posts to
+ * `/v1/stats/submit-transparent`.
  */
 
 import {

@@ -160,8 +160,8 @@ export SAURON_REQUIRE_CALL_SIG=1                           # MANDATORY in produc
 # export SAURON_ACCEPT_DPOP_IN_PROD=1                      # required acknowledgment before SAURON_ACCEPT_DPOP takes effect in production (fail-closed otherwise)
 export SAURON_REQUIRE_AGENT_TYPE=1                         # MANDATORY in production — /agent/register must carry agent_type + checksum_inputs (server-computed digest)
 export SAURON_POLICY_ENFORCEMENT_MODE=enforce              # MANDATORY in production — bound policy denies short-circuit action endpoints with 403
-export SAURON_DISABLE_ZKP=1
-export SAURON_DISABLE_COMPLIANCE=1
+# SAURON_DISABLE_ZKP and SAURON_DISABLE_COMPLIANCE are gone: what they gated is
+# archived under archive/removed-2026-08/, so there is nothing left to disable.
 export SAURON_BITCOIN_ANCHOR_PROVIDER=opentimestamps       # real Bitcoin anchoring, no key custody
 export SAURON_SOLANA_ENABLED=1                             # dual-anchor on Solana
 export SAURON_SOLANA_RPC_URL=https://api.devnet.solana.com
@@ -198,8 +198,6 @@ and ZKP credentials.
 
 ```bash
 # all of profile A, then:
-unset SAURON_DISABLE_ZKP
-unset SAURON_DISABLE_COMPLIANCE
 export SAURON_COMPLIANCE_JURISDICTION_MODE=enforce
 export SAURON_COMPLIANCE_JURISDICTION_ALLOWLIST=US,GB,FR,DE
 export SAURON_COMPLIANCE_SANCTIONS_MODE=enforce

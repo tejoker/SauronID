@@ -1,5 +1,13 @@
 # ZK Proofs over the Agent-Action Log
 
+> **ARCHIVED SUBSYSTEM.** The Circom/Groth16 action-log proof path this document
+> describes was archived in 2026-08, along with `/v1/proofs/action-log/verify`.
+> Production already refused it — Groth16 verification was development-only.
+> Code and rationale:
+> [`archive/removed-2026-08/groth16-zkp/`](../archive/removed-2026-08/groth16-zkp/).
+> The live proof path is the transparent RISC Zero STARK one in
+> [`../transparent-zk/`](../transparent-zk/).
+
 > **Legacy development path.** Production refuses these Circom/Groth16
 > receipts. The supported no-ceremony implementation is the native RISC Zero
 > STARK action-policy guest in [`../transparent-zk/`](../transparent-zk/),
