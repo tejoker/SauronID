@@ -12,11 +12,22 @@ name: Publish clients
 # process: all seven of its tools issue HTTP calls to SAURONID_URL, and it holds
 # no keys, evaluates no policy and enforces nothing. It is inert without a
 # gateway. Gating its publication on a gateway penetration test buys no safety
-# and blocks adoption.
+# and blocks adoption. The same is true of `@sauronid/agentic` and the pure
+# Python `sauronid-client` sdist, and per LICENSE all three are Apache-2.0 for
+# that reason.
+#
+# `@sauronid/agentic` and the sdist used to publish from release-publish.yml,
+# which made this workflow unable to do its job: `mcp-server` declares
+# `@sauronid/agentic` as a dependency, so publishing it here produced a package
+# npm could not install until the gateway assessment landed. The un-gated lane
+# pointed into the gated one.
 #
 # So: clients publish from a green Release Gate. Images, workstation binaries and
 # anything that carries enforcement still publish only from release-publish.yml,
-# behind the assessment. Do not move gateway artefacts into this workflow.
+# behind the assessment. That line is why the PLATFORM WHEELS are not here — each
+# bundles the `agent-action-tool` binary byte-for-byte — while the sdist, which
+# is asserted to contain no binary, is. Do not move gateway artefacts into this
+# workflow.
 
 on:
   workflow_dispatch:
@@ -44,8 +55,8 @@ jobs:
   gate:
     uses: ./.github/workflows/release-gate.yml
 
-  mcp-server:
-    name: Publish @sauronid/mcp-server
+  agentic:
+    name: Publish @sauronid/agentic
     needs: gate
     runs-on: ubuntu-latest
     environment: production-release
@@ -53,7 +64,66 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+        working-directory: agentic
+      - run: npm run build && npm test
+        working-directory: agentic
+      - name: Publish
+        working-directory: agentic
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ inputs.dist_tag || 'next' }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || {
+            echo "NPM_TOKEN is not set — add it as a repository secret" >&2
+            exit 1
+          }
+          npm pack
+          npm publish ./*.tgz --access public --provenance --tag "$DIST_TAG"
+          echo "published @sauronid/agentic to dist-tag $DIST_TAG"
+
+  python-sdist:
+    name: Publish sauronid-client (sdist)
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: pypi
+    # Trusted publishing (OIDC) — no API token. The platform wheels stay in
+    # release-publish.yml because they carry the workstation binary; PyPI accepts
+    # them later under the same version, so shipping the sdist first is not a
+    # conflict.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "build==1.2.2.post1" && python -m build --sdist
+        working-directory: clients/python
+      - name: Assert source distribution has no workstation binary
+        working-directory: clients/python
+        run: |
+          if tar -tzf dist/*.tar.gz | grep -E '/agent-action-tool(\.exe)?$'; then
+            echo "source distribution contains a platform binary" >&2
+            exit 1
+          fi
+      - name: Publish via trusted publishing
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          packages-dir: clients/python/dist
+
+  mcp-server:
+    name: Publish @sauronid/mcp-server
+    # After `agentic`, not just after the gate: the pin step below refuses to
+    # publish a package whose declared dependency is not on npm yet.
+    needs: [gate, agentic]
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
           registry-url: https://registry.npmjs.org
       - name: Build and test
         working-directory: mcp-server
@@ -61,6 +131,36 @@ jobs:
           npm ci
           npm test
           npm run build
+      # `mcp-server` depends on `@sauronid/agentic` as `file:../agentic`, which
+      # is right for local development and unresolvable for anyone installing
+      # from npm — published as-is, `npx @sauronid/mcp-server` fails during
+      # install. Pin it to the version in the tree instead.
+      #
+      # That version must already be on npm: `agentic` publishes from
+      # release-publish.yml, not this workflow, so publishing the MCP server
+      # ahead of a matching agentic release produces a package that cannot be
+      # installed. The check below refuses rather than shipping that.
+      - name: Pin the agentic dependency to a published version
+        working-directory: mcp-server
+        run: |
+          ver=$(node -p "require('../agentic/package.json').version")
+          VER="$ver" node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const cur = pkg.dependencies["@sauronid/agentic"];
+            if (!cur.startsWith("file:")) {
+              console.error(`expected a file: dependency, found ${cur}`);
+              process.exit(1);
+            }
+            pkg.dependencies["@sauronid/agentic"] = `^${process.env.VER}`;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          npm view "@sauronid/agentic@^${ver}" version >/dev/null 2>&1 || {
+            echo "@sauronid/agentic@^${ver} is not on npm — publish agentic first (release-publish.yml)" >&2
+            exit 1
+          }
+          echo "pinned @sauronid/agentic to ^${ver}"
+
       - name: Publish
         working-directory: mcp-server
         env:

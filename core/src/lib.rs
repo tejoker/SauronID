@@ -55,4 +55,5 @@ pub mod sync_recover;
 pub mod tenancy;
 pub mod transparent_proof;
 pub mod usage;
+pub mod user_session;
 pub mod zk_verifier;

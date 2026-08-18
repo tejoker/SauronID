@@ -3,8 +3,9 @@
 A workload driver for the SauronID core HTTP surface. It self-provisions users
 and agents through the dev endpoints, then drives a mixed, signed workload at
 fixed concurrency and reports per-op latency percentiles, achieved RPS, error
-counts by HTTP status, and the core process's RSS + SQLite file growth over the
-run.
+counts by HTTP status, and the core process's RSS + data file growth over the
+run. It drives either backend: SQLite by default, PostgreSQL with
+`SAURON_DB_BACKEND=postgres` + `DATABASE_URL`.
 
 Harness lives in `redteam/loadtest/` (`loadtest.ts`, `run.sh`, `package.json`).
 It reuses the in-repo `@sauronid/agentic` SDK via a `file:` link and runs under
@@ -110,6 +111,76 @@ strategy matter before a real production soak — see
 [docs/postgres-port-status.md](postgres-port-status.md). The 5.2 s max spikes
 line up with GC ticks and WAL checkpoints.
 
+### Run C — Postgres smoke (C=4, DURATION_S=60, N_USERS=4)
+
+`SAURON_DB_BACKEND=postgres`, PostgreSQL 16 in Docker on the same host. Same
+parameters as Run A, so the two are directly comparable.
+
+Total: **51,045 requests in 60.0s → 850.69 rps, 0 errors.**
+
+| Op | count | rps | p50 | p90 | p99 | max | errors |
+|----|------:|----:|----:|----:|----:|----:|------:|
+| signed `/agent/egress/log` | 35,895 | 598.2 | 5.65 ms | 7.66 ms | 9.24 ms | 76.79 ms | 0 |
+| GET `/healthz` | 10,085 | 168.1 | 0.58 ms | 0.88 ms | 2.24 ms | 8.19 ms | 0 |
+| POST `/v1/policy/evaluate` | 5,065 | 84.4 | 3.16 ms | 4.88 ms | 7.32 ms | 74.77 ms | 0 |
+
+RSS 23.9 MB → 27.0 MB. The SQLite sidecar file stayed at 1.98 MB and its
+`agent_call_nonces` / `agent_egress_log` tables held **0 rows** at the end, while
+PostgreSQL held 35,896 of each — the writes went to the configured backend, not
+the sidecar. That is the same property `core/tests/postgres_backend_drift.sh`
+asserts, observed here under load.
+
+### Run D — Postgres sustained (C=16, DURATION_S=900, N_USERS=16)
+
+Same parameters as Run B.
+
+Total: **2,046,979 requests in 900s → 2,274.41 rps, 0 errors** (all 200s).
+
+| Op | count | rps | p50 | p90 | p99 | max | errors |
+|----|------:|----:|----:|----:|----:|----:|------:|
+| signed `/agent/egress/log` | 1,432,133 | 1591.3 | 7.42 ms | 9.76 ms | 19.88 ms | 826.13 ms | 0 |
+| GET `/healthz` | 410,038 | 455.6 | 2.09 ms | 3.62 ms | 6.07 ms | 32.91 ms | 0 |
+| POST `/v1/policy/evaluate` | 204,808 | 227.6 | 5.99 ms | 10.47 ms | 19.48 ms | 628.29 ms | 0 |
+
+RSS 24.5 MB → 43.3 MB, flat after warm-up.
+
+**The tail does not drift.** This is the finding that matters, because it is the
+one Run B could not deliver:
+
+| minute | 0 | 4 | 8 | 11 | 14 |
+|---|---:|---:|---:|---:|---:|
+| Postgres p99 | 15.91 ms | 15.00 ms | 17.29 ms | 31.75 ms | 18.30 ms |
+| Postgres p50 | 7.14 ms | 6.85 ms | 6.93 ms | 6.94 ms | 6.95 ms |
+
+p99 oscillates between 14.7 ms and 31.8 ms with no trend; p50 is flat to within
+0.2 ms across the whole run. Compare Run B on SQLite, where p99 rose
+**monotonically from 105.7 ms to 301.5 ms** and every op showed a ~5.2 s max.
+
+The mechanism behind the SQLite drift is visibly absent. The GC pruned 274,872 /
+490,255 / 470,792 expired call-nonces on its three ticks and kept pace, and the
+data file never grew the way the 277 MB SQLite file did, because b-tree depth and
+page-cache pressure on the nonce table are PostgreSQL's problem to manage rather
+than a single-writer file's.
+
+### SQLite vs PostgreSQL, side by side
+
+| | SQLite (Run B) | PostgreSQL (Run D) |
+|---|---:|---:|
+| Sustained throughput | 636.43 rps | **2,274.41 rps** |
+| Errors in 900 s | 0 | 0 |
+| p99, minute 0 → 14 | 105.7 → **301.5 ms** | 15.9 → **18.3 ms** |
+| Worst max | ~5,188 ms | 826 ms |
+| RSS end | 44.8 MB | 43.3 MB |
+| Data file growth | 3.6 MB → 277 MB | flat |
+
+**What this does and does not license.** It licenses "PostgreSQL sustains ~3.6×
+the throughput of the single-node SQLite tier with a flat tail over 15 minutes,
+measured". It does **not** license any HA, failover or multi-region claim: this
+is one core process against one PostgreSQL instance on one host. Nothing here
+tested replica failover, connection-pool exhaustion under partition, or
+multi-replica contention on the same tables. `high_availability` stays `false`
+in `release/manifest.json`.
+
 ## Observed behaviour
 
 **Nonce table growth (expected, GC'd).** Every signed call consumes a fresh
@@ -147,7 +218,21 @@ npm install            # first time only; links ../../agentic via file:
 
 # sustained: 16 workers, 15 min, 16 users
 N_USERS=16 C=16 DURATION_S=900 ./run.sh
+
+# against PostgreSQL (Runs C and D) — apply migrations/postgres/*.sql first
+docker run -d --name pgload -p 15435:5432 \
+  -e POSTGRES_USER=sauronid -e POSTGRES_PASSWORD=... -e POSTGRES_DB=sauronid \
+  postgres:16-alpine
+for f in ../../migrations/postgres/*.sql; do
+  docker exec -i pgload psql -U sauronid -d sauronid -q < "$f"
+done
+SAURON_DB_BACKEND=postgres \
+DATABASE_URL='postgres://sauronid:...@127.0.0.1:15435/sauronid?sslmode=disable' \
+N_USERS=16 C=16 DURATION_S=900 ./run.sh
 ```
+
+Re-running against a Postgres that already holds rows measures a different
+thing; truncate between runs the way `rm -f "$DB"` does for SQLite.
 
 `run.sh` boots a fresh core on `:3021` against a throwaway SQLite DB
 (`$LOADTEST_DB`, default under `$TMPDIR` — set it to a scratchpad path to keep
@@ -156,7 +241,8 @@ prints post-run table sizes and any `sauron::gc` log lines. Results land in
 `redteam/loadtest/results/run-<timestamp>.json` (full per-op stats, RSS/DB
 samples, per-minute drift) alongside the captured core log.
 
-Tunables via env: `N_USERS`, `C`, `DURATION_S`, `PORT`, `LOADTEST_DB`.
+Tunables via env: `N_USERS`, `C`, `DURATION_S`, `PORT`, `LOADTEST_DB`,
+`SAURON_DB_BACKEND`, `DATABASE_URL`.
 
 ## What a real pre-production soak must add
 

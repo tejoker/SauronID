@@ -903,7 +903,7 @@ pub async fn gate_action_on_bound_policy(
     agent_id: &str,
     action: &Action,
     route: &'static str,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), AppError> {
     use crate::runtime_mode::{policy_enforcement_mode, PolicyEnforcementMode};
 
     let mode = policy_enforcement_mode();
@@ -941,7 +941,8 @@ pub async fn gate_action_on_bound_policy(
                 return Err((
                     StatusCode::FORBIDDEN,
                     format!("policy {policy_id} denied {check}: {reason}"),
-                ));
+                )
+                    .into());
             }
             Ok(())
         }
@@ -959,7 +960,8 @@ pub async fn gate_action_on_bound_policy(
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     format!("bound policy {policy_id} is unavailable (failing closed)"),
-                ));
+                )
+                    .into());
             }
             Ok(())
         }
@@ -974,7 +976,8 @@ pub async fn gate_action_on_bound_policy(
                 return Err((
                     StatusCode::FORBIDDEN,
                     "no bound policy for agent (SAURON_POLICY_REQUIRE_BINDING)".to_string(),
-                ));
+                )
+                    .into());
             }
             Ok(())
         }
@@ -992,7 +995,8 @@ pub async fn gate_action_on_bound_policy(
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     format!("policy enforcement unavailable (failing closed): {e}"),
-                ));
+                )
+                    .into());
             }
             Ok(())
         }

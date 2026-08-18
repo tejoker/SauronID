@@ -1,0 +1,113 @@
+{
+  "config": {
+    "core_url": "http://localhost:3302",
+    "n_users": 4,
+    "concurrency": 4,
+    "duration_s": 60,
+    "wall_s": 60,
+    "core_pid": "778248",
+    "db_path": "/tmp/sauronid-loadtest-3302.db",
+    "started_at": "2026-08-18T10:40:16.890Z",
+    "mix": {
+      "signed_egress_log": 0.7,
+      "healthz": 0.2,
+      "policy_evaluate": 0.1
+    }
+  },
+  "ops": {
+    "signed_egress_log": {
+      "count": 35895,
+      "rps": 598.21,
+      "p50_ms": 5.65,
+      "p90_ms": 7.66,
+      "p99_ms": 9.24,
+      "max_ms": 76.79,
+      "errors": 0,
+      "statuses": {
+        "200": 35895
+      },
+      "error_samples": []
+    },
+    "healthz": {
+      "count": 10085,
+      "rps": 168.07,
+      "p50_ms": 0.58,
+      "p90_ms": 0.88,
+      "p99_ms": 2.24,
+      "max_ms": 8.19,
+      "errors": 0,
+      "statuses": {
+        "200": 10085
+      },
+      "error_samples": []
+    },
+    "policy_evaluate": {
+      "count": 5065,
+      "rps": 84.41,
+      "p50_ms": 3.16,
+      "p90_ms": 4.88,
+      "p99_ms": 7.32,
+      "max_ms": 74.77,
+      "errors": 0,
+      "statuses": {
+        "200": 5065
+      },
+      "error_samples": []
+    }
+  },
+  "overall": {
+    "count": 51045,
+    "rps": 850.69,
+    "errors": 0
+  },
+  "rss_samples": [
+    {
+      "t_s": 0,
+      "rss_mb": 23.9,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 10,
+      "rss_mb": 26.1,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 20,
+      "rss_mb": 26.3,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 30,
+      "rss_mb": 26.9,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 40,
+      "rss_mb": 27,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 50,
+      "rss_mb": 27.1,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 60,
+      "rss_mb": 27,
+      "db_mb": 1.98
+    },
+    {
+      "t_s": 60,
+      "rss_mb": 27,
+      "db_mb": 1.98
+    }
+  ],
+  "per_minute_drift": [
+    {
+      "minute": 0,
+      "count": 51045,
+      "p50_ms": 5.34,
+      "p99_ms": 8.87
+    }
+  ]
+}

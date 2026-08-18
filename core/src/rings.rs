@@ -16,6 +16,7 @@
 //! every named ring must admit it and be proven by its own signature, so
 //! authority is the intersection of the named rings.
 
+use crate::error::AppError;
 use std::sync::{Arc, RwLock};
 
 use axum::{
@@ -355,16 +356,17 @@ pub struct MembershipRequest {
     pub agent_public_hex: Option<String>,
 }
 
-type HandlerResult = Result<Json<Value>, (StatusCode, String)>;
+type HandlerResult = Result<Json<Value>, AppError>;
 
-fn require_enabled() -> Result<(), (StatusCode, String)> {
+fn require_enabled() -> Result<(), AppError> {
     if anon_rings_enabled() {
         Ok(())
     } else {
         Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "anonymous rings are disabled (set SAURON_ANON_RINGS=1)".into(),
-        ))
+        )
+            .into())
     }
 }
 
@@ -373,7 +375,7 @@ fn resolve_master_pub(
     db: &mut AnyConn<'_>,
     tenant_id: &str,
     req: &MembershipRequest,
-) -> Result<String, (StatusCode, String)> {
+) -> Result<String, AppError> {
     if let Some(h) = req
         .agent_public_hex
         .as_ref()
@@ -393,7 +395,7 @@ fn resolve_master_pub(
         "SELECT public_key_hex FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
         sql_params![agent_id, tenant_id],
         |r| r.get::<String>(0),
-        || (StatusCode::NOT_FOUND, "agent not found".to_string()),
+        || AppError::NotFound("agent not found".to_string()),
     )
 }
 
@@ -456,7 +458,7 @@ pub async fn subscribe_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .is_none()
     {
-        return Err((StatusCode::NOT_FOUND, "ring not found".into()));
+        return Err((StatusCode::NOT_FOUND, "ring not found".into()).into());
     }
     let master = resolve_master_pub(&mut db.any_conn(), tenant.as_str(), &req)?;
     let point = subscribe(
@@ -795,5 +797,166 @@ mod tests {
             membership.is_err(),
             "tenant_id must come from authenticated context"
         );
+    }
+}
+
+#[cfg(test)]
+mod restart_persistence_tests {
+    use super::*;
+    use crate::any_db::AsAnyConn;
+    use crate::ring_pseudonym;
+    use curve25519_dalek::constants::RISTRETTO_BASEPOINT_TABLE;
+    use rusqlite::Connection;
+
+    /// A ring must survive a process restart intact — same members, same order,
+    /// same rule and version.
+    ///
+    /// This is a restart test, so it uses a real file rather than
+    /// `:memory:`: an in-memory database dies with its connection and would
+    /// pass this vacuously. Dropping the connection and reopening the path is
+    /// what a restart looks like to this layer.
+    ///
+    /// The property is not cosmetic. `list_member_points` is what both the
+    /// signer and the verifier load, and an LSAG is computed across the ring in
+    /// sequence — so a set that comes back reordered after a restart produces
+    /// signatures that fail for no visible reason. Membership also has to be
+    /// re-derivable, because nothing stores an agent→ring link: the operator
+    /// recomputes `P_R = x_R·G` from the trapdoor.
+    ///
+    /// Replaces a shell script (`e2e_ring_restore_consent.sh`) that drove this
+    /// through the retired `/kyc/*` surface, was never tracked in git, and so
+    /// could not run on a clean checkout at all.
+    #[test]
+    fn a_ring_survives_a_restart_with_its_order_and_signatures_intact() {
+        let dir = std::env::temp_dir().join(format!(
+            "sauron-ring-restart-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ring.sqlite");
+        let _ = std::fs::remove_file(&path);
+
+        let trapdoor = Scalar::from_bytes_mod_order([7u8; 32]);
+        // Enough members that a reordering would actually change the sequence.
+        let agents: Vec<Scalar> = (1u8..=5)
+            .map(|i| Scalar::from_bytes_mod_order([i; 32]))
+            .collect();
+        let agent_hexes: Vec<String> = agents
+            .iter()
+            .map(|a| hex::encode((a * RISTRETTO_BASEPOINT_TABLE).compress().as_bytes()))
+            .collect();
+
+        // ── before the restart ────────────────────────────────────────────
+        let (before, rule_before, version_before) = {
+            let conn = Connection::open(&path).unwrap();
+            crate::db::init_schema(&conn);
+            let mut db = conn.any_conn();
+            upsert_ring(
+                &mut db,
+                "default",
+                "ring:restart",
+                &RingRule {
+                    allowed_actions: vec!["payment_initiation".to_string()],
+                    ..Default::default()
+                },
+                1_000,
+            )
+            .unwrap();
+            for h in &agent_hexes {
+                subscribe(&mut db, "default", &trapdoor, h, "ring:restart", 1_000).unwrap();
+            }
+            let members = list_member_points(&mut db, "default", "ring:restart").unwrap();
+            assert_eq!(members.len(), 5);
+            let (rule, version) = get_ring(&mut db, "default", "ring:restart")
+                .unwrap()
+                .expect("ring exists");
+            (members, rule, version)
+        }; // connection dropped — this is the "restart"
+
+        // ── after the restart ─────────────────────────────────────────────
+        let conn = Connection::open(&path).unwrap();
+        crate::db::init_schema(&conn); // idempotent, as it is on a real boot
+        let mut db = conn.any_conn();
+
+        let after = list_member_points(&mut db, "default", "ring:restart").unwrap();
+        assert_eq!(
+            after, before,
+            "member set and ORDER must be identical across a restart"
+        );
+
+        // Pin the ordering CONTRACT, not just self-consistency. Comparing
+        // before-to-after alone cannot catch a systematic change — both sides
+        // read through the same function, so flipping `ORDER BY` flips both and
+        // the equality still holds. The contract is "ascending by compressed
+        // point hex", and a signer that sorts differently from the verifier
+        // produces signatures that fail for no visible reason, so it is worth
+        // asserting outright.
+        let mut expected: Vec<String> = after
+            .iter()
+            .map(|p| hex::encode(p.compress().as_bytes()))
+            .collect();
+        let observed = expected.clone();
+        expected.sort();
+        assert_eq!(
+            observed, expected,
+            "members must come back sorted ascending by point hex"
+        );
+
+        let (rule_after, version_after) = get_ring(&mut db, "default", "ring:restart")
+            .unwrap()
+            .expect("ring must still exist after a restart");
+        assert_eq!(rule_after, rule_before, "ring rule must survive");
+        assert_eq!(
+            version_after, version_before,
+            "ring version must survive — it is stamped on envelopes as ring:{{id}}:v{{n}}"
+        );
+
+        // A signature produced against the reloaded set still verifies, and the
+        // signer is still locatable without any stored agent→ring link.
+        //
+        // Signing is the AGENT's side on purpose: `agent_per_ring_secret` needs
+        // the master secret `a`, which the operator never holds. The operator
+        // can derive the member POINT from its trapdoor — that is how `subscribe`
+        // and `revoke` work — but it cannot produce a signature, and this test
+        // would be meaningless if it could.
+        let a = &agents[2];
+        let big_t = &trapdoor * RISTRETTO_BASEPOINT_TABLE;
+        let shared = ring_pseudonym::shared_secret_agent(a, &big_t);
+        let identity = ring_pseudonym::agent_ring_identity(a, &shared, "ring:restart");
+        let idx = after
+            .iter()
+            .position(|p| *p == identity.public)
+            .expect("the signer must still be findable in the reloaded ring");
+
+        let msg = b"restart-survives";
+        let sig = crate::ring::sign(msg, &after, &identity, idx);
+        assert!(
+            crate::ring::verify(msg, &after, &sig),
+            "a signature over the reloaded ring must verify"
+        );
+        assert!(
+            crate::ring::verify(msg, &before, &sig),
+            "and against the pre-restart set, since the two must be the same sequence"
+        );
+
+        // Revocation still works after a restart — it re-derives, so if the
+        // trapdoor path were broken by reload this would silently no-op.
+        assert!(revoke(
+            &mut db,
+            "default",
+            &trapdoor,
+            &agent_hexes[2],
+            "ring:restart"
+        )
+        .unwrap());
+        assert_eq!(member_count(&mut db, "default", "ring:restart").unwrap(), 4);
+
+        // `db` borrows `conn`; NLL ends that borrow at its last use above, so the
+        // handle can be closed here. Closing it before removing the directory
+        // keeps this tidy on platforms less forgiving than Linux about
+        // unlinking an open file.
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

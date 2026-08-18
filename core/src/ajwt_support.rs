@@ -113,47 +113,6 @@ pub fn consume_ajwt_jti(db: &mut AnyConn<'_>, jti: &str, exp: i64) -> Result<(),
     })
 }
 
-/// Atomic single-use nonce consume for the DPoP-style per-call signature.
-/// Returns Err if (agent_id, nonce) already inserted (replay), or db error.
-///
-/// Legacy direct-DB path. Prefer `Repo::consume_call_nonce` (in
-/// `repository.rs`) which runs under `BEGIN IMMEDIATE` on SQLite and
-/// `ISOLATION LEVEL SERIALIZABLE` (with retry) on Postgres.
-pub fn consume_call_nonce(
-    db: &mut AnyConn<'_>,
-    agent_id: &str,
-    nonce: &str,
-    exp: i64,
-) -> Result<(), String> {
-    if nonce.is_empty() {
-        return Err("missing call nonce".into());
-    }
-    if nonce.len() > 128 {
-        return Err("call nonce too long (max 128 chars)".into());
-    }
-    // No transaction: one statement, and the replay check is the uniqueness of
-    // (agent_id, nonce). Wrapping it added nothing on SQLite and would be a
-    // READ COMMITTED transaction on Postgres, which is weaker than the
-    // constraint doing the work.
-    match db.execute(
-        "INSERT INTO agent_call_nonces (agent_id, nonce, exp) VALUES (?1, ?2, ?3)",
-        sql_params![&agent_id, &nonce, &exp],
-    ) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let msg = e.to_lowercase();
-            if msg.contains("unique")
-                || msg.contains("primary key")
-                || msg.contains("duplicate key")
-            {
-                Err("call nonce replay (already used)".to_string())
-            } else {
-                Err(e)
-            }
-        }
-    }
-}
-
 /// Verify compact JWS: EdDSA over `header.payload`, payload decodes to UTF-8 `challenge`.
 pub fn verify_ed25519_pop_jws(
     challenge: &str,

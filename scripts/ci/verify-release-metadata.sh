@@ -28,7 +28,14 @@ tool=$(jq -er '.version' packaging/npm-agent-action-tool/package.json)
 }
 [[ "$agentic" == "$(jq -er '.components.agentic_npm' "$manifest")" ]] || { echo "agentic version drift" >&2; exit 1; }
 [[ "$tool" == "$(jq -er '.components.agent_action_tool_npm' "$manifest")" ]] || { echo "tool version drift" >&2; exit 1; }
-[[ "$(jq -er '.supported_topology' "$manifest")" == "single-node-sqlite" ]] || { echo "unsupported or misleading topology" >&2; exit 1; }
+# PostgreSQL became a supported topology once `DbHandle::lock()` started
+# dispatching (every call site, not a subset) and the tier was measured — see
+# Runs C and D in docs/load-test.md. The allowlist stays an allowlist: a topology
+# string nobody has run a soak against must not reach a release.
+case "$(jq -er '.supported_topology' "$manifest")" in
+  single-node-sqlite|single-node-sqlite-or-postgres) ;;
+  *) echo "unsupported or misleading topology" >&2; exit 1 ;;
+esac
 [[ "$(jq -er '.high_availability' "$manifest")" == "false" ]] || { echo "HA must remain false until the Postgres port and failover suite are complete" >&2; exit 1; }
 grep -Fq "## [${expected_tag#v}]" CHANGELOG.md || { echo "CHANGELOG has no ${expected_tag#v} release entry" >&2; exit 1; }
 [[ "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)" == "1.91.1" ]] || {

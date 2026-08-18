@@ -6,6 +6,6 @@
     "agentic_npm": "2.0.0",
     "agent_action_tool_npm": "0.1.0"
   },
-  "supported_topology": "single-node-sqlite",
+  "supported_topology": "single-node-sqlite-or-postgres",
   "high_availability": false
 }

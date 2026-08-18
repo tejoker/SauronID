@@ -1,16 +1,23 @@
 import { CoreApi, createPopKeyPair, randSuffix, signPopJws } from "../core-api";
 
-/** Second /agent/kyc/consent with the same A-JWT must fail (server JTI store). */
+/**
+ * A consumed A-JWT jti cannot be used again.
+ *
+ * This used to drive two `/agent/kyc/consent` calls. That route belonged to the
+ * retired banking surface, and it was never where the jti was actually spent:
+ * `ajwt_support::consume_ajwt_jti` is called from `/agent/verify` and nowhere
+ * else, so the old scenario proved the property only indirectly, through a
+ * handler that has since been deleted. It now calls the consuming endpoint
+ * directly — first verify wins, second must be refused by the server-side jti
+ * store.
+ */
 export async function scenarioJtiReplay(
     api: CoreApi,
     bankSite: string,
     label: string
 ): Promise<void> {
     const sfx = `${label}-${randSuffix()}`;
-    const retail = `redteam-zkp-${sfx}`;
     await api.ensureClient(bankSite, "BANK");
-    await api.ensureClient(retail, "ZKP_ONLY");
-    await api.devBuyTokens(retail, 5);
 
     const email = `jti_${sfx}@sauron.local`;
     const password = `Passw0rd!${sfx}`;
@@ -29,8 +36,14 @@ export async function scenarioJtiReplay(
 
     const reg = await api.agentRegister(session, {
         human_key_image: key_image,
-        agent_checksum: `sha256:jti-${sfx}`,
-        intent_json: JSON.stringify({ scope: ["kyc_consent"] }),
+        agent_type: "llm",
+        checksum_inputs: {
+            model_id: "claude-opus-4-7",
+            system_prompt: `Jti-replay agent ${sfx}`,
+            tools: ["payment_initiation"],
+        },
+        agent_checksum: "",
+        intent_json: JSON.stringify({ scope: ["payment_initiation"] }),
         public_key_hex: keys.public_key_hex,
         ring_key_image_hex: keys.ring_key_image_hex,
         pop_jkt: `redteam-pop-${sfx}`,
@@ -40,51 +53,35 @@ export async function scenarioJtiReplay(
     if (reg.status !== 200) throw new Error(`agent/register ${reg.status}: ${reg.raw}`);
     const ajwt = reg.data.ajwt as string;
     if (!ajwt) throw new Error("missing ajwt");
-
     const agentId = reg.data.agent_id as string;
     if (!agentId) throw new Error("missing agent_id");
 
-    const req1 = await api.kycRequest(retail, ["age_over_threshold", "age_threshold"]);
-    const pop1 = await api.agentPopChallenge(session, agentId);
-    const action1 = await api.buildAgentActionProof({
-        secretHex: keys.secret_hex,
-        agentId,
-        humanKeyImage: key_image,
+    // `consume_jti: true` is what spends the jti; a fresh PoP challenge per call
+    // because those are single-use too — reusing one would fail on PoP and say
+    // nothing about the jti store.
+    const ch1 = await api.agentPopChallenge(session, agentId);
+    const first = await api.agentVerify({
         ajwt,
-        action: "kyc_consent",
-        resource: `kyc_consent:${req1}`,
-        merchantId: retail,
+        consume_jti: true,
+        pop_challenge_id: ch1.pop_challenge_id,
+        pop_jws: signPopJws(ch1.challenge, pop.privateKey),
     });
-    const c1 = await api.agentKycConsent({
-        ajwt,
-        site_name: retail,
-        request_id: req1,
-        pop_challenge_id: pop1.pop_challenge_id,
-        pop_jws: signPopJws(pop1.challenge, pop.privateKey),
-        agent_action: action1,
-    });
-    if (c1.status !== 200) throw new Error(`first consent expected 200, got ${c1.status}: ${c1.raw}`);
+    if (first.status !== 200 || first.data.valid !== true) {
+        throw new Error(`first verify expected valid, got ${first.status}: ${first.raw}`);
+    }
 
-    const req2 = await api.kycRequest(retail, ["age_over_threshold", "age_threshold"]);
-    const pop2 = await api.agentPopChallenge(session, agentId);
-    const action2 = await api.buildAgentActionProof({
-        secretHex: keys.secret_hex,
-        agentId,
-        humanKeyImage: key_image,
+    const ch2 = await api.agentPopChallenge(session, agentId);
+    const second = await api.agentVerify({
         ajwt,
-        action: "kyc_consent",
-        resource: `kyc_consent:${req2}`,
-        merchantId: retail,
+        consume_jti: true,
+        pop_challenge_id: ch2.pop_challenge_id,
+        pop_jws: signPopJws(ch2.challenge, pop.privateKey),
     });
-    const c2 = await api.agentKycConsent({
-        ajwt,
-        site_name: retail,
-        request_id: req2,
-        pop_challenge_id: pop2.pop_challenge_id,
-        pop_jws: signPopJws(pop2.challenge, pop.privateKey),
-        agent_action: action2,
-    });
-    if (c2.status === 200) {
-        throw new Error("second consent with same A-JWT must not succeed (JTI replay)");
+    if (second.data.valid === true) {
+        throw new Error("second verify with the same A-JWT must not be valid (jti replay)");
+    }
+    const err = String(second.data.error ?? "").toLowerCase();
+    if (!err.includes("jti") && !err.includes("replay")) {
+        throw new Error(`second verify rejected, but not as a jti replay: ${second.raw}`);
     }
 }

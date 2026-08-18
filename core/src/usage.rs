@@ -16,6 +16,7 @@
 //! and anchorable; they become authoritative only when an in-path inference
 //! gateway counts them (see `docs/ideas/blackbox-encrypted-inference.md`).
 
+use crate::error::AppError;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -141,9 +142,9 @@ pub fn record_usage(
     in_tokens: i64,
     out_tokens: i64,
     now: i64,
-) -> Result<(String, String, UsageTotals), (StatusCode, String)> {
+) -> Result<(String, String, UsageTotals), AppError> {
     if in_tokens < 0 || out_tokens < 0 {
-        return Err((StatusCode::BAD_REQUEST, "token counts must be >= 0".into()));
+        return Err((StatusCode::BAD_REQUEST, "token counts must be >= 0".into()).into());
     }
     let (tenant_id, ring_id_opt, key_image): (String, Option<String>, String) = db.require(
         "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
@@ -266,12 +267,13 @@ pub fn verify_usage_report(
     db: &mut AnyConn<'_>,
     req: &RecordUsageRequest,
     now: i64,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), AppError> {
     if req.nonce.trim().len() < 16 || req.nonce.len() > 128 {
         return Err((
             StatusCode::BAD_REQUEST,
             "nonce must be 16..128 chars".into(),
-        ));
+        )
+            .into());
     }
     let (tenant_id, ring_id, receipt_key_image): (String, Option<String>, String) = db.require(
         "SELECT tenant_id, ring_id, ring_key_image_hex FROM agent_action_receipts
@@ -293,13 +295,14 @@ pub fn verify_usage_report(
         return Err((
             StatusCode::UNAUTHORIZED,
             "usage report signed by a different ring pseudonym than the receipt".into(),
-        ));
+        )
+            .into());
     }
 
     let members = crate::rings::list_member_points(db, &tenant_id, &ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if members.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, "ring has no members".into()));
+        return Err((StatusCode::UNAUTHORIZED, "ring has no members".into()).into());
     }
     let canonical = canonical_usage_report_json(
         &req.receipt_id,
@@ -312,7 +315,8 @@ pub fn verify_usage_report(
         return Err((
             StatusCode::UNAUTHORIZED,
             "usage report signature verification failed".into(),
-        ));
+        )
+            .into());
     }
 
     // Single-use, in the same table and idiom as action nonces: the UNIQUE
@@ -343,12 +347,13 @@ pub fn verify_usage_report(
 pub async fn record_usage_handler(
     State(state): State<Arc<RwLock<ServerState>>>,
     Json(req): Json<RecordUsageRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AppError> {
     if !crate::rings::anon_rings_enabled() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "anonymous rings are disabled (set SAURON_ANON_RINGS=1)".into(),
-        ));
+        )
+            .into());
     }
     let now = crate::agent_action::now_secs();
     let st = state.read_or_recover();
@@ -376,12 +381,13 @@ pub async fn ring_usage_handler(
     State(state): State<Arc<RwLock<ServerState>>>,
     Path(ring_id): Path<String>,
     Extension(tenant): Extension<crate::tenancy::TenantId>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AppError> {
     if !crate::rings::anon_rings_enabled() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "anonymous rings are disabled (set SAURON_ANON_RINGS=1)".into(),
-        ));
+        )
+            .into());
     }
     let st = state.read_or_recover();
     let mut db = st.db.lock().unwrap();
@@ -502,14 +508,14 @@ mod tests {
 
         // Same report again — replay refused.
         let err = verify_usage_report(&mut db.any_conn(), &req, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
-        assert!(err.1.contains("replay"), "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.to_string().contains("replay"), "got: {}", err);
 
         // Tampering with the counts after signing invalidates the report.
         let mut tampered = signed_report(&db, &a, "ar_signed", "nonce-usage-0000002", 100);
         tampered.input_tokens = 0;
         let err = verify_usage_report(&mut db.any_conn(), &tampered, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
 
         // A third party who knows the receipt id cannot bill it: no signature.
         let stranger = signed_report(&db, &a, "ar_signed", "nonce-usage-0000003", 5);
@@ -517,8 +523,12 @@ mod tests {
         let mut wrong_receipt = stranger;
         wrong_receipt.receipt_id = "ar_other".into();
         let err = verify_usage_report(&mut db.any_conn(), &wrong_receipt, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
-        assert!(err.1.contains("different ring pseudonym"), "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            err.to_string().contains("different ring pseudonym"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]
@@ -607,9 +617,9 @@ mod tests {
         // Legacy receipt: ring_id NULL.
         insert_anon_receipt(&db, "ar_legacy", None, "ki");
         let err = record_usage(&mut db.any_conn(), "ar_legacy", "m", 1, 1, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
         // Unknown receipt.
         let err = record_usage(&mut db.any_conn(), "ar_missing", "m", 1, 1, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use axum::{
     extract::{Extension, Json, State},
     http::StatusCode,
@@ -501,12 +502,13 @@ fn action_allowed_by_intent(intent: Option<&Value>, expected_action: &str) -> bo
     scopes.iter().any(|s| s == &expected)
 }
 
-fn require_eq_str(label: &str, got: &str, expected: &str) -> Result<(), (StatusCode, String)> {
+fn require_eq_str(label: &str, got: &str, expected: &str) -> Result<(), AppError> {
     if got != expected {
         return Err((
             StatusCode::UNAUTHORIZED,
             format!("agent_action envelope {label} mismatch"),
-        ));
+        )
+            .into());
     }
     Ok(())
 }
@@ -515,7 +517,7 @@ pub fn validate_agent_action(
     state: &Arc<RwLock<ServerState>>,
     proof: &AgentActionProof,
     opts: ValidateAgentActionOptions<'_>,
-) -> Result<AgentActionValidation, (StatusCode, String)> {
+) -> Result<AgentActionValidation, AppError> {
     let env = &proof.envelope;
     require_eq_str("agent_id", &env.agent_id, opts.agent_id)?;
     require_eq_str(
@@ -536,7 +538,8 @@ pub fn validate_agent_action(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "agent_action envelope amount_minor mismatch".into(),
-            ));
+            )
+                .into());
         }
     }
     if let Some(currency) = opts.expected_currency {
@@ -546,25 +549,29 @@ pub fn validate_agent_action(
         return Err((
             StatusCode::UNAUTHORIZED,
             "agent_action policy_hash mismatch".into(),
-        ));
+        )
+            .into());
     }
     if env.expires_at < now_secs() {
         return Err((
             StatusCode::UNAUTHORIZED,
             "agent_action envelope expired".into(),
-        ));
+        )
+            .into());
     }
     if env.nonce.trim().len() < 16 || env.nonce.len() > 128 {
         return Err((
             StatusCode::BAD_REQUEST,
             "agent_action nonce must be 16..128 chars".into(),
-        ));
+        )
+            .into());
     }
     if !action_allowed_by_intent(opts.intent, opts.expected_action) {
         return Err((
             StatusCode::FORBIDDEN,
             "A-JWT intent does not allow agent_action action".into(),
-        ));
+        )
+            .into());
     }
 
     let canonical = canonical_envelope_bytes(env);
@@ -605,32 +612,37 @@ pub fn validate_agent_action(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "Agent revoked, expired, or owner mismatch".into(),
-            ));
+            )
+                .into());
         }
         if public_key_hex.is_empty() {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "Agent missing ring public key".into(),
-            ));
+            )
+                .into());
         }
         if registered_key_image.is_empty() {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "Agent missing registered ring key image".into(),
-            ));
+            )
+                .into());
         }
         if registered_key_image != ring_key_image_hex {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "agent_action ring key image does not match registered agent".into(),
-            ));
+            )
+                .into());
         }
         if let Some(expected_pop) = opts.pop_jkt {
             if !expected_pop.is_empty() && !pop_jkt.is_empty() && expected_pop != pop_jkt {
                 return Err((
                     StatusCode::UNAUTHORIZED,
                     "agent_action PoP thumbprint mismatch".into(),
-                ));
+                )
+                    .into());
             }
         }
 
@@ -664,7 +676,8 @@ pub fn validate_agent_action(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "Agent public key is not in authenticated tenant ring".into(),
-            ));
+            )
+                .into());
         }
 
         let ring_ok = ring::verify(&canonical, &tenant_ring, &proof.ring_signature);
@@ -782,7 +795,8 @@ pub fn validate_agent_action(
         return Err((
             StatusCode::UNAUTHORIZED,
             "agent_action ring signature verification failed".into(),
-        ));
+        )
+            .into());
     }
 
     Ok(AgentActionValidation {
@@ -891,38 +905,42 @@ pub fn validate_anon_action(
     jwt_secret: &[u8],
     proof: &AnonActionProof,
     now: i64,
-) -> Result<ActionReceipt, (StatusCode, String)> {
+) -> Result<ActionReceipt, AppError> {
     let env = &proof.envelope;
     if env.ring_id.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "ring_id is required".into()));
+        return Err((StatusCode::BAD_REQUEST, "ring_id is required".into()).into());
     }
     if env.nonce.trim().len() < 16 || env.nonce.len() > 128 {
         return Err((
             StatusCode::BAD_REQUEST,
             "nonce must be 16..128 chars".into(),
-        ));
+        )
+            .into());
     }
     if env.expires_at < now {
         return Err((
             StatusCode::UNAUTHORIZED,
             "anon action envelope expired".into(),
-        ));
+        )
+            .into());
     }
     if proof.also_ring_signatures.len() != env.also_ring_ids.len() {
         return Err((
             StatusCode::BAD_REQUEST,
             "also_ring_signatures must have one signature per also_ring_ids entry".into(),
-        ));
+        )
+            .into());
     }
     for (i, r) in env.also_ring_ids.iter().enumerate() {
         if r.trim().is_empty() {
-            return Err((StatusCode::BAD_REQUEST, "empty also_ring_ids entry".into()));
+            return Err((StatusCode::BAD_REQUEST, "empty also_ring_ids entry".into()).into());
         }
         if r == &env.ring_id || env.also_ring_ids[..i].contains(r) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("duplicate ring '{r}' in also_ring_ids"),
-            ));
+            )
+                .into());
         }
     }
 
@@ -939,20 +957,21 @@ pub fn validate_anon_action(
     if let crate::rings::RuleDecision::Deny(why) =
         crate::rings::evaluate_rule(&rule, &env.action, &env.config_digest)
     {
-        return Err((StatusCode::FORBIDDEN, format!("ring rule denied: {why}")));
+        return Err((StatusCode::FORBIDDEN, format!("ring rule denied: {why}")).into());
     }
 
     // 3. Anonymous membership: verify the ring signature against the live member set.
     let members = crate::rings::list_member_points(db, &env.tenant_id, &env.ring_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if members.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, "ring has no members".into()));
+        return Err((StatusCode::UNAUTHORIZED, "ring has no members".into()).into());
     }
     if !ring::verify(&canonical, &members, &proof.ring_signature) {
         return Err((
             StatusCode::UNAUTHORIZED,
             "anon ring signature verification failed".into(),
-        ));
+        )
+            .into());
     }
 
     // 3a. Every additional ring must independently admit this action AND be
@@ -974,7 +993,8 @@ pub fn validate_anon_action(
             return Err((
                 StatusCode::FORBIDDEN,
                 format!("ring '{ring_id}' rule denied: {why}"),
-            ));
+            )
+                .into());
         }
         let also_members = crate::rings::list_member_points(db, &env.tenant_id, ring_id)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -982,13 +1002,15 @@ pub fn validate_anon_action(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 format!("ring '{ring_id}' has no members"),
-            ));
+            )
+                .into());
         }
         if !ring::verify(&canonical, &also_members, sig) {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 format!("ring '{ring_id}' signature verification failed"),
-            ));
+            )
+                .into());
         }
         ring_versions.push(format!("ring:{ring_id}:v{also_version}"));
     }
@@ -1007,7 +1029,8 @@ pub fn validate_anon_action(
         return Err((
             StatusCode::PAYMENT_REQUIRED,
             format!("ring budget exceeded: {why}"),
-        ));
+        )
+            .into());
     }
 
     // 4. Single-use on (per-ring key image | nonce) — replay protection keyed on
@@ -1109,12 +1132,13 @@ pub async fn submit_anon_action(
     State(state): State<Arc<RwLock<ServerState>>>,
     Extension(tenant): Extension<TenantId>,
     Json(proof): Json<AnonActionProof>,
-) -> Result<Json<ActionReceipt>, (StatusCode, String)> {
+) -> Result<Json<ActionReceipt>, AppError> {
     if !crate::rings::anon_rings_enabled() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "anonymous rings are disabled (set SAURON_ANON_RINGS=1)".into(),
-        ));
+        )
+            .into());
     }
     // The envelope names its own tenant, and that name is inside the signed
     // bytes, so it cannot be swapped after signing. It still has to agree with
@@ -1131,7 +1155,8 @@ pub async fn submit_anon_action(
                 proof.envelope.tenant_id,
                 tenant.as_str()
             ),
-        ));
+        )
+            .into());
     }
     let now = now_secs();
     let st = state.read_or_recover();
@@ -1144,7 +1169,7 @@ pub async fn action_challenge(
     State(state): State<Arc<RwLock<ServerState>>>,
     Extension(tenant): Extension<TenantId>,
     Json(payload): Json<AgentActionChallengeBody>,
-) -> Result<Json<AgentActionChallengeResponse>, (StatusCode, String)> {
+) -> Result<Json<AgentActionChallengeResponse>, AppError> {
     if payload.agent_id.trim().is_empty()
         || payload.human_key_image.trim().is_empty()
         || payload.action.trim().is_empty()
@@ -1153,7 +1178,8 @@ pub async fn action_challenge(
         return Err((
             StatusCode::BAD_REQUEST,
             "agent_id, human_key_image, action and ajwt_jti are required".into(),
-        ));
+        )
+            .into());
     }
     let ttl = payload.ttl_secs.clamp(15, 300);
     let now = now_secs();
@@ -1179,7 +1205,8 @@ pub async fn action_challenge(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "Agent missing ring public key".into(),
-            ));
+            )
+                .into());
         }
         let pk_bytes = hex::decode(&signing_public_key_hex).map_err(|_| {
             (
@@ -1649,8 +1676,12 @@ mod tests {
         env.also_ring_ids = vec!["s".into()];
         let proof = sign_anon(&db, &a, &t, &env);
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::FORBIDDEN);
-        assert!(err.1.contains("ring 's' rule denied"), "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert!(
+            err.to_string().contains("ring 's' rule denied"),
+            "got: {}",
+            err
+        );
     }
 
     /// A ring the agent is NOT in cannot be co-claimed: no valid signature exists
@@ -1685,8 +1716,12 @@ mod tests {
             also_ring_signatures: vec![forged],
         };
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
-        assert!(err.1.contains("verification failed"), "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            err.to_string().contains("verification failed"),
+            "got: {}",
+            err
+        );
     }
 
     /// The ring list is signed: adding or dropping a ring invalidates the proof.
@@ -1703,7 +1738,7 @@ mod tests {
         proof.envelope.also_ring_ids.clear();
         proof.also_ring_signatures.clear();
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// The property a per-receipt signature cannot give you: a deleted receipt is
@@ -1853,8 +1888,8 @@ mod tests {
         let proof = sign_anon(&db, &a, &t, &env);
         assert!(validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).is_ok());
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
-        assert!(err.1.contains("replay"), "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.to_string().contains("replay"), "got: {}", err);
     }
 
     #[test]
@@ -1865,7 +1900,7 @@ mod tests {
         let env = anon_env("r", "transfer", "", "nonce-deny-00000001");
         let proof = sign_anon(&db, &a, &t, &env);
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
@@ -1876,7 +1911,7 @@ mod tests {
         let env = anon_env("r", "search", "sha256:DRIFTED", "nonce-drift-0000001");
         let proof = sign_anon(&db, &a, &t, &env);
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
@@ -1890,8 +1925,8 @@ mod tests {
         // canonical bytes change, so the ring signature must fail.
         proof.envelope.resource = "evil".into();
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
-        assert!(err.1.contains("signature"), "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.to_string().contains("signature"), "got: {}", err);
     }
 
     #[test]
@@ -1906,7 +1941,7 @@ mod tests {
             also_ring_signatures: Vec::new(),
         };
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::NOT_FOUND);
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -1956,6 +1991,6 @@ mod tests {
         let env = anon_env("r", "search", "", "nonce-overbudget-01");
         let proof = sign_anon(&db, &a, &t, &env);
         let err = validate_anon_action(&mut db.any_conn(), b"s", &proof, 1).unwrap_err();
-        assert_eq!(err.0, StatusCode::PAYMENT_REQUIRED, "got: {}", err.1);
+        assert_eq!(err.status(), StatusCode::PAYMENT_REQUIRED, "got: {}", err);
     }
 }

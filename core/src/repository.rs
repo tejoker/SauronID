@@ -13,25 +13,41 @@
 //!   `DATABASE_URL=postgres://…`. Only modules ported to the repository API
 //!   honour this backend; ported list grows incrementally.
 //!
-//! ## Ported modules (Phase 3 progress)
+//! ## What `Repo` still owns
 //!
-//! | Module                     | rusqlite | sqlx::Postgres | Notes                                                  |
-//! |----------------------------|:--------:|:--------------:|--------------------------------------------------------|
-//! | `agent_call_nonces`        |    ✓     |       ✓        | Migration template. Serializable txn wrapper (M1).     |
-//! | `ajwt_used_jtis`           |    ✓     |       ✓        | M1 ported. Serializable txn wrapper.                   |
-//! | `risk_rate_counters`       |    ✓     |       ✓        | M1 ported. Serializable txn wrapper for inc + read.    |
-//! | `agent_pop_challenges`     |    ✓     |       ✓        | M2 ported (shipped 2026-05-15). GC + take helpers.     |
-//! | `bank_attestation_nonces`  |    ✓     |       ✓        | M2 ported. UNIQUE-key consume.                         |
-//! | `consent_log`              |    ✓     |       ✓        | M2 ported. FOR UPDATE + RETURNING token consume.       |
-//! | `agent_payment_*`          |    ✓     |       ✓        | M2 ported. FOR UPDATE + RETURNING authorize consume.   |
-//! | `credential_codes`         |    ✓     |       ✓        | M3 ported. claim flag flip with TOCTOU guard.          |
-//! | `agents`                   |    ✓     |       ✓        | M3 ported. lookup + insert + revoke.                   |
-//! | `agent_checksum_*`         |    ✓     |       ✓        | M3 ported. checksum input + audit trail.               |
-//! | `users`                    |    ✓     |       ✓        | M3 ported. upsert + registration lookup.               |
-//! | `merkle_leaves`            |    ✓     |       ✓        | M3 ported. append-only commitment insert.              |
-//! | `bitcoin_merkle_anchors`   |    ✓     |       ✓        | M4 ported. anchor receipt insert + lookup.             |
-//! | `solana_merkle_anchors`    |    ✓     |       ✓        | M4 ported. anchor receipt insert + lookup.             |
-//! | `agent_action_receipts`    |    ✓     |       ✓        | M4 ported. receipt existence check.                    |
+//! | Table                      | Notes                                                  |
+//! |----------------------------|--------------------------------------------------------|
+//! | `agent_call_nonces`        | Migration template. Serializable txn wrapper (M1).     |
+//! | `ajwt_used_jtis`           | M1. Parked: the live consume is `ajwt_support`.        |
+//! | `agent_pop_challenges`     | M2. Parked: the live path is `ajwt_support`.           |
+//! | `agent_payment_*`          | M2. FOR UPDATE + RETURNING authorize consume.          |
+//! | `credential_codes`         | M3. claim flag flip with TOCTOU guard.                 |
+//! | `agents`                   | M3. lookup + insert + revoke.                          |
+//! | `agent_checksum_*`         | M3. checksum input + audit trail.                      |
+//! | `users`                    | M3. upsert + registration lookup.                      |
+//! | `spend_*`                  | server-authoritative spend ledger.                     |
+//!
+//! ## Two pools, and what was removed from between them
+//!
+//! Under Postgres this process holds two pools: the sqlx one below, and the
+//! blocking one every `DbHandle::lock()` site uses. That is the migration state,
+//! not a design — but a table written through BOTH is the hazard it creates,
+//! because the two have different isolation and no transaction spans them.
+//!
+//! An audit found eight `Repo` methods that duplicated a live `AnyConn` path
+//! for the same table while having no caller at all: `risk_increment`,
+//! `prune_call_nonces`, `prune_pop_challenges`, `insert_bitcoin_anchor`,
+//! `insert_solana_anchor`, `insert_merkle_leaf`, `agent_action_receipt_exists`
+//! and `consume_bank_attestation_nonce`. They were the ported-but-never-wired
+//! half, and deleting them took the both-pools-write-this set from six tables to
+//! three. The consent-token family went with the `/kyc/*` routes it served.
+//!
+//! Of the three that remain, `agent_call_nonces` is not a conflict — `Repo`
+//! claims, the GC in `state.rs` only deletes rows that have already expired.
+//! `ajwt_used_jtis` and `agent_pop_challenges` genuinely have two live-capable
+//! writers, and are kept deliberately: the `Repo` halves are the landing zone
+//! the deferred M2 call-site sweep points at, named in the TODOs in `agent.rs`
+//! and `main.rs`. Delete those and the sweep loses its destination.
 //!
 //! ## Serializable transactions (M1)
 //!
@@ -425,99 +441,6 @@ impl Repo {
         }
     }
 
-    // ─── risk_rate_counters ────────────────────────────────────────────────
-    //
-    // Increment-and-check under serializable isolation. The sequence is
-    // `INSERT … ON CONFLICT DO UPDATE SET cnt = cnt + 1 RETURNING cnt` —
-    // atomic, so the post-increment count cannot be stale under any isolation
-    // level. The serializable wrapper still pays for itself because the GC
-    // delete that runs alongside the increment can race with concurrent
-    // increments under READ COMMITTED, and a multi-tenant Postgres deployment
-    // wants the strongest isolation for security-critical counters.
-    //
-    // Returns the post-increment count. Caller compares to `max_per_window`.
-    pub async fn risk_increment(&self, bucket: &str, window_id: i64) -> Result<i64, RepoError> {
-        if bucket.is_empty() || bucket.len() > 128 {
-            return Err(RepoError::Backend("risk bucket invalid".into()));
-        }
-        match self {
-            Repo::Sqlite(_) => {
-                let bucket = bucket.to_string();
-                self.txn_immediate_sqlite(move |conn| {
-                    conn.execute(
-                        "INSERT INTO risk_rate_counters (bucket, window_id, cnt) VALUES (?1, ?2, 1)
-                         ON CONFLICT(bucket, window_id) DO UPDATE SET cnt = cnt + 1",
-                        rusqlite::params![bucket, window_id],
-                    )
-                    .map_err(|e| RepoError::Backend(format!("risk insert: {e}")))?;
-                    let cnt: i64 = conn
-                        .query_row(
-                            "SELECT cnt FROM risk_rate_counters WHERE bucket = ?1 AND window_id = ?2",
-                            rusqlite::params![bucket, window_id],
-                            |r| r.get(0),
-                        )
-                        .map_err(|e| RepoError::Backend(format!("risk read cnt: {e}")))?;
-                    Ok(cnt)
-                })
-            }
-            Repo::Postgres(_) => {
-                let bucket = bucket.to_string();
-                self.txn_serializable_pg(move |tx| {
-                    let bucket = bucket.clone();
-                    Box::pin(async move {
-                        let row: (i64,) = sqlx::query_as(
-                            "INSERT INTO risk_rate_counters (bucket, window_id, cnt) VALUES ($1, $2, 1)
-                             ON CONFLICT (bucket, window_id) DO UPDATE SET cnt = risk_rate_counters.cnt + 1
-                             RETURNING cnt",
-                        )
-                        .bind(&bucket)
-                        .bind(window_id)
-                        .fetch_one(&mut **tx)
-                        .await
-                        .map_err(|e| {
-                            match e {
-                                sqlx::Error::Database(ref db_err)
-                                    if db_err.code().as_deref() == Some("40001") =>
-                                {
-                                    RepoError::Backend("40001 serialization_failure".into())
-                                }
-                                _ => RepoError::Backend(format!("postgres risk inc: {e}")),
-                            }
-                        })?;
-                        Ok(row.0)
-                    })
-                })
-                .await
-            }
-        }
-    }
-
-    /// Background-GC sweep for `agent_call_nonces`. Returns rows removed.
-    pub async fn prune_call_nonces(&self, now: i64) -> Result<u64, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n = conn
-                    .execute(
-                        "DELETE FROM agent_call_nonces WHERE exp < ?1",
-                        rusqlite::params![now],
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(n as u64)
-            }
-            Repo::Postgres(pool) => {
-                let r = sqlx::query("DELETE FROM agent_call_nonces WHERE exp < $1")
-                    .bind(now)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| RepoError::Backend(format!("postgres prune call nonces: {e}")))?;
-                Ok(r.rows_affected())
-            }
-        }
-    }
-
     // ─── M2: agent_pop_challenges ──────────────────────────────────────────
     //
     // Low-risk module: one-time PoP challenges with GC-on-expiry. Take helper
@@ -525,32 +448,6 @@ impl Repo {
     // its existing INSERT/DELETE flow via `ajwt_support::insert_pop_challenge`
     // and `ajwt_support::take_pop_challenge` (those wrap in `BEGIN IMMEDIATE`
     // for safety even though the operations are intrinsically atomic).
-
-    /// Background-GC sweep for `agent_pop_challenges`. Returns rows removed.
-    pub async fn prune_pop_challenges(&self, now: i64) -> Result<u64, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n = conn
-                    .execute(
-                        "DELETE FROM agent_pop_challenges WHERE exp < ?1",
-                        rusqlite::params![now],
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(n as u64)
-            }
-            Repo::Postgres(pool) => {
-                let r = sqlx::query("DELETE FROM agent_pop_challenges WHERE exp < $1")
-                    .bind(now)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| RepoError::Backend(format!("postgres prune pop: {e}")))?;
-                Ok(r.rows_affected())
-            }
-        }
-    }
 
     /// Insert a one-time PoP challenge after GC. Returns the stored `exp`.
     pub async fn insert_pop_challenge(
@@ -726,78 +623,6 @@ impl Repo {
     // UNIQUE-key consume. Primary key (provider_id, nonce) is the replay
     // detector; INSERT failing with UNIQUE violation maps to RepoError::Replay.
 
-    pub async fn consume_bank_attestation_nonce(
-        &self,
-        provider_id: &str,
-        nonce: &str,
-        issued_at: i64,
-    ) -> Result<(), RepoError> {
-        if provider_id.is_empty() || nonce.is_empty() {
-            return Err(RepoError::Backend("missing provider_id or nonce".into()));
-        }
-        if nonce.len() > 256 {
-            return Err(RepoError::Backend("attestation nonce too long".into()));
-        }
-        match self {
-            Repo::Sqlite(_) => {
-                let provider_id = provider_id.to_string();
-                let nonce = nonce.to_string();
-                self.txn_immediate_sqlite(move |conn| {
-                    conn.execute(
-                        "INSERT INTO bank_attestation_nonces (provider_id, nonce, issued_at) \
-                         VALUES (?1, ?2, ?3)",
-                        rusqlite::params![provider_id, nonce, issued_at],
-                    )
-                    .map_err(|e| {
-                        let s = e.to_string();
-                        if s.contains("UNIQUE") || s.contains("PRIMARY KEY") {
-                            RepoError::Replay("Replay detected for bank attestation nonce".into())
-                        } else {
-                            RepoError::Backend(s)
-                        }
-                    })?;
-                    Ok(())
-                })
-            }
-            Repo::Postgres(_) => {
-                let provider_id = provider_id.to_string();
-                let nonce = nonce.to_string();
-                self.txn_serializable_pg(move |tx| {
-                    let provider_id = provider_id.clone();
-                    let nonce = nonce.clone();
-                    Box::pin(async move {
-                        let result = sqlx::query(
-                            "INSERT INTO bank_attestation_nonces (provider_id, nonce, issued_at) \
-                             VALUES ($1, $2, $3)",
-                        )
-                        .bind(&provider_id)
-                        .bind(&nonce)
-                        .bind(issued_at)
-                        .execute(&mut **tx)
-                        .await;
-                        match result {
-                            Ok(_) => Ok(()),
-                            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                                Err(RepoError::Replay(
-                                    "Replay detected for bank attestation nonce".into(),
-                                ))
-                            }
-                            Err(sqlx::Error::Database(db_err))
-                                if db_err.code().as_deref() == Some("40001") =>
-                            {
-                                Err(RepoError::Backend("40001 serialization_failure".into()))
-                            }
-                            Err(e) => Err(RepoError::Backend(format!(
-                                "pg bank attestation insert: {e}"
-                            ))),
-                        }
-                    })
-                })
-                .await
-            }
-        }
-    }
-
     // ─── M2: consent_log token consume ─────────────────────────────────────
     //
     // The TOCTOU pattern: mark `token_used=1` only if the row currently has
@@ -810,224 +635,11 @@ impl Repo {
     // requested_claims_json) on success. Error variants distinguish replay
     // (already used / revoked / expired) from backend.
 
-    #[allow(clippy::type_complexity)]
-    pub async fn consume_consent_token(
-        &self,
-        tenant_id: &str,
-        consent_token: &str,
-        now: i64,
-    ) -> Result<(String, String, Option<String>, String), RepoError> {
-        if consent_token.is_empty() {
-            return Err(RepoError::Backend("missing consent token".into()));
-        }
-        if consent_token.len() > 256 {
-            return Err(RepoError::Backend("consent token too long".into()));
-        }
-        match self {
-            Repo::Sqlite(_) => {
-                let consent_token = consent_token.to_string();
-                let tenant_id = tenant_id.to_string();
-                self.txn_immediate_sqlite(move |conn| {
-                    let rows = conn
-                        .execute(
-                            "UPDATE consent_log SET token_used = 1 \
-                             WHERE tenant_id = ?1 AND consent_token = ?2 AND token_used = 0 AND revoked = 0 \
-                             AND (consent_expires_at = 0 OR consent_expires_at > ?3)",
-                            rusqlite::params![tenant_id, consent_token, now],
-                        )
-                        .map_err(|e| RepoError::Backend(e.to_string()))?;
-                    if rows == 0 {
-                        // Distinguish replay/expired/revoked for caller mapping.
-                        let status = conn.query_row(
-                            "SELECT token_used, revoked, consent_expires_at FROM consent_log \
-                             WHERE tenant_id = ?1 AND consent_token = ?2",
-                            rusqlite::params![tenant_id, consent_token],
-                            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
-                        );
-                        return match status {
-                            Ok((_, 1, _)) => {
-                                Err(RepoError::Replay("Consent token revoked".into()))
-                            }
-                            Ok((1, _, _)) => {
-                                Err(RepoError::Replay("Consent token already used".into()))
-                            }
-                            Ok((_, _, exp)) if exp > 0 && now > exp => {
-                                Err(RepoError::Replay("Consent token expired".into()))
-                            }
-                            _ => Err(RepoError::Replay(
-                                "Invalid or expired consent token".into(),
-                            )),
-                        };
-                    }
-                    let row: (String, String, Option<String>, String) = conn
-                        .query_row(
-                            "SELECT user_key_image, site_name, issuing_agent_id, requested_claims_json \
-                             FROM consent_log WHERE tenant_id = ?1 AND consent_token = ?2",
-                            rusqlite::params![tenant_id, consent_token],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                        )
-                        .map_err(|_| RepoError::Replay(
-                            "Invalid or expired consent token".into(),
-                        ))?;
-                    Ok(row)
-                })
-            }
-            Repo::Postgres(_) => {
-                let consent_token = consent_token.to_string();
-                let tenant_id = tenant_id.to_string();
-                self.txn_serializable_pg(move |tx| {
-                    let consent_token = consent_token.clone();
-                    let tenant_id = tenant_id.clone();
-                    Box::pin(async move {
-                        // FOR UPDATE locks the row; RETURNING confirms we
-                        // flipped 0→1. If RETURNING is empty, the row is
-                        // either missing or already consumed/revoked/expired.
-                        let claimed: Option<(String, String, Option<String>, String)> =
-                            sqlx::query_as(
-                                "UPDATE consent_log SET token_used = 1 \
-                                 WHERE tenant_id = $1 AND consent_token = $2 AND token_used = 0 AND revoked = 0 \
-                                 AND (consent_expires_at = 0 OR consent_expires_at > $3) \
-                                 RETURNING user_key_image, site_name, issuing_agent_id, \
-                                           requested_claims_json",
-                            )
-                            .bind(&tenant_id)
-                            .bind(&consent_token)
-                            .bind(now)
-                            .fetch_optional(&mut **tx)
-                            .await
-                            .map_err(|e| match e {
-                                sqlx::Error::Database(ref db_err)
-                                    if db_err.code().as_deref() == Some("40001") =>
-                                {
-                                    RepoError::Backend("40001 serialization_failure".into())
-                                }
-                                _ => RepoError::Backend(format!("pg consent claim: {e}")),
-                            })?;
-                        if let Some(row) = claimed {
-                            return Ok(row);
-                        }
-                        // Disambiguate the failure path.
-                        // `token_used` and `revoked` are INTEGER (int4) in
-                        // migrations/postgres, and sqlx decodes strictly: asking
-                        // for i64 fails with "Rust type `i64` … is not compatible
-                        // with SQL type `INT4`". Casting in SQL rather than
-                        // narrowing the tuple keeps this identical to the SQLite
-                        // arm above, which reads i64 because SQLite has one
-                        // integer type.
-                        //
-                        // The decode error surfaced as an HTTP 500 on the REPLAY
-                        // path only: the atomic UPDATE had already done its job,
-                        // so a second claim was correctly refused and then failed
-                        // to say why. The 16-attack suite reads that as the TOCTOU
-                        // defence being absent, because it counts 409s.
-                        let status: Option<(i64, i64, i64)> = sqlx::query_as(
-                            "SELECT token_used::BIGINT, revoked::BIGINT, consent_expires_at \
-                             FROM consent_log \
-                             WHERE tenant_id = $1 AND consent_token = $2",
-                        )
-                        .bind(&tenant_id)
-                        .bind(&consent_token)
-                        .fetch_optional(&mut **tx)
-                        .await
-                        .map_err(|e| RepoError::Backend(format!("pg consent status: {e}")))?;
-                        Err(match status {
-                            Some((_, 1, _)) => RepoError::Replay("Consent token revoked".into()),
-                            Some((1, _, _)) => {
-                                RepoError::Replay("Consent token already used".into())
-                            }
-                            Some((_, _, exp)) if exp > 0 && now > exp => {
-                                RepoError::Replay("Consent token expired".into())
-                            }
-                            _ => RepoError::Replay("Invalid or expired consent token".into()),
-                        })
-                    })
-                })
-                .await
-            }
-        }
-    }
-
-    /// Insert a pending consent request. Used at /kyc/request to enrol a new
-    /// request_id; the consent_token is filled later when the user grants.
-    pub async fn insert_pending_consent(
-        &self,
-        tenant_id: &str,
-        request_id: &str,
-        site_name: &str,
-        requested_claims_json: &str,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT INTO consent_log (request_id, user_key_image, site_name, \
-                     requested_claims_json, granted_at, token_used, revoked, tenant_id) \
-                     VALUES (?1, '', ?2, ?3, 0, 0, 0, ?4)",
-                    rusqlite::params![request_id, site_name, requested_claims_json, tenant_id],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO consent_log (request_id, user_key_image, site_name, \
-                     requested_claims_json, granted_at, token_used, revoked, tenant_id) \
-                     VALUES ($1, '', $2, $3, 0, 0, 0, $4)",
-                )
-                .bind(request_id)
-                .bind(site_name)
-                .bind(requested_claims_json)
-                .bind(tenant_id)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg insert consent: {e}")))?;
-                Ok(())
-            }
-        }
-    }
-
     // ─── consent_log read / grant / list / revoke ──────────────────────────
     //
     // Creation + token consume are handled by insert_pending_consent /
     // consume_consent_token above. These cover the remaining handler paths so
     // the whole consent_log lifecycle is on one backend.
-
-    /// (user_key_image, issuing_agent_id) for a non-revoked consent token.
-    pub async fn get_consent_by_token(
-        &self,
-        tenant_id: &str,
-        consent_token: &str,
-    ) -> Result<Option<(String, Option<String>)>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(conn
-                    .query_row(
-                        "SELECT user_key_image, issuing_agent_id FROM consent_log \
-                         WHERE tenant_id = ?1 AND consent_token = ?2 AND revoked = 0",
-                        rusqlite::params![tenant_id, consent_token],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
-                    )
-                    .ok())
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String, Option<String>)> = sqlx::query_as(
-                    "SELECT user_key_image, issuing_agent_id FROM consent_log \
-                     WHERE tenant_id = $1 AND consent_token = $2 AND revoked = 0",
-                )
-                .bind(tenant_id)
-                .bind(consent_token)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg get_consent_by_token: {e}")))?;
-                Ok(row)
-            }
-        }
-    }
 
     /// user_key_image for a live, unused consent token scoped to a site.
     pub async fn resolve_consent_user(
@@ -1066,149 +678,6 @@ impl Repo {
                 .await
                 .map_err(|e| RepoError::Backend(format!("pg resolve_consent_user: {e}")))?;
                 Ok(row.map(|t| t.0))
-            }
-        }
-    }
-
-    /// (site_name, requested_claims_json, consent_token) for a request id.
-    pub async fn get_consent_info(
-        &self,
-        tenant_id: &str,
-        request_id: &str,
-    ) -> Result<Option<(String, String, Option<String>)>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(conn
-                    .query_row(
-                        "SELECT site_name, requested_claims_json, consent_token FROM consent_log \
-                         WHERE tenant_id = ?1 AND request_id = ?2",
-                        rusqlite::params![tenant_id, request_id],
-                        |r| {
-                            Ok((
-                                r.get::<_, String>(0)?,
-                                r.get::<_, String>(1)?,
-                                r.get::<_, Option<String>>(2)?,
-                            ))
-                        },
-                    )
-                    .ok())
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String, String, Option<String>)> = sqlx::query_as(
-                    "SELECT site_name, requested_claims_json, consent_token FROM consent_log \
-                     WHERE tenant_id = $1 AND request_id = $2",
-                )
-                .bind(tenant_id)
-                .bind(request_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg get_consent_info: {e}")))?;
-                Ok(row)
-            }
-        }
-    }
-
-    /// site_name of a pending consent request. When `require_ungranted` is set,
-    /// also requires `consent_token IS NULL` (not yet granted).
-    pub async fn pending_consent_site(
-        &self,
-        tenant_id: &str,
-        request_id: &str,
-        require_ungranted: bool,
-    ) -> Result<Option<String>, RepoError> {
-        let ungranted_sql = if require_ungranted {
-            " AND consent_token IS NULL"
-        } else {
-            ""
-        };
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let sql = format!(
-                    "SELECT site_name FROM consent_log \
-                     WHERE tenant_id = ?1 AND request_id = ?2 AND token_used = 0 AND revoked = 0{ungranted_sql}"
-                );
-                Ok(conn
-                    .query_row(&sql, rusqlite::params![tenant_id, request_id], |r| {
-                        r.get::<_, String>(0)
-                    })
-                    .ok())
-            }
-            Repo::Postgres(pool) => {
-                let sql = format!(
-                    "SELECT site_name FROM consent_log \
-                     WHERE tenant_id = $1 AND request_id = $2 AND token_used = 0 AND revoked = 0{ungranted_sql}"
-                );
-                let row: Option<(String,)> = sqlx::query_as(&sql)
-                    .bind(tenant_id)
-                    .bind(request_id)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| RepoError::Backend(format!("pg pending_consent_site: {e}")))?;
-                Ok(row.map(|t| t.0))
-            }
-        }
-    }
-
-    /// Grant a consent token to a pending row. Race-safe: only flips when
-    /// `consent_token IS NULL` and the row is neither used nor revoked.
-    /// Returns rows affected (0 = lost the race / already granted).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn grant_consent_token(
-        &self,
-        tenant_id: &str,
-        request_id: &str,
-        user_key_image: &str,
-        granted_at: i64,
-        consent_expires_at: i64,
-        consent_token: &str,
-        issuing_agent_id: Option<&str>,
-    ) -> Result<u64, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n = conn
-                    .execute(
-                        "UPDATE consent_log SET user_key_image = ?1, granted_at = ?2, \
-                         consent_expires_at = ?3, consent_token = ?4, issuing_agent_id = ?5 \
-                         WHERE tenant_id = ?6 AND request_id = ?7 AND consent_token IS NULL AND revoked = 0 AND token_used = 0",
-                        rusqlite::params![
-                            user_key_image,
-                            granted_at,
-                            consent_expires_at,
-                            consent_token,
-                            issuing_agent_id,
-                            tenant_id,
-                            request_id
-                        ],
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(n as u64)
-            }
-            Repo::Postgres(pool) => {
-                let res = sqlx::query(
-                    "UPDATE consent_log SET user_key_image = $1, granted_at = $2, \
-                     consent_expires_at = $3, consent_token = $4, issuing_agent_id = $5 \
-                     WHERE tenant_id = $6 AND request_id = $7 AND consent_token IS NULL AND revoked = 0 AND token_used = 0",
-                )
-                .bind(user_key_image)
-                .bind(granted_at)
-                .bind(consent_expires_at)
-                .bind(consent_token)
-                .bind(issuing_agent_id)
-                .bind(tenant_id)
-                .bind(request_id)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg grant_consent_token: {e}")))?;
-                Ok(res.rows_affected())
             }
         }
     }
@@ -1300,6 +769,53 @@ impl Repo {
     // Same TOCTOU pattern as consent_log: flip `consumed=0 → 1` only once.
     // Postgres uses FOR UPDATE + RETURNING; SQLite uses BEGIN IMMEDIATE +
     // conditional UPDATE.
+
+    /// Which agent obtained this authorization, if it exists in `tenant_id`.
+    ///
+    /// Consume is authorised by ownership, not just by holding the id: within a
+    /// tenant every signed agent knows the id format, so without this check one
+    /// agent could redeem another's authorization. Returns `None` when the row
+    /// does not exist or belongs to a different tenant — the caller answers 404
+    /// either way, so a cross-tenant probe cannot distinguish the two.
+    pub async fn payment_authorization_agent(
+        &self,
+        tenant_id: &str,
+        auth_id: &str,
+    ) -> Result<Option<String>, RepoError> {
+        if auth_id.is_empty() {
+            return Err(RepoError::Backend("missing auth_id".into()));
+        }
+        match self {
+            Repo::Sqlite(db) => {
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
+                conn.query_row(
+                    "SELECT agent_id FROM agent_payment_authorizations \
+                     WHERE tenant_id = ?1 AND auth_id = ?2",
+                    rusqlite::params![tenant_id, auth_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(RepoError::Backend(other.to_string())),
+                })
+            }
+            Repo::Postgres(pool) => {
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT agent_id FROM agent_payment_authorizations \
+                     WHERE tenant_id = $1 AND auth_id = $2",
+                )
+                .bind(tenant_id)
+                .bind(auth_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| RepoError::Backend(format!("pg payment_authorization_agent: {e}")))?;
+                Ok(row.map(|r| r.0))
+            }
+        }
+    }
 
     pub async fn consume_payment_authorization(
         &self,
@@ -1679,62 +1195,6 @@ impl Repo {
         }
     }
 
-    /// Insert a user only if absent (`INSERT OR IGNORE` semantics — existing
-    /// rows are left untouched, unlike [`Self::upsert_user`] which overwrites).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn insert_user_if_absent(
-        &self,
-        key_image_hex: &str,
-        public_key_hex: &str,
-        first_name: &str,
-        last_name: &str,
-        email: &str,
-        date_of_birth: &str,
-        nationality: &str,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT OR IGNORE INTO users (key_image_hex, public_key_hex, first_name, \
-                     last_name, email, date_of_birth, nationality) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        key_image_hex,
-                        public_key_hex,
-                        first_name,
-                        last_name,
-                        email,
-                        date_of_birth,
-                        nationality
-                    ],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO users (key_image_hex, public_key_hex, first_name, last_name, \
-                     email, date_of_birth, nationality) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (key_image_hex) DO NOTHING",
-                )
-                .bind(key_image_hex)
-                .bind(public_key_hex)
-                .bind(first_name)
-                .bind(last_name)
-                .bind(email)
-                .bind(date_of_birth)
-                .bind(nationality)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg insert user if absent: {e}")))?;
-                Ok(())
-            }
-        }
-    }
-
     /// Full user row by key image, or `None` if absent. Covers the scattered
     /// per-key reads (nationality / public_key / names).
     pub async fn get_user(&self, key_image_hex: &str) -> Result<Option<UserRow>, RepoError> {
@@ -2078,42 +1538,6 @@ impl Repo {
 
     // ─── M3: merkle_leaves ────────────────────────────────────────────────
 
-    /// Append a commitment to the merkle ledger (idempotent on UNIQUE).
-    pub async fn insert_merkle_leaf(
-        &self,
-        tenant_id: &str,
-        commitment_hex: &str,
-        registered_at: i64,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT OR IGNORE INTO merkle_leaves (commitment_hex, registered_at, tenant_id) \
-                     VALUES (?1, ?2, ?3)",
-                    rusqlite::params![commitment_hex, registered_at, tenant_id],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO merkle_leaves (commitment_hex, registered_at, tenant_id) \
-                     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                )
-                .bind(commitment_hex)
-                .bind(registered_at)
-                .bind(tenant_id)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg insert merkle leaf: {e}")))?;
-                Ok(())
-            }
-        }
-    }
-
     // ─── M4: anchor tables (bitcoin / solana) ──────────────────────────────
     //
     // NOTE on autoincrement parity: SQLite's `INTEGER PRIMARY KEY AUTOINCREMENT`
@@ -2124,168 +1548,7 @@ impl Repo {
     // tables here use TEXT `anchor_id` as the public reference, so this is
     // an internal-only concern.
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn insert_bitcoin_anchor(
-        &self,
-        anchor_id: &str,
-        merkle_root_hex: &str,
-        provider: &str,
-        network: &str,
-        op_return_hex: &str,
-        txid: &str,
-        broadcast: bool,
-        no_real_money: bool,
-        created_at: i64,
-        ots_receipt_blob: Option<&[u8]>,
-        ots_calendar_url: &str,
-        ots_upgraded: bool,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT INTO bitcoin_merkle_anchors (anchor_id, merkle_root_hex, provider, \
-                     network, op_return_hex, txid, broadcast, no_real_money, created_at, \
-                     ots_receipt_blob, ots_calendar_url, ots_upgraded) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                    rusqlite::params![
-                        anchor_id,
-                        merkle_root_hex,
-                        provider,
-                        network,
-                        op_return_hex,
-                        txid,
-                        broadcast as i64,
-                        no_real_money as i64,
-                        created_at,
-                        ots_receipt_blob,
-                        ots_calendar_url,
-                        ots_upgraded as i64,
-                    ],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO bitcoin_merkle_anchors (anchor_id, merkle_root_hex, provider, \
-                     network, op_return_hex, txid, broadcast, no_real_money, created_at, \
-                     ots_receipt_blob, ots_calendar_url, ots_upgraded) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-                )
-                .bind(anchor_id)
-                .bind(merkle_root_hex)
-                .bind(provider)
-                .bind(network)
-                .bind(op_return_hex)
-                .bind(txid)
-                .bind(broadcast as i32)
-                .bind(no_real_money as i32)
-                .bind(created_at)
-                .bind(ots_receipt_blob)
-                .bind(ots_calendar_url)
-                .bind(ots_upgraded as i32)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg insert btc anchor: {e}")))?;
-                Ok(())
-            }
-        }
-    }
-
-    pub async fn insert_solana_anchor(
-        &self,
-        anchor_id: &str,
-        merkle_root_hex: &str,
-        network: &str,
-        signature: &str,
-        slot: i64,
-        confirmed: bool,
-        created_at: i64,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT INTO solana_merkle_anchors (anchor_id, merkle_root_hex, network, \
-                     signature, slot, confirmed, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        anchor_id,
-                        merkle_root_hex,
-                        network,
-                        signature,
-                        slot,
-                        confirmed as i64,
-                        created_at,
-                    ],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO solana_merkle_anchors (anchor_id, merkle_root_hex, network, \
-                     signature, slot, confirmed, created_at) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                )
-                .bind(anchor_id)
-                .bind(merkle_root_hex)
-                .bind(network)
-                .bind(signature)
-                .bind(slot)
-                .bind(confirmed as i32)
-                .bind(created_at)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg insert sol anchor: {e}")))?;
-                Ok(())
-            }
-        }
-    }
-
     // ─── M4: agent_action_receipts ─────────────────────────────────────────
-
-    /// Returns true if a receipt with the given id+action_hash pair exists.
-    /// Used by the agent-action validator to detect replays.
-    pub async fn agent_action_receipt_exists(
-        &self,
-        receipt_id: &str,
-        action_hash: &str,
-    ) -> Result<bool, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM agent_action_receipts \
-                         WHERE receipt_id = ?1 AND action_hash = ?2",
-                        rusqlite::params![receipt_id, action_hash],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                Ok(n > 0)
-            }
-            Repo::Postgres(pool) => {
-                let row: (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*)::BIGINT FROM agent_action_receipts \
-                     WHERE receipt_id = $1 AND action_hash = $2",
-                )
-                .bind(receipt_id)
-                .bind(action_hash)
-                .fetch_one(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg receipt exists: {e}")))?;
-                Ok(row.0 > 0)
-            }
-        }
-    }
 
     // ─── Sprint 3+: spend ledger ───────────────────────────────────────────
     //
@@ -2883,32 +2146,6 @@ mod tests {
     }
 
     #[test]
-    fn test_repo_prune_call_nonces_removes_expired_only() {
-        let repo = build_test_repo("prune_expired");
-        rt().block_on(async {
-            // Two expired, one fresh.
-            repo.consume_call_nonce("agent-1", "old-1", 100)
-                .await
-                .unwrap();
-            repo.consume_call_nonce("agent-1", "old-2", 200)
-                .await
-                .unwrap();
-            repo.consume_call_nonce("agent-1", "fresh", 9_999_999_999)
-                .await
-                .unwrap();
-
-            let removed = repo.prune_call_nonces(1_000).await.expect("prune ok");
-            assert_eq!(removed, 2, "must prune exactly the two expired rows");
-
-            // The fresh row is still effective: re-using it must replay-fail.
-            let r = repo
-                .consume_call_nonce("agent-1", "fresh", 9_999_999_999)
-                .await;
-            assert!(matches!(r, Err(RepoError::Replay(_))));
-        });
-    }
-
-    #[test]
     fn test_repo_is_postgres_false_for_sqlite_backend() {
         let repo = build_test_repo("not_postgres");
         assert!(!repo.is_postgres());
@@ -2948,45 +2185,6 @@ mod tests {
             match r {
                 Err(RepoError::Backend(s)) => assert!(s.contains("missing")),
                 other => panic!("expected Backend missing, got: {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn test_repo_risk_increment_increments_monotonically() {
-        let repo = build_test_repo("risk_inc_mono");
-        rt().block_on(async {
-            let n1 = repo.risk_increment("bucket-A", 100).await.unwrap();
-            let n2 = repo.risk_increment("bucket-A", 100).await.unwrap();
-            let n3 = repo.risk_increment("bucket-A", 100).await.unwrap();
-            assert_eq!(n1, 1);
-            assert_eq!(n2, 2);
-            assert_eq!(n3, 3);
-        });
-    }
-
-    #[test]
-    fn test_repo_risk_increment_isolates_by_bucket_and_window() {
-        let repo = build_test_repo("risk_inc_isolate");
-        rt().block_on(async {
-            let a = repo.risk_increment("bucket-A", 200).await.unwrap();
-            let b = repo.risk_increment("bucket-B", 200).await.unwrap();
-            let a_w2 = repo.risk_increment("bucket-A", 201).await.unwrap();
-            assert_eq!(a, 1);
-            assert_eq!(b, 1);
-            assert_eq!(a_w2, 1);
-        });
-    }
-
-    #[test]
-    fn test_repo_risk_increment_rejects_bad_bucket() {
-        let repo = build_test_repo("risk_inc_bad");
-        rt().block_on(async {
-            let huge = "a".repeat(129);
-            let r = repo.risk_increment(&huge, 1).await;
-            match r {
-                Err(RepoError::Backend(s)) => assert!(s.contains("invalid")),
-                other => panic!("expected Backend invalid, got: {other:?}"),
             }
         });
     }
@@ -3043,129 +2241,7 @@ mod tests {
 
     // ─── M2: bank_attestation_nonces ──────────────────────────────────────
 
-    #[test]
-    fn test_repo_consume_bank_attestation_nonce_first_use_ok() {
-        let repo = build_test_repo("bank_attest_first");
-        rt().block_on(async {
-            let r = repo
-                .consume_bank_attestation_nonce("bank-A", "nonce-1", 1_000)
-                .await;
-            assert!(r.is_ok(), "first use must succeed: {r:?}");
-        });
-    }
-
-    #[test]
-    fn test_repo_consume_bank_attestation_nonce_replay() {
-        let repo = build_test_repo("bank_attest_replay");
-        rt().block_on(async {
-            repo.consume_bank_attestation_nonce("bank-A", "nonce-X", 1_000)
-                .await
-                .expect("first ok");
-            match repo
-                .consume_bank_attestation_nonce("bank-A", "nonce-X", 1_000)
-                .await
-            {
-                Err(RepoError::Replay(_)) => {}
-                other => panic!("expected Replay, got: {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn test_repo_consume_bank_attestation_nonce_different_provider_ok() {
-        let repo = build_test_repo("bank_attest_diff_provider");
-        rt().block_on(async {
-            // Same nonce under a different provider_id is a different row.
-            repo.consume_bank_attestation_nonce("bank-A", "shared", 1_000)
-                .await
-                .expect("A ok");
-            let r = repo
-                .consume_bank_attestation_nonce("bank-B", "shared", 1_000)
-                .await;
-            assert!(r.is_ok(), "(B, shared) is unique vs (A, shared): {r:?}");
-        });
-    }
-
     // ─── M2: consent_log ──────────────────────────────────────────────────
-
-    /// Build a consent row with a known token. Uses a direct SQLite write
-    /// (the production path goes through the granting flow, which is out of
-    /// scope for the repo-level test).
-    fn seed_consent_row(repo: &Repo, request_id: &str, token: &str, expires_at: i64) {
-        if let Repo::Sqlite(db) = repo {
-            let conn = db.lock_sqlite().unwrap();
-            conn.execute(
-                "INSERT INTO consent_log (request_id, user_key_image, site_name, \
-                 requested_claims_json, granted_at, consent_expires_at, consent_token, \
-                 token_used, revoked) \
-                 VALUES (?1, ?2, ?3, '[]', 1000, ?4, ?5, 0, 0)",
-                rusqlite::params![request_id, "ki-1", "site-A", expires_at, token],
-            )
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn test_repo_consent_token_is_tenant_bound() {
-        let repo = build_test_repo("consent_tenant");
-        rt().block_on(async {
-            seed_consent_row(&repo, "req_tenant", "tok_tenant", 0);
-            assert!(matches!(
-                repo.consume_consent_token("attacker", "tok_tenant", 5_000)
-                    .await,
-                Err(RepoError::Replay(_))
-            ));
-            let row = repo
-                .consume_consent_token("default", "tok_tenant", 5_000)
-                .await;
-            assert!(
-                row.is_ok(),
-                "cross-tenant attempt must not consume victim token"
-            );
-        });
-    }
-
-    #[test]
-    fn test_repo_consume_consent_token_first_use_returns_row() {
-        let repo = build_test_repo("consent_first");
-        rt().block_on(async {
-            seed_consent_row(&repo, "req_1", "tok_1", 0);
-            let (ki, site, agent, _claims) = repo
-                .consume_consent_token("default", "tok_1", 5_000)
-                .await
-                .unwrap();
-            assert_eq!(ki, "ki-1");
-            assert_eq!(site, "site-A");
-            assert!(agent.is_none());
-        });
-    }
-
-    #[test]
-    fn test_repo_consume_consent_token_replay_rejected() {
-        let repo = build_test_repo("consent_replay");
-        rt().block_on(async {
-            seed_consent_row(&repo, "req_2", "tok_2", 0);
-            repo.consume_consent_token("default", "tok_2", 5_000)
-                .await
-                .unwrap();
-            match repo.consume_consent_token("default", "tok_2", 5_000).await {
-                Err(RepoError::Replay(s)) => assert!(s.contains("already used")),
-                other => panic!("expected Replay already used, got: {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn test_repo_consume_consent_token_expired_rejected() {
-        let repo = build_test_repo("consent_expired");
-        rt().block_on(async {
-            seed_consent_row(&repo, "req_3", "tok_3", 100);
-            match repo.consume_consent_token("default", "tok_3", 1_000).await {
-                Err(RepoError::Replay(s)) => assert!(s.contains("expired")),
-                other => panic!("expected Replay expired, got: {other:?}"),
-            }
-        });
-    }
 
     // ─── M2: agent_payment_authorizations ─────────────────────────────────
 
@@ -3220,6 +2296,49 @@ mod tests {
                 .consume_payment_authorization("victim", "payauth_tenant", 1_001)
                 .await
                 .is_ok());
+        });
+    }
+
+    /// Ownership, not just possession of the id. `/agent/payment/consume`
+    /// authorises on this, so a wrong answer here lets one signed agent redeem
+    /// another's authorization.
+    #[test]
+    fn test_repo_payment_authorization_agent_lookup_is_scoped() {
+        let repo = build_test_repo("payauth_owner");
+        rt().block_on(async {
+            repo.insert_payment_authorization(
+                "default",
+                "payauth_owner",
+                "agent-owner",
+                "jti-owner",
+                1000,
+                "EUR",
+                "M1",
+                "ref_owner",
+                1_000,
+                9_999_999_999,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                repo.payment_authorization_agent("default", "payauth_owner")
+                    .await
+                    .unwrap(),
+                Some("agent-owner".to_string())
+            );
+            // Another tenant must not even learn that the row exists.
+            assert_eq!(
+                repo.payment_authorization_agent("other", "payauth_owner")
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                repo.payment_authorization_agent("default", "payauth_missing")
+                    .await
+                    .unwrap(),
+                None
+            );
         });
     }
 
@@ -3437,86 +2556,9 @@ mod tests {
 
     // ─── M3: merkle_leaves ────────────────────────────────────────────────
 
-    #[test]
-    fn test_repo_merkle_leaf_insert_idempotent() {
-        let repo = build_test_repo("merkle_insert_idem");
-        rt().block_on(async {
-            repo.insert_merkle_leaf("default", "c0ffee", 1_000)
-                .await
-                .unwrap();
-            // Duplicate commitment is silently ignored.
-            repo.insert_merkle_leaf("default", "c0ffee", 2_000)
-                .await
-                .unwrap();
-        });
-    }
-
     // ─── M4: anchor tables ────────────────────────────────────────────────
 
-    #[test]
-    fn test_repo_bitcoin_anchor_insert() {
-        let repo = build_test_repo("btc_anchor");
-        rt().block_on(async {
-            repo.insert_bitcoin_anchor(
-                "btc_1",
-                "root_hex",
-                "mock",
-                "regtest",
-                "op_return",
-                "txid_1",
-                false,
-                true,
-                1_000,
-                None,
-                "",
-                false,
-            )
-            .await
-            .expect("btc anchor insert");
-        });
-    }
-
-    #[test]
-    fn test_repo_solana_anchor_insert() {
-        let repo = build_test_repo("sol_anchor");
-        rt().block_on(async {
-            repo.insert_solana_anchor("sol_1", "root_hex", "devnet", "sig_1", 0, false, 1_000)
-                .await
-                .expect("sol anchor insert");
-        });
-    }
-
     // ─── M4: agent_action_receipts ────────────────────────────────────────
-
-    #[test]
-    fn test_repo_receipt_exists_false_for_unknown() {
-        let repo = build_test_repo("receipt_unknown");
-        rt().block_on(async {
-            assert!(!repo
-                .agent_action_receipt_exists("rcp_1", "ah_1")
-                .await
-                .unwrap());
-        });
-    }
-
-    #[test]
-    fn test_repo_receipt_exists_true_after_insert() {
-        let repo = build_test_repo("receipt_inserted");
-        rt().block_on(async {
-            if let Repo::Sqlite(db) = &repo {
-                let conn = db.lock_sqlite().unwrap();
-                conn.execute(
-                    "INSERT INTO agent_action_receipts (receipt_id, action_hash, agent_id, \
-                     ring_key_image_hex, policy_version, ajwt_jti, pop_jkt, status, signature, created_at) \
-                     VALUES ('rcp_X', 'ah_X', 'agent-1', 'ki', 'v', 'jti', 'jkt', 'accepted', 'sig', 1000)",
-                    [],
-                )
-                .unwrap();
-            }
-            assert!(repo.agent_action_receipt_exists("rcp_X", "ah_X").await.unwrap());
-            assert!(!repo.agent_action_receipt_exists("rcp_X", "wrong_hash").await.unwrap());
-        });
-    }
 
     // ─── Sprint 3+: spend ledger ──────────────────────────────────────────
 
