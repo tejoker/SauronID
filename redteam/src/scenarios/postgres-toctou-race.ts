@@ -35,7 +35,7 @@
  */
 
 import { createHash, randomBytes, generateKeyPairSync, sign } from "crypto";
-import { CoreApi, randSuffix } from "../core-api";
+import { CoreApi, randSuffix, runAgentActionTool, signPopJws } from "../core-api";
 import { signCallV2 } from "../call-sig-v2";
 
 const N = Math.max(2, parseInt(process.env.SAURON_RACE_N || "50", 10) || 50);
@@ -101,7 +101,14 @@ async function setupRaceAgent(api: CoreApi, bank: string, sfx: string) {
             tools: ["echo"],
         },
         agent_checksum: "",
-        intent_json: JSON.stringify({ scope: ["payment_initiation"] }),
+        // maxAmount + merchant allowlist, not a bare scope: the payment path
+        // enforces a strict intent, and a scope-only grant is refused there.
+        intent_json: JSON.stringify({
+            scope: ["payment_initiation"],
+            maxAmount: 1.0,
+            currency: "EUR",
+            constraints: { merchant_allowlist: [`mch-${sfx}`] },
+        }),
         public_key_hex: keys.public_key_hex,
         ring_key_image_hex: keys.ring_key_image_hex,
         pop_jkt: `redteam-pgrace-${sfx}`,
@@ -283,21 +290,67 @@ export async function scenarioPostgresPaymentConsumeRace(
         return;
     }
     const sfx = `${label}-${randSuffix()}`;
-    const { agentId, ajwt, privateKey, configDigest, keyImage } = await setupRaceAgent(
+    const { agentId, ajwt, privateKey, configDigest, keyImage, keys, session } = await setupRaceAgent(
         api,
         bank,
         sfx
     );
-    void keyImage;
+
+    // Minting one authorization is a four-step ceremony, not a single POST. The
+    // first version of this scenario sent `{ajwt, jti, amount, ...}` and got a
+    // 422 for a missing `agent_action` — the handler wants a ring signature over
+    // a server-issued challenge, plus a single-use proof-of-possession.
+    //
+    // `CoreApi.buildAgentActionProof` does steps 1-2 but sends no call signature,
+    // and this scenario runs under SAURON_REQUIRE_CALL_SIG=1, so the challenge
+    // request has to be signed here.
+    const pop = await api.agentPopChallenge(session, agentId);
+
+    const challengePath = "/agent/action/challenge";
+    const challengeBody = JSON.stringify({
+        agent_id: agentId,
+        human_key_image: keyImage,
+        action: "payment_initiation",
+        resource: `pay-${sfx}`,
+        merchant_id: `mch-${sfx}`,
+        amount_minor: 100,
+        currency: "EUR",
+        ajwt_jti: parseJwtJti(ajwt),
+        ttl_secs: 120,
+    });
+    const chRes = await fetch(`${baseUrl}${challengePath}`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            ...signCallV2({
+                agentId,
+                privateKey,
+                method: "POST",
+                targetUri: challengePath,
+                body: challengeBody,
+                configDigest,
+            }),
+        },
+        body: challengeBody,
+    });
+    const chText = await chRes.text();
+    if (chRes.status !== 200) {
+        throw new Error(`payment-consume race: action/challenge ${chRes.status}: ${chText.slice(0, 200)}`);
+    }
+    const agentAction = JSON.parse(
+        runAgentActionTool(["sign-challenge", "--secret-hex", keys.secret_hex, "--challenge-json", chText])
+    );
 
     const authPath = "/agent/payment/authorize";
     const authBody = JSON.stringify({
         ajwt,
-        jti: `jti-${sfx}-auth`,
         amount_minor: 100,
         currency: "EUR",
         merchant_id: `mch-${sfx}`,
         payment_ref: `pay-${sfx}`,
+        pop_challenge_id: pop.pop_challenge_id,
+        pop_jws: signPopJws(pop.challenge, privateKey),
+        agent_action: agentAction,
     });
     const authRes = await fetch(`${baseUrl}${authPath}`, {
         method: "POST",

@@ -60,7 +60,13 @@ export function signPopJws(challenge: string, privateKey: KeyObject): string {
     return `${signingInput}.${signature}`;
 }
 
-function runAgentActionTool(args: string[]): string {
+/** Run the agent-action-tool, preferring a built binary and falling back to cargo.
+ *
+ * Exported because scenarios that must sign `/agent/action/challenge` themselves
+ * — anything running under `SAURON_REQUIRE_CALL_SIG=1`, where
+ * `buildAgentActionProof` cannot be used since it sends no call signature —
+ * still need the same binary resolution. */
+export function runAgentActionTool(args: string[]): string {
     const configured = process.env.AGENT_ACTION_TOOL;
     const direct = configured || resolve(process.cwd(), "../core/target/debug/agent-action-tool");
     if (existsSync(direct)) {
