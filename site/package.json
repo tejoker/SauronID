@@ -1,0 +1,21 @@
+{
+  "name": "sauronid-website",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.3.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.13",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.4",
+    "typescript": "5.9.3"
+  }
+}
