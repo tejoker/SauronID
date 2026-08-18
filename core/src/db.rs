@@ -397,11 +397,21 @@ pub fn open_db_at_with_timeout(path: &str, pool_size: u32, timeout: Duration) ->
         )
     });
 
+    // `build_unchecked`, not `build`: r2d2's `build` blocks until it has
+    // established `max_size` connections and gives up after `connection_timeout`
+    // — the same budget the request path uses to shed load. Those are different
+    // jobs. `pool_exhaustion_503` deliberately passes a 200 ms timeout so a
+    // saturated pool answers quickly, and on a busy machine that same 200 ms was
+    // not always enough to open the file, so the pool failed to build and the
+    // test panicked instead of exercising what it tests.
+    //
+    // Construction no longer waits for connections; the `pool.get()` immediately
+    // below still runs `init_schema`, so a genuinely unusable path is still a
+    // startup failure rather than a deferred surprise.
     let pool = Pool::builder()
         .max_size(pool_size)
         .connection_timeout(timeout)
-        .build(manager)
-        .unwrap_or_else(|e| panic!("cannot open SQLite pool at '{}': {}", path, e));
+        .build_unchecked(manager);
 
     {
         let conn = pool.get().unwrap_or_else(|e| {
