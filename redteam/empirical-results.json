@@ -6,7 +6,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=200 valid=false",
-      "latency_ms": 32,
+      "latency_ms": 31,
       "pass": true,
       "dynamic": true
     },
@@ -16,7 +16,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=true second=false err=A-JWT jti replay (token already used)",
-      "latency_ms": 6,
+      "latency_ms": 8,
       "pass": true,
       "dynamic": true
     },
@@ -26,7 +26,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=422 second=409",
-      "latency_ms": 2,
+      "latency_ms": 1,
       "pass": true,
       "dynamic": true
     },
@@ -46,7 +46,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 5,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true
     },
@@ -66,7 +66,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 5,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true
     },
@@ -96,7 +96,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=400",
-      "latency_ms": 5,
+      "latency_ms": 46,
       "pass": true,
       "dynamic": true
     },
@@ -106,7 +106,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "N=20 winners=1 already_consumed=19",
-      "latency_ms": 956,
+      "latency_ms": 1553,
       "pass": true,
       "dynamic": true,
       "evidence": "Promise.all(20) → 1 × HTTP 200 + 19 × HTTP 409 authorization_already_consumed"
@@ -117,7 +117,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "limit=60 sent=125 status_200=60 status_429=65",
-      "latency_ms": 11878,
+      "latency_ms": 11050,
       "pass": true,
       "dynamic": true,
       "evidence": "65/125 requests returned HTTP 429 (risk::check_and_increment denied)"
@@ -138,22 +138,22 @@
       "description": "Audit-log integrity: tampered receipt leaf invalidates merkle inclusion proof",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "receipt_id=ar_62394b8d3… orig_match=false tampered_match=false root_diff=true",
-      "latency_ms": 5,
+      "detail": "receipt_id=ar_398d0bcab… orig_match=false tampered_match=false root_diff=true",
+      "latency_ms": 49,
       "pass": true,
       "dynamic": true,
-      "evidence": "tree_size=2 leaf_index=1 batch_root=0dc065ac7ad01e88… flipped first nibble → root mismatch"
+      "evidence": "tree_size=2 leaf_index=1 batch_root=9fd434674adc995c… flipped first nibble → root mismatch"
     },
     {
       "id": "A15",
       "description": "HMAC compare timing oracle: 2000 iters early-diff vs late-diff session sig",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "early_mean=4224.56µs σ=314.84 | late_mean=4218.05µs σ=323.87 | paired Δ=9.57µs σ=254.42 n=1800 t=1.60 | detector_control_t=2032.59",
-      "latency_ms": 21039,
+      "detail": "early_mean=4122.69µs σ=212.77 | late_mean=4116.83µs σ=199.49 | paired Δ=1.69µs σ=203.12 n=1800 t=0.35 | detector_control_t=2032.59",
+      "latency_ms": 21710,
       "pass": true,
       "dynamic": true,
-      "evidence": "paired |t|=1.60 over 1800 back-to-back pairs, mean Δ=9.57µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
+      "evidence": "paired |t|=0.35 over 1800 back-to-back pairs, mean Δ=1.69µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
     },
     {
       "id": "A16",
@@ -171,9 +171,9 @@
   "total": 16,
   "skipped": 0,
   "dynamic": 16,
-  "generated_at": "2026-08-18T19:07:40.741Z",
+  "generated_at": "2026-08-18T19:29:15.600Z",
   "provenance": {
-    "commit": "e45ae397c587b4e9574bd48ca8ca6a5596196374",
+    "commit": "db6fc47b8e7d6059f00f0ce5aac18587268bf6ee-dirty",
     "enforce_mode": true,
     "db_backend": "sqlite",
     "base_url": "http://127.0.0.1:3001"

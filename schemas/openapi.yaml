@@ -866,6 +866,74 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /agent/vc/issue:
+    post:
+      tags: [agent]
+      summary: Issue a self-sovereign agent VC (call-signed)
+      description: >-
+        Issues a W3C Verifiable Credential for an autonomous agent, rooted in
+        either the bank-linked human trust root or a non-bank
+        CredentialVerification ZK proof. Requires x-sauron-session. Disabled
+        by SAURON_DISABLE_ZKP=1. Max 10 active agent VCs per human.
+      operationId: agentVcIssue
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/CallSigAgentId'
+        - $ref: '#/components/parameters/CallSigTs'
+        - $ref: '#/components/parameters/CallSigNonce'
+        - $ref: '#/components/parameters/CallSigSig'
+        - $ref: '#/components/parameters/CallSigAudience'
+        - $ref: '#/components/parameters/CallSigProtocolVersion'
+        - $ref: '#/components/parameters/CallSigConfigDigest'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_checksum, description, scope, public_key_hex, ring_key_image_hex, pop_jkt, pop_public_key_b64u]
+              properties:
+                human_key_image: { type: string, default: "", description: Optional hint; must match the authenticated session when present. }
+                agent_checksum: { type: string }
+                description: { type: string }
+                scope: { type: array, items: { type: string } }
+                public_key_hex: { type: string }
+                ring_key_image_hex: { type: string }
+                pop_jkt: { type: string }
+                pop_public_key_b64u: { type: string }
+                ttl_hours: { type: integer, format: int64, default: 24, minimum: 1, maximum: 720 } { description: Groth16 proof JSON (non-bank path). } { type: [string, "null"], description: Defaults to CredentialVerification. }
+      responses:
+        '200':
+          description: Agent VC issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent_id, assurance_level, vc, vc_hash, ajwt, agent_public_key_hex, ring_key_image_hex, expires_at, trust_chain]
+                properties:
+                  agent_id: { type: string, description: Prefix agt_. }
+                  assurance_level: { type: string, const: autonomous_web3 }
+                  vc:
+                    type: object
+                    additionalProperties: true
+                    description: Full W3C VC (contexts, type, issuer did:sauron:idp, credentialSubject with agentId, agentChecksum, humanOwner, scope, popThumbprint, rootOfTrust, kyaEvidence).
+                  vc_hash: { type: string, description: hex HMAC. }
+                  ajwt: { type: string }
+                  agent_public_key_hex: { type: string }
+                  ring_key_image_hex: { type: string }
+                  expires_at: { type: integer, format: int64 }
+                  trust_chain: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '426': { $ref: '#/components/responses/UpgradeRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /agent/token:
     post:
       tags: [agent]
@@ -2896,6 +2964,42 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ── /v1/stats (admin-gated) ──
+
+  /v1/stats/submit-transparent:
+    post:
+      tags: [v1-stats]
+      summary: Submit a claimed metric value with a transparent (RISC-Zero) proof
+      operationId: statsSubmitTransparent
+      security: [{ adminKey: [] }, { adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/TenantId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              description: TransparentStatsSubmission (TransparentProofPayload flattened).
+              required: [metric_id, claimed_value, period_start, period_end, checkpoint_id, program_id, receipt_b64]
+              properties:
+                tenant_id: { type: string, default: "" }
+                agent_id_or_none: { type: [string, "null"] }
+                metric_id: { type: string, enum: [success_rate, error_rate, tool_call_count, cost_total] }
+                claimed_value: { type: integer, format: int64 }
+                period_start: { type: integer, format: int64 }
+                period_end: { type: integer, format: int64 }
+                checkpoint_id: { type: string }
+                program_id: { type: string }
+                receipt_b64: { type: string }
+      responses:
+        '200':
+          description: Stored after proof verification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatsSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 
   /v1/admin/audit:
     get:

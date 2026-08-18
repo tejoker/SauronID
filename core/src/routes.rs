@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    admin, audit::handlers as audit_report_handlers, middleware::audit_log,
-    policy::binding_handlers, policy::handlers as policy_handlers, rings, state::ServerState,
-    tenancy, usage,
+    admin, aggregation::handlers as agg_handlers, audit::handlers as audit_report_handlers,
+    middleware::audit_log, policy::binding_handlers, policy::handlers as policy_handlers, rings,
+    state::ServerState, tenancy, usage,
 };
 
 fn transparent_body_limit() -> DefaultBodyLimit {
@@ -491,6 +491,24 @@ async fn transparent_verify_handler(
         valid: true,
         journal,
     }))
+}
+
+/// Router for `/v1/stats/*` — customer stat submission with a STARK proof.
+///
+/// `POST /v1/stats/submit-transparent` is the one route the Python, TypeScript
+/// and Go SDKs call. Its Groth16 sibling and the DP cohort surface are archived
+/// under `archive/removed-2026-08/`; the body limit is raised because a native
+/// RISC Zero receipt does not fit in the global 64 KB cap.
+///
+/// Admin-gated through the same middleware stack as `/v1/policy/*`.
+pub fn stats_router() -> Router<Arc<RwLock<ServerState>>> {
+    Router::new()
+        .route(
+            "/submit-transparent",
+            post(agg_handlers::submit_transparent_handler).route_layer(transparent_body_limit()),
+        )
+        .route_layer(middleware::from_fn(admin::auth_middleware))
+        .route_layer(middleware::from_fn(tenancy::extract_tenant))
 }
 
 /// Router for `/v1/admin/audit` — S12 security audit log query.

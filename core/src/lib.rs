@@ -13,6 +13,7 @@ pub mod agent;
 pub mod agent_action;
 pub mod agent_action_anchor;
 pub mod agent_checksum;
+pub mod aggregation;
 pub mod ajwt_support;
 pub mod any_db;
 pub mod attestation;

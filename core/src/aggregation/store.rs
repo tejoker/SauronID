@@ -9,8 +9,8 @@
 use crate::any_db::{AnyConn, AnyRowGet, SqlValue};
 use crate::sql_params;
 
+use crate::aggregation::submission::AggError;
 use crate::aggregation::submission::{CohortRow, StatsSubmission};
-use crate::aggregation::verify::AggError;
 use crate::db::DbHandle;
 
 /// Insert-or-update a single stats submission. Returns the now-current row.
