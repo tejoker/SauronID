@@ -174,6 +174,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The client packages publish without waiting on the gateway assessment.**
+  `publish-clients.yml` exists so the clients can ship from a green Release Gate
+  — its header argues that gating a package which "holds no keys, evaluates no
+  policy and enforces nothing" on a gateway penetration test buys no safety and
+  blocks adoption. But it only published `@sauronid/mcp-server`, which declares
+  `@sauronid/agentic` as a dependency, and `agentic` published only from the
+  audit-gated `release-publish.yml`. The un-gated lane pointed into the gated
+  one, so anything it shipped was uninstallable: `npx @sauronid/mcp-server`
+  would fetch the server, fail to resolve `@sauronid/agentic`, and abort.
+  `@sauronid/agentic` and the pure-Python `sauronid-client` sdist now publish
+  from the clients lane, and `mcp-server` waits on `agentic` so its dependency
+  is on npm before it is referenced.
+- **The platform wheels did not move.** Each bundles the `agent-action-tool`
+  workstation binary byte-for-byte, and "workstation binaries publish only from
+  release-publish.yml, behind the assessment" is the line that separates the two
+  lanes. They stay as a `pypi-wheels` job that refuses to run if a wheel turns
+  out not to carry the binary; PyPI accepts them later under the version the
+  sdist already created. Nothing that carries enforcement changed lanes.
+- `scripts/ci/verify-release-dag.py` no longer trusts a hardcoded job list. Its
+  named set is now a floor, and **any** job containing a publish command
+  (`npm publish`, `gh-action-pypi-publish`, a docker push, a release upload,
+  `cosign sign`) must descend from `independent-signoff` whether or not it is
+  named. Moving jobs out is what made the old allowlist stale and silently
+  incomplete; a bypass job added under a new name is now rejected, which was
+  confirmed against a deliberately planted one.
+
+
 - **The dev-only endpoints moved out of `main.rs` into `core/src/dev_endpoints.rs`.**
   They were 876 of its 3,648 lines — a quarter of the entrypoint, with
   `dev_leash_demo` alone larger than most modules in the crate — sitting beside
