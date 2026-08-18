@@ -1301,6 +1301,53 @@ impl Repo {
     // Postgres uses FOR UPDATE + RETURNING; SQLite uses BEGIN IMMEDIATE +
     // conditional UPDATE.
 
+    /// Which agent obtained this authorization, if it exists in `tenant_id`.
+    ///
+    /// Consume is authorised by ownership, not just by holding the id: within a
+    /// tenant every signed agent knows the id format, so without this check one
+    /// agent could redeem another's authorization. Returns `None` when the row
+    /// does not exist or belongs to a different tenant — the caller answers 404
+    /// either way, so a cross-tenant probe cannot distinguish the two.
+    pub async fn payment_authorization_agent(
+        &self,
+        tenant_id: &str,
+        auth_id: &str,
+    ) -> Result<Option<String>, RepoError> {
+        if auth_id.is_empty() {
+            return Err(RepoError::Backend("missing auth_id".into()));
+        }
+        match self {
+            Repo::Sqlite(db) => {
+                let conn = db
+                    .lock_sqlite()
+                    .map_err(|e| RepoError::Backend(e.to_string()))?;
+                conn.query_row(
+                    "SELECT agent_id FROM agent_payment_authorizations \
+                     WHERE tenant_id = ?1 AND auth_id = ?2",
+                    rusqlite::params![tenant_id, auth_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(RepoError::Backend(other.to_string())),
+                })
+            }
+            Repo::Postgres(pool) => {
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT agent_id FROM agent_payment_authorizations \
+                     WHERE tenant_id = $1 AND auth_id = $2",
+                )
+                .bind(tenant_id)
+                .bind(auth_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| RepoError::Backend(format!("pg payment_authorization_agent: {e}")))?;
+                Ok(row.map(|r| r.0))
+            }
+        }
+    }
+
     pub async fn consume_payment_authorization(
         &self,
         tenant_id: &str,
@@ -3220,6 +3267,49 @@ mod tests {
                 .consume_payment_authorization("victim", "payauth_tenant", 1_001)
                 .await
                 .is_ok());
+        });
+    }
+
+    /// Ownership, not just possession of the id. `/agent/payment/consume`
+    /// authorises on this, so a wrong answer here lets one signed agent redeem
+    /// another's authorization.
+    #[test]
+    fn test_repo_payment_authorization_agent_lookup_is_scoped() {
+        let repo = build_test_repo("payauth_owner");
+        rt().block_on(async {
+            repo.insert_payment_authorization(
+                "default",
+                "payauth_owner",
+                "agent-owner",
+                "jti-owner",
+                1000,
+                "EUR",
+                "M1",
+                "ref_owner",
+                1_000,
+                9_999_999_999,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                repo.payment_authorization_agent("default", "payauth_owner")
+                    .await
+                    .unwrap(),
+                Some("agent-owner".to_string())
+            );
+            // Another tenant must not even learn that the row exists.
+            assert_eq!(
+                repo.payment_authorization_agent("other", "payauth_owner")
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                repo.payment_authorization_agent("default", "payauth_missing")
+                    .await
+                    .unwrap(),
+                None
+            );
         });
     }
 

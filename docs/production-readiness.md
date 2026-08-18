@@ -34,7 +34,7 @@ deployment network isolation and independent review remain release gates.
   `SAURON_TRANSPARENT_IMAGE_IDS_JSON`; production startup validates the map.
 - Use only structured production egress entries with explicit methods, path,
   byte caps, allowed headers, request-body policy and response disclosure mode.
-- Keep legacy OPRF auth, unaudited Paillier, voluntary egress logging,
+- Keep legacy OPRF auth, voluntary egress logging,
   server-derived PoP, custom checksums, legacy token MAC, and Groth16 disabled.
 - Configure `SAURON_ALLOWED_ORIGINS` explicitly for deployed web origins.
 - Use `SAURON_COMPLIANCE_JURISDICTION_MODE=enforce` with a non-empty `SAURON_COMPLIANCE_JURISDICTION_ALLOWLIST` where required.
@@ -111,12 +111,12 @@ compiler then located each one that still spoke rusqlite directly, because
 ```
 
 Staying on SQLite is now the thing you have to ask for, by name, through
-`DbHandle::lock_sqlite()`. There are **37 such sites in production code**, and
+`DbHandle::lock_sqlite()`. There are **38 such sites in production code**, and
 they are enumerated in `core/tests/postgres_dispatch_coverage.rs`, which fails
 if the set moves:
 
 ```
-33  repository.rs        the SQLite half of Repo's own backend match; the
+34  repository.rs        the SQLite half of Repo's own backend match; the
                          Postgres half next to it is sqlx, and both arms are
                          selected from the same SAURON_DB_BACKEND
  2  db.rs                the dispatcher itself
@@ -267,9 +267,8 @@ Full detail and the per-table sweep is in
   `/user/auth/challenge` and `/user/auth/finish`. The legacy password-derived
   endpoint is development-only. OPAQUE is needed only if passwords are added
   back as a requirement.
-- The Paillier implementation is quarantined in production. It is not a
-  production aggregation claim. Transparent local aggregation is the supported
-  replacement; threshold HE is a separate future product choice.
+- The homomorphic-aggregation (Paillier) subsystem has been removed, not
+  quarantined. There is no flag to leave off and no code to review.
 
 ## Release Gate
 

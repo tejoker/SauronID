@@ -1,5 +1,7 @@
 use crate::any_db::AnyRowGet;
+use crate::error::AppError;
 use crate::sql_params;
+use crate::sync_recover::RwLockRecover;
 use axum::{
     extract::{DefaultBodyLimit, Extension, Json as AxumJson, State},
     http::StatusCode,
@@ -115,7 +117,7 @@ async fn finalize_proof_checkpoint(
     State(state): State<Arc<RwLock<ServerState>>>,
     tenant: Option<Extension<tenancy::TenantId>>,
     AxumJson(body): AxumJson<FinalizeProofCheckpointRequest>,
-) -> Result<AxumJson<FinalizeProofCheckpointResponse>, (StatusCode, String)> {
+) -> Result<AxumJson<FinalizeProofCheckpointResponse>, AppError> {
     use sha2::{Digest, Sha256};
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     if body.circuit.is_empty()
@@ -124,7 +126,7 @@ async fn finalize_proof_checkpoint(
             .chars()
             .any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
     {
-        return Err((StatusCode::BAD_REQUEST, "invalid circuit name".into()));
+        return Err((StatusCode::BAD_REQUEST, "invalid circuit name".into()).into());
     }
     const ALLOWED_CHECKPOINT_CIRCUITS: &[&str] = &[
         "StatsHonestComputation",
@@ -140,17 +142,19 @@ async fn finalize_proof_checkpoint(
         return Err((
             StatusCode::BAD_REQUEST,
             "unsupported checkpoint circuit".into(),
-        ));
+        )
+            .into());
     }
     if body.action_anchor_id.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "action_anchor_id is required".into(),
-        ));
+        )
+            .into());
     }
 
     let (db, receipt_mac_secret) = {
-        let st = state.read().unwrap();
+        let st = state.read_or_recover();
         (st.db.clone(), st.jwt_secret.clone())
     };
     let (
@@ -222,13 +226,15 @@ async fn finalize_proof_checkpoint(
         return Err((
             StatusCode::BAD_REQUEST,
             "action anchor has invalid tree size".into(),
-        ));
+        )
+            .into());
     }
     if leaf_version < 2 {
         return Err((
             StatusCode::BAD_REQUEST,
             "legacy partial receipt leaves cannot back a production proof checkpoint".into(),
-        ));
+        )
+            .into());
     }
     if matches!(
         body.circuit.as_str(),
@@ -308,14 +314,15 @@ async fn finalize_proof_checkpoint(
                 StatusCode::CONFLICT,
                 "transparent checkpoints require a complete, unchanged batch of ordinary action receipts with valid tenant-bound server MACs"
                     .into(),
-            ));
+            ).into());
         }
     }
     if anchor_status != "submitted" || btc_anchor_id.is_empty() {
         return Err((
             StatusCode::CONFLICT,
             "action batch is not fully submitted to its configured anchors".into(),
-        ));
+        )
+            .into());
     }
     if !crate::runtime_mode::is_development_runtime()
         && (btc_provider != "opentimestamps" || ots_upgraded != 1)
@@ -324,7 +331,8 @@ async fn finalize_proof_checkpoint(
             StatusCode::CONFLICT,
             "production checkpoint requires an upgraded OpenTimestamps proof committed in Bitcoin"
                 .into(),
-        ));
+        )
+            .into());
     }
     let decoded_root = hex::decode(&root_hex).map_err(|_| {
         (
@@ -336,7 +344,8 @@ async fn finalize_proof_checkpoint(
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             "stored anchor root is not 32 bytes".into(),
-        ));
+        )
+            .into());
     }
     let tree_size_text = tree_size.to_string();
     let statement = crate::crypto_protocol::canonical_fields(
@@ -391,7 +400,7 @@ async fn transparent_verify_handler(
     State(state): State<Arc<RwLock<ServerState>>>,
     tenant: Option<Extension<tenancy::TenantId>>,
     AxumJson(body): AxumJson<TransparentVerifyRequest>,
-) -> Result<AxumJson<TransparentVerifyResponse>, (StatusCode, String)> {
+) -> Result<AxumJson<TransparentVerifyResponse>, AppError> {
     use crate::transparent_proof::{TransparentProofError, TransparentStatement};
 
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
@@ -445,10 +454,11 @@ async fn transparent_verify_handler(
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             "proof tenant/checkpoint binding mismatch".into(),
-        ));
+        )
+            .into());
     }
     let (expected_root, expected_size, expected_anchor): (String, i64, String) = {
-        let st = state.read().unwrap();
+        let st = state.read_or_recover();
         let mut db = st.db.lock().unwrap();
         db.any_conn()
             .query_row(
@@ -475,7 +485,8 @@ async fn transparent_verify_handler(
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             "proof journal does not match the authoritative checkpoint root/size/anchor".into(),
-        ));
+        )
+            .into());
     }
 
     Ok(AxumJson(TransparentVerifyResponse {
@@ -502,10 +513,10 @@ async fn action_log_verify_handler(
     State(state): State<Arc<RwLock<ServerState>>>,
     tenant: Option<Extension<tenancy::TenantId>>,
     AxumJson(body): AxumJson<ActionLogVerifyRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, AppError> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let (expected_root, tree_size): (String, i64) = {
-        let st = state.read().unwrap();
+        let st = state.read_or_recover();
         let mut db = st.db.lock().unwrap();
         db.any_conn().query_row(
             "SELECT merkle_root, tree_size FROM zk_proof_checkpoints WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = ?3 AND finalized_at > 0",
@@ -533,7 +544,8 @@ async fn action_log_verify_handler(
         return Err((
             StatusCode::BAD_REQUEST,
             "proof tree_size does not match authoritative checkpoint".into(),
-        ));
+        )
+            .into());
     }
     // Server-controlled ONLY — never from the request.
     let dir =
@@ -543,18 +555,19 @@ async fn action_log_verify_handler(
     match zk_verifier::verify_action_log_proof(&body.payload, &expected_root, &loader).await {
         Ok(()) => Ok(StatusCode::OK),
         Err(zk_verifier::ZkVerifyError::Malformed(m)) => {
-            Err((StatusCode::BAD_REQUEST, format!("malformed: {m}")))
+            Err((StatusCode::BAD_REQUEST, format!("malformed: {m}")).into())
         }
         Err(zk_verifier::ZkVerifyError::KeyNotFound(m)) => {
-            Err((StatusCode::NOT_FOUND, format!("vkey missing: {m}")))
+            Err((StatusCode::NOT_FOUND, format!("vkey missing: {m}")).into())
         }
         Err(zk_verifier::ZkVerifyError::Invalid(m)) => {
-            Err((StatusCode::BAD_REQUEST, format!("invalid proof: {m}")))
+            Err((StatusCode::BAD_REQUEST, format!("invalid proof: {m}")).into())
         }
         Err(zk_verifier::ZkVerifyError::VerifierFailed(m)) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("verifier process failed: {m}"),
-        )),
+        )
+            .into()),
     }
 }
 
@@ -694,6 +707,13 @@ pub fn admin_router() -> Router<Arc<RwLock<ServerState>>> {
         // Live-data analytics endpoints (Analytics 5/5 — replaces parquet path)
         .route("/agents", get(admin::get_agents))
         .route("/agents/{agent_id}/revoke", post(admin::revoke_agent_admin))
+        // Cut an owner off: bumps `session_epoch`, invalidating every owner
+        // session already issued for that key image. The owner session mints
+        // agent authority, so this is the response to a suspected leak.
+        .route(
+            "/users/{key_image}/revoke_sessions",
+            post(admin::revoke_user_sessions),
+        )
         .route("/agent_actions/recent", get(admin::get_recent_actions))
         // Dashboard "Try" page — runs real governance scenarios (replay/scope/normal).
         .route("/demo/scenario/{scenario}", post(admin::run_demo_scenario))

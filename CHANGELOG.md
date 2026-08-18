@@ -7,7 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-18
+
 ### Security
+
+- **The database connection can use TLS.** The blocking Postgres pool — the one
+  every `lock()` call site acquires from — was built with `postgres::NoTls`
+  hardcoded, so the link carrying owner mandates, receipts and session material
+  either refused to come up on a managed provider or ran in cleartext. It now
+  uses rustls, driven by `sslmode` in `DATABASE_URL`. Because rustls verifies
+  the chain and hostname regardless, `require` here is what libpq calls
+  `verify-full`.
+- **`sslmode=verify-ca` / `verify-full` no longer split the deployment across two
+  databases.** `tokio-postgres` cannot parse either value, and that parse error
+  was swallowed into "staying on SQLite" — while the repository layer, which
+  builds its own sqlx pool from the same `DATABASE_URL`, connected to Postgres
+  successfully. A deployment using the `sslmode` a managed provider hands you
+  ran both backends at once and split its writes between them. Both values are
+  now accepted, and **any** failure to build the Postgres pool refuses the boot
+  instead of falling back.
+- Both database pools read the **system trust store**. `runtime-tokio-rustls`
+  resolved to bundled webpki roots for sqlx while the blocking pool used the
+  platform store, so a private CA made one pool connect and the other fail.
+- **Owner sessions are revocable.** The `x-sauron-session` token authorises
+  `POST /agent/register` and `POST /agent/{agent_id}/checksum/update`, so it
+  mints agent authority — but verification consulted no server state, which
+  meant a suspected leak had no response: the token stayed valid for its full
+  hour whatever the operator did. A per-owner `session_epoch` is now folded into
+  the signed payload and checked on every request, and
+  `POST /admin/users/{key_image}/revoke_sessions` bumps it. Already-registered
+  agents are unaffected; they authenticate with their own proof-of-possession
+  keys. **Deploying this invalidates sessions in flight** — they last an hour,
+  so the cost is that everyone signs in once more. Legacy `v2` tokens are
+  refused rather than upgraded: honouring them would leave every pre-existing
+  session permanently unrevocable, which is the hole this closes.
 
 - **Policy invariants now require the action to declare its own signals.** Checks
   that read a value from `Action.metadata` — payload size, recipient count,
@@ -22,6 +55,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sandbox_required(...)`, `spend_total <= max_budget_usd`) are compiled and
   enforced. They were previously parsed and ignored, so a policy that declared
   them was not applying them.
+
+### Removed
+
+- **The banking-pivot surface is gone.** `/oprf`, `/register` (KYC deposit),
+  `/bank/register`, `/register/bank`, `/kyc/request`, `/kyc/consent`,
+  `/kyc/consent_info/{request_id}`, `/kyc/retrieve` and `/agent/kyc/consent`
+  are deleted, with their handlers, request/response types, the bank-attestation
+  and claim-disclosure helpers behind them, and the `SAURON_DISABLE_BANK_KYC` /
+  `SAURON_DISABLE_USER_KYC` flags that gated them. That is ~2,100 lines out of
+  `main.rs` (5,742 → 3,636). SauronID binds agents, not human identities; human
+  KYC belongs in the operator's own IdP.
+- The red-team scenarios that drove their assertions through those routes were
+  moved onto the agent path before the deletion, not dropped. Empirical **A11**
+  ("concurrent double-spend on a single-use token") now bursts
+  `/agent/payment/consume` instead of `/kyc/retrieve`, and runs for real rather
+  than skipping unless an externally-issued consent token happened to be
+  exported; the invariant suite's `jti_replay_blocked` now calls `/agent/verify`,
+  which is where the jti is actually spent. **16/16 empirical and 9/9 invariant
+  scenarios pass after the removal.**
+- `core/tests/run_confidence_suite.sh` no longer invokes the KYA
+  delegated/autonomous/matrix/jti scripts or the restart phase. Those scripts
+  only ever drove `/kyc/*`, and they had already been untracked in `10e0d67` —
+  so on a clean checkout the confidence suite was calling files that were not
+  there. Their properties are asserted by the two gated suites, with one
+  exception now uncovered: ring-membership survival across a restart.
+
+### Performance
+
+- **The PostgreSQL tier is measured.** Runs C and D in
+  [docs/load-test.md](docs/load-test.md): **2,274 rps sustained over 900 s, 0
+  errors across 2,046,979 requests**, with p99 flat at 15.9 ms -> 18.3 ms. The
+  same workload on SQLite manages 636 rps and drifts p99 **monotonically
+  105.7 ms -> 301.5 ms** with ~5.2 s max spikes. The load harness gained a
+  `SAURON_DB_BACKEND` / `DATABASE_URL` pass-through so either tier can be soaked.
+  The run also observed the backend property under load: the SQLite sidecar
+  finished with 0 rows in `agent_call_nonces` and `agent_egress_log` while
+  PostgreSQL held every write.
+- `release/manifest.json` now records `supported_topology:
+  single-node-sqlite-or-postgres`, and the release gate's allowlist was widened
+  to match. `high_availability` stays **false** — nothing has tested failover,
+  partition behaviour, or multi-replica contention.
+
+### Fixed
+
+- **`@sauronid/mcp-server` would have published broken.** It depends on
+  `@sauronid/agentic` as `file:../agentic` — correct locally, unresolvable for
+  anyone installing from npm, so `npx @sauronid/mcp-server` would have failed
+  during install. The publish workflow now rewrites that to the version in the
+  tree, and refuses to publish if the matching `agentic` is not already on npm.
+
+### Added
+
+- **`POST /agent/payment/consume`** — redeem a payment authorization exactly
+  once. `Repo::consume_payment_authorization` was written, tested and reachable
+  from nothing: `/agent/payment/authorize` minted authorizations that no route
+  could spend, and `docs/active-route-map.md` advertised a
+  `/merchant/payment/consume` that never existed. Mounted under `/agent/` so the
+  default-deny call-signature layer covers it without a new exemption, and
+  ownership is checked against the signer so holding the id is not enough.
+- `POST /admin/users/{key_image}/revoke_sessions` (see Security, above).
+- `scripts/ci/check-openapi-routes.py`, wired into the release gate: fails when
+  `schemas/openapi.yaml` and the router disagree in either direction. It found
+  `/agent/rings/{ring_id}/members` undocumented on its first run.
+- `security/assessment-brief.md` — the scope to hand a prospective independent
+  assessor: what the system is, what the two coverage areas the release gate
+  demands actually contain, and what is already known-unfinished so nobody
+  spends budget rediscovering it.
 
 ### Changed
 

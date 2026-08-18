@@ -75,7 +75,6 @@ extraction.
 | `cohort_definitions` | KEEP_GLOBAL | Cohorts are operator-level aggregations across tenants. Definition table is shared by design. Tenant-membership lives in the `tenant_ids_json` field; cohort aggregation filters published rows by that list. |
 | `dp_budget_ledger` | KEEP_GLOBAL | Per-cohort ε budget. Cohorts are global so the ledger is global. Rotate endpoint (cohort/budget/rotate) requires admin auth + valid cohort_id. Verified by `tenant-cohort-budget-rotate-cross.ts`. |
 | `dp_budget_publications` | KEEP_GLOBAL | Audit trail for ε spend. Inherits cohort-global rationale. |
-| `he_aggregations` | KEEP_GLOBAL | Paillier-encrypted running sums per `(cohort_id, metric_id, period_start)`. Cohort-scoped, not tenant-scoped (cohort IS the cross-tenant aggregation unit). |
 
 Attack vector if SCOPED column were missing on `customer_stats`:
 tenant B could enumerate / overwrite tenant A's claimed metric values.
@@ -162,7 +161,6 @@ EXPRESSES intent / consent / registration on top of it is per-tenant.
 | cohort_definitions | KEEP_GLOBAL | None — cohort IS cross-tenant unit |
 | dp_budget_ledger | KEEP_GLOBAL | None — cohort-scoped |
 | dp_budget_publications | KEEP_GLOBAL | None — cohort-scoped |
-| he_aggregations | KEEP_GLOBAL | None — cohort-scoped |
 | security_audit_log | SCOPED | Cross-tenant audit trail leak |
 | audit_reports | SCOPED | Cross-tenant report retrieval |
 | requests_log | KEEP_GLOBAL | None — anonymous |

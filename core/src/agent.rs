@@ -46,48 +46,27 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-fn verify_user_session(
-    jwt_secret: &[u8],
-    session: &str,
-    expected_tenant_id: &str,
-) -> Option<String> {
-    use hmac::{Hmac, Mac};
-    type HmacSha256 = Hmac<Sha256>;
-    let pos = session.rfind('|')?;
-    let payload = &session[..pos];
-    let sig = &session[pos + 1..];
-    let session_key = crypto_protocol::derive_subkey(jwt_secret, "session-hmac-v1");
-    let mut mac = HmacSha256::new_from_slice(&session_key).ok()?;
-    mac.update(b"|SESSION|");
-    mac.update(payload.as_bytes());
-    let computed = hex::encode(mac.finalize().into_bytes());
-    if computed.as_bytes().ct_eq(sig.as_bytes()).unwrap_u8() == 0 {
-        return None;
-    }
-    let fields: Vec<&str> = payload.split('|').collect();
-    if fields.len() != 4 || fields[0] != "v2" || fields[1] != expected_tenant_id {
-        return None;
-    }
-    let key_image = fields[2];
-    if key_image.len() != 64 || !key_image.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let expires_at: i64 = fields[3].parse().ok()?;
-    if now_secs() > expires_at {
-        return None;
-    }
-    Some(key_image.to_string())
-}
-
+/// Owner-session authentication, including the revocation check.
+///
+/// Thin wrapper over [`crate::user_session::key_image_from_headers`] so the ~7
+/// call sites in this file keep their shape. The `state` argument is what the
+/// epoch read needs; before sessions were revocable this took no database at
+/// all, which is precisely why a leaked session could not be cut off.
 fn session_key_image(
+    state: &Arc<RwLock<ServerState>>,
     headers: &HeaderMap,
     jwt_secret: &[u8],
     expected_tenant_id: &str,
 ) -> Option<String> {
-    let session = headers.get("x-sauron-session")?.to_str().ok()?;
-    verify_user_session(jwt_secret, session, expected_tenant_id)
+    let st = state.read_or_recover();
+    let mut db = st.db.lock().ok()?;
+    crate::user_session::key_image_from_headers(
+        headers,
+        jwt_secret,
+        expected_tenant_id,
+        &mut db.any_conn(),
+    )
 }
-
 /// Encode a JSON value as base64url (no padding).
 fn b64url(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
@@ -497,7 +476,7 @@ fn verify_owner_mandate(
     intent_json: &str,
     ttl_secs: i64,
     signature_b64u: &str,
-) -> Result<String, (StatusCode, String)> {
+) -> Result<String, AppError> {
     use base64::Engine;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
@@ -570,10 +549,10 @@ pub async fn register_agent(
     tenant: Option<Extension<TenantId>>,
     headers: HeaderMap,
     Json(mut payload): Json<RegisterAgentRequest>,
-) -> Result<Json<RegisterAgentResponse>, (StatusCode, String)> {
+) -> Result<Json<RegisterAgentResponse>, AppError> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let human_key_image = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let human_key_image = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -581,14 +560,16 @@ pub async fn register_agent(
         return Err((
             StatusCode::UNAUTHORIZED,
             "human_key_image payload does not match authenticated session".into(),
-        ));
+        )
+            .into());
     }
 
     if payload.pop_jkt.trim().is_empty() || payload.pop_public_key_b64u.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "PoP is mandatory: pop_jkt and pop_public_key_b64u are required".into(),
-        ));
+        )
+            .into());
     }
     let computed_pop_jkt = crypto_protocol::ed25519_jwk_thumbprint(&payload.pop_public_key_b64u)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -601,7 +582,8 @@ pub async fn register_agent(
         return Err((
             StatusCode::BAD_REQUEST,
             "pop_jkt must be the RFC 7638 thumbprint of pop_public_key_b64u".into(),
-        ));
+        )
+            .into());
     }
     let pop_raw = URL_SAFE_NO_PAD
         .decode(payload.pop_public_key_b64u.trim())
@@ -623,7 +605,8 @@ pub async fn register_agent(
         return Err((
             StatusCode::BAD_REQUEST,
             "PoP public key is a weak/small-order Ed25519 key".into(),
-        ));
+        )
+            .into());
     }
 
     let parsed_intent: serde_json::Value =
@@ -658,7 +641,7 @@ pub async fn register_agent(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "owner_mandate_sig_b64u is required: this deployment refuses agents whose authority is not signed by their owner".into(),
-            ));
+            ).into());
         }
         String::new()
     } else {
@@ -712,7 +695,7 @@ pub async fn register_agent(
             return Err((
                 StatusCode::BAD_REQUEST,
                 "attestation_challenge_id is required for attested registration; request one from POST /agent/attestation/challenge".into(),
-            ));
+            ).into());
         }
         let st = state.read_or_recover();
         let mut db = st.db.lock().unwrap();
@@ -745,13 +728,15 @@ pub async fn register_agent(
             return Err((
                 StatusCode::FORBIDDEN,
                 "attestation challenge belongs to a different tenant or session".into(),
-            ));
+            )
+                .into());
         }
         if used_at.is_some() || expires_at < now {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "attestation challenge is expired or already used".into(),
-            ));
+            )
+                .into());
         }
         Some(nonce)
     } else {
@@ -807,7 +792,8 @@ pub async fn register_agent(
                  (llm/mcp_server/rule_bot/browser/openai_assistant/framework) or set \
                  SAURON_ALLOW_CUSTOM_CHECKSUM=1 to opt in."
                     .into(),
-            ));
+            )
+                .into());
         }
     }
 
@@ -828,7 +814,7 @@ pub async fn register_agent(
                     "operator-supplied agent_checksum does not match server-computed value (expected {}, got {})",
                     computed, payload.agent_checksum
                 ),
-            ));
+            ).into());
         }
         payload.agent_checksum = computed.clone();
         Some((payload.agent_type.clone(), canonical, computed))
@@ -839,7 +825,7 @@ pub async fn register_agent(
         return Err((
             StatusCode::BAD_REQUEST,
             "agent_type + checksum_inputs are required (set SAURON_REQUIRE_AGENT_TYPE=0 to allow legacy operator-supplied agent_checksum, but be aware this disables runtime drift detection)".into(),
-        ));
+        ).into());
     } else {
         tracing::warn!(
             target: "sauron::agent_checksum",
@@ -849,13 +835,14 @@ pub async fn register_agent(
     };
 
     if payload.agent_checksum.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "agent_checksum required".into()));
+        return Err((StatusCode::BAD_REQUEST, "agent_checksum required".into()).into());
     }
     if payload.public_key_hex.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "public_key_hex is required for delegated-agent ring binding".into(),
-        ));
+        )
+            .into());
     }
     if !payload
         .ring_key_image_hex
@@ -866,7 +853,8 @@ pub async fn register_agent(
         return Err((
             StatusCode::BAD_REQUEST,
             "ring_key_image_hex is required and must be 32-byte hex".into(),
-        ));
+        )
+            .into());
     }
     // ── M1 of TPM2-bound PoP key roadmap (docs/roadmap.md Plan 1) ────────
     //
@@ -912,7 +900,8 @@ pub async fn register_agent(
                     "attestation_kind=tpm2_quote requires all five tpm2_* fields; missing: {}",
                     missing.join(", ")
                 ),
-            ));
+            )
+                .into());
         }
 
         // ── H2: bound size of TPM2 payload fields ────────────────────────────
@@ -969,7 +958,8 @@ pub async fn register_agent(
                     return Err((
                         StatusCode::BAD_REQUEST,
                         format!("{name} exceeds {max} bytes (got {})", s.len()),
-                    ));
+                    )
+                        .into());
                 }
             }
         }
@@ -1033,7 +1023,8 @@ pub async fn register_agent(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "attestation challenge was consumed concurrently or expired".into(),
-            ));
+            )
+                .into());
         }
     }
 
@@ -1060,7 +1051,8 @@ pub async fn register_agent(
             return Err((
                 StatusCode::BAD_REQUEST,
                 "public_key_hex must not be the identity point".into(),
-            ));
+            )
+                .into());
         }
         point
     };
@@ -1088,7 +1080,8 @@ pub async fn register_agent(
             return Err((
                 StatusCode::BAD_REQUEST,
                 "ring_key_image_hex must not be the identity point".into(),
-            ));
+            )
+                .into());
         }
         point
     };
@@ -1108,7 +1101,8 @@ pub async fn register_agent(
             return Err((
                 StatusCode::CONFLICT,
                 "public_key_hex already registered to an active agent".into(),
-            ));
+            )
+                .into());
         }
         let key_image_in_use: bool = db.any_conn()
             .scalar_or(
@@ -1121,7 +1115,8 @@ pub async fn register_agent(
             return Err((
                 StatusCode::CONFLICT,
                 "ring_key_image_hex already registered to an active agent".into(),
-            ));
+            )
+                .into());
         }
         let pop_key_in_use: bool = db.any_conn()
             .scalar_or(
@@ -1135,7 +1130,7 @@ pub async fn register_agent(
                 StatusCode::CONFLICT,
                 "pop_public_key_b64u already registered to an active agent; PoP keys must be agent-unique"
                     .into(),
-            ));
+            ).into());
         }
     }
 
@@ -1150,7 +1145,8 @@ pub async fn register_agent(
             return Err((
                 StatusCode::NOT_FOUND,
                 "Human user not found — register the user first".into(),
-            ));
+            )
+                .into());
         }
     }
 
@@ -1164,7 +1160,7 @@ pub async fn register_agent(
         return Err((
             StatusCode::FORBIDDEN,
             "Delegated registration requires bank-verified KYC link. Use /agent/vc/issue for non-bank agents.".into(),
-        ));
+        ).into());
     };
 
     let assurance_level = "delegated_bank".to_string();
@@ -1194,13 +1190,14 @@ pub async fn register_agent(
                 },
                 no_parent)?;
         if p_rev != 0 {
-            return Err((StatusCode::BAD_REQUEST, "parent agent is revoked".into()));
+            return Err((StatusCode::BAD_REQUEST, "parent agent is revoked".into()).into());
         }
         if p_human != human_key_image {
             return Err((
                 StatusCode::FORBIDDEN,
                 "parent agent belongs to another user".into(),
-            ));
+            )
+                .into());
         }
         ajwt_support::assert_child_scopes_subset_of_parent(&p_intent, &payload.intent_json)
             .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -1212,7 +1209,8 @@ pub async fn register_agent(
                     "delegation depth exceeds max {}",
                     policy::MAX_DELEGATION_DEPTH
                 ),
-            ));
+            )
+                .into());
         }
         (Some(payload.parent_agent_id.clone()), d)
     };
@@ -1388,13 +1386,13 @@ pub async fn issue_agent_token(
     tenant: Option<Extension<TenantId>>,
     headers: HeaderMap,
     Json(payload): Json<IssueAgentTokenRequest>,
-) -> Result<Json<IssueAgentTokenResponse>, (StatusCode, String)> {
+) -> Result<Json<IssueAgentTokenResponse>, AppError> {
     if payload.agent_id.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "agent_id required".into()));
+        return Err((StatusCode::BAD_REQUEST, "agent_id required".into()).into());
     }
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let session_human = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let session_human = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -1432,10 +1430,11 @@ pub async fn issue_agent_token(
         return Err((
             StatusCode::FORBIDDEN,
             "agent not owned by authenticated session".into(),
-        ));
+        )
+            .into());
     }
     if revoked != 0 || agent_expires_at <= now {
-        return Err((StatusCode::UNAUTHORIZED, "Agent revoked or expired".into()));
+        return Err((StatusCode::UNAUTHORIZED, "Agent revoked or expired".into()).into());
     }
 
     let max_ttl = (agent_expires_at - now).max(1);
@@ -1497,10 +1496,10 @@ pub async fn update_agent_checksum(
     Path(agent_id): Path<String>,
     headers: HeaderMap,
     Json(payload): Json<ChecksumUpdateRequest>,
-) -> Result<Json<ChecksumUpdateResponse>, (StatusCode, String)> {
+) -> Result<Json<ChecksumUpdateResponse>, AppError> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let actor_human_ki = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let actor_human_ki = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -1534,7 +1533,8 @@ pub async fn update_agent_checksum(
         return Err((
             StatusCode::FORBIDDEN,
             "only the registering human can rotate this agent's checksum".into(),
-        ));
+        )
+            .into());
     }
 
     let prev_checksum: String = {
@@ -1626,10 +1626,10 @@ pub async fn revoke_agent(
     tenant: Option<Extension<TenantId>>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let human_ki = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let human_ki = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -1649,7 +1649,8 @@ pub async fn revoke_agent(
         return Err((
             StatusCode::NOT_FOUND,
             "Agent not found or not owned by this user".into(),
-        ));
+        )
+            .into());
     }
 
     // M-3: prune the revoked agent's point from the in-memory ring.
@@ -1875,10 +1876,10 @@ pub async fn list_agents(
     tenant: Option<Extension<TenantId>>,
     headers: HeaderMap,
     Path(human_ki): Path<String>,
-) -> Result<Json<Vec<AgentRecord>>, (StatusCode, String)> {
+) -> Result<Json<Vec<AgentRecord>>, AppError> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let session_human = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let session_human = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -1886,7 +1887,8 @@ pub async fn list_agents(
         return Err((
             StatusCode::UNAUTHORIZED,
             "Cannot list agents for another user".into(),
-        ));
+        )
+            .into());
     }
 
     let st = state.read_or_recover();
@@ -1939,10 +1941,10 @@ pub async fn agent_attestation_challenge(
     tenant: Option<Extension<TenantId>>,
     headers: HeaderMap,
     Json(payload): Json<AgentAttestationChallengeRequest>,
-) -> Result<Json<AgentAttestationChallengeResponse>, (StatusCode, String)> {
+) -> Result<Json<AgentAttestationChallengeResponse>, AppError> {
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let human = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let human = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -1968,7 +1970,8 @@ pub async fn agent_attestation_challenge(
         return Err((
             StatusCode::BAD_REQUEST,
             "PoP public key is a weak/small-order Ed25519 key".into(),
-        ));
+        )
+            .into());
     }
 
     let id = format!("atc_{}", ajwt_support::random_hex_32());
@@ -2016,13 +2019,13 @@ pub async fn agent_pop_challenge(
     tenant: Option<Extension<TenantId>>,
     headers: HeaderMap,
     Json(payload): Json<AgentPopChallengeRequest>,
-) -> Result<Json<AgentPopChallengeResponse>, (StatusCode, String)> {
+) -> Result<Json<AgentPopChallengeResponse>, AppError> {
     if payload.agent_id.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "agent_id required".into()));
+        return Err((StatusCode::BAD_REQUEST, "agent_id required".into()).into());
     }
     let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let human = session_key_image(&headers, &jwt_secret, &tenant_id).ok_or((
+    let human = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
         StatusCode::UNAUTHORIZED,
         "Valid x-sauron-session header required".into(),
     ))?;
@@ -2039,14 +2042,15 @@ pub async fn agent_pop_challenge(
         return Err((
             StatusCode::FORBIDDEN,
             "agent not owned by this session".into(),
-        ));
+        )
+            .into());
     }
     if revoked != 0 {
-        return Err((StatusCode::UNAUTHORIZED, "agent revoked".into()));
+        return Err((StatusCode::UNAUTHORIZED, "agent revoked".into()).into());
     }
     let now = ajwt_support::now_secs();
     if exp_a < now {
-        return Err((StatusCode::UNAUTHORIZED, "agent expired".into()));
+        return Err((StatusCode::UNAUTHORIZED, "agent expired".into()).into());
     }
 
     let challenge = ajwt_support::random_hex_32();
@@ -2074,8 +2078,16 @@ pub async fn agent_pop_challenge(
 #[cfg(test)]
 mod tenant_session_tests {
     use super::*;
+    use crate::any_db::AsAnyConn;
+    use crate::user_session;
 
-    fn session(secret: &[u8], tenant: &str, key_image: &str) -> String {
+    /// Forge a legacy `v2` session — correctly signed, but carrying no epoch.
+    ///
+    /// This is the shape the binary used to mint. It exists here so the routes
+    /// that consume sessions own a test proving they refuse it: a v2 token is
+    /// unrevocable by construction, and honouring one would reopen the hole the
+    /// epoch closes.
+    fn legacy_v2(secret: &[u8], tenant: &str, key_image: &str) -> String {
         use hmac::{Hmac, Mac};
         type HmacSha256 = Hmac<Sha256>;
         let payload = format!("v2|{tenant}|{key_image}|{}", now_secs() + 60);
@@ -2086,13 +2098,72 @@ mod tenant_session_tests {
         format!("{}|{}", payload, hex::encode(mac.finalize().into_bytes()))
     }
 
+    fn headers_with(token: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(user_session::SESSION_HEADER, token.parse().unwrap());
+        h
+    }
+
+    fn db_with_owner(key_image: &str) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init_schema(&conn);
+        conn.execute(
+            "INSERT INTO user_auth_credentials (key_image_hex, ed25519_public_key_b64u, created_at)
+             VALUES (?1, ?2, 1)",
+            rusqlite::params![key_image, format!("pk-{key_image}")],
+        )
+        .unwrap();
+        conn
+    }
+
     #[test]
     fn agent_routes_reject_cross_tenant_human_sessions() {
         let secret = [3u8; 32];
         let ki = "ab".repeat(32);
-        let token = session(&secret, "tenant-a", &ki);
-        assert_eq!(verify_user_session(&secret, &token, "tenant-a"), Some(ki));
-        assert!(verify_user_session(&secret, &token, "tenant-b").is_none());
+        let (token, _) = user_session::issue(&secret, "tenant-a", &ki, 0);
+        assert_eq!(
+            user_session::verify(&secret, &token, "tenant-a").map(|v| v.key_image),
+            Some(ki)
+        );
+        assert!(user_session::verify(&secret, &token, "tenant-b").is_none());
+    }
+
+    /// The regression that made this suite fail to compile: the binary minted
+    /// `v2` while these routes had already moved to `v3`, so every registration
+    /// authenticated with a freshly issued session was refused. Minting and
+    /// verification now share one implementation; this pins the version the
+    /// routes accept so they cannot drift apart again.
+    #[test]
+    fn agent_routes_refuse_the_legacy_unrevocable_session() {
+        let secret = [3u8; 32];
+        let ki = "cd".repeat(32);
+        let conn = db_with_owner(&ki);
+        let mut any = conn.any_conn();
+
+        let legacy = legacy_v2(&secret, "default", &ki);
+        assert!(
+            user_session::key_image_from_headers(
+                &headers_with(&legacy),
+                &secret,
+                "default",
+                &mut any,
+            )
+            .is_none(),
+            "a correctly signed v2 token carries no epoch and must be refused"
+        );
+
+        let epoch = user_session::current_epoch(&mut any, &ki);
+        let (current, _) = user_session::issue(&secret, "default", &ki, epoch);
+        assert_eq!(
+            user_session::key_image_from_headers(
+                &headers_with(&current),
+                &secret,
+                "default",
+                &mut any,
+            ),
+            Some(ki),
+            "a session minted the way the binary mints one must authenticate"
+        );
     }
 }
 
@@ -2904,7 +2975,7 @@ mod owner_mandate_tests {
             &forged,
         )
         .unwrap_err();
-        assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
     /// A mandate signed for one grant cannot be replayed onto a wider one.
@@ -2928,7 +2999,7 @@ mod owner_mandate_tests {
             &sig,
         )
         .unwrap_err();
-        assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
 
         // Same for swapping in a different agent key or stretching the TTL.
         let err = verify_owner_mandate(
@@ -2942,7 +3013,7 @@ mod owner_mandate_tests {
             &sig,
         )
         .unwrap_err();
-        assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
         let err = verify_owner_mandate(
             &mut db.any_conn(),
             "default",
@@ -2954,6 +3025,6 @@ mod owner_mandate_tests {
             &sig,
         )
         .unwrap_err();
-        assert_eq!(err.0, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 }

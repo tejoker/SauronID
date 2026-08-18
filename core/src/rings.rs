@@ -16,6 +16,7 @@
 //! every named ring must admit it and be proven by its own signature, so
 //! authority is the intersection of the named rings.
 
+use crate::error::AppError;
 use std::sync::{Arc, RwLock};
 
 use axum::{
@@ -355,16 +356,17 @@ pub struct MembershipRequest {
     pub agent_public_hex: Option<String>,
 }
 
-type HandlerResult = Result<Json<Value>, (StatusCode, String)>;
+type HandlerResult = Result<Json<Value>, AppError>;
 
-fn require_enabled() -> Result<(), (StatusCode, String)> {
+fn require_enabled() -> Result<(), AppError> {
     if anon_rings_enabled() {
         Ok(())
     } else {
         Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "anonymous rings are disabled (set SAURON_ANON_RINGS=1)".into(),
-        ))
+        )
+            .into())
     }
 }
 
@@ -373,7 +375,7 @@ fn resolve_master_pub(
     db: &mut AnyConn<'_>,
     tenant_id: &str,
     req: &MembershipRequest,
-) -> Result<String, (StatusCode, String)> {
+) -> Result<String, AppError> {
     if let Some(h) = req
         .agent_public_hex
         .as_ref()
@@ -393,7 +395,7 @@ fn resolve_master_pub(
         "SELECT public_key_hex FROM agents WHERE agent_id = ?1 AND tenant_id = ?2",
         sql_params![agent_id, tenant_id],
         |r| r.get::<String>(0),
-        || (StatusCode::NOT_FOUND, "agent not found".to_string()),
+        || AppError::NotFound("agent not found".to_string()),
     )
 }
 
@@ -456,7 +458,7 @@ pub async fn subscribe_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .is_none()
     {
-        return Err((StatusCode::NOT_FOUND, "ring not found".into()));
+        return Err((StatusCode::NOT_FOUND, "ring not found".into()).into());
     }
     let master = resolve_master_pub(&mut db.any_conn(), tenant.as_str(), &req)?;
     let point = subscribe(

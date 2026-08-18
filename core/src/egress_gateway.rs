@@ -20,6 +20,7 @@
 //! beyond opt-in PII redaction of the request body.
 
 use crate::any_db::{AnyConn, AnyRowGet};
+use crate::error::AppError;
 use crate::sql_params;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -379,7 +380,7 @@ fn agent_intent(
     db: &mut AnyConn<'_>,
     tenant_id: &str,
     agent_id: &str,
-) -> Result<serde_json::Value, (StatusCode, String)> {
+) -> Result<serde_json::Value, AppError> {
     // A missing or revoked agent must stay a 401 — `require` keeps "no such row"
     // and "query failed" both mapping to that, where a default-on-missing would
     // have handed back an empty intent and let the call proceed.
@@ -598,12 +599,13 @@ pub async fn issue_egress_capability(
     tenant: Option<axum::Extension<crate::tenancy::TenantId>>,
     headers: HeaderMap,
     Json(req): Json<EgressCapabilityRequest>,
-) -> Result<Json<EgressCapabilityResponse>, (StatusCode, String)> {
+) -> Result<Json<EgressCapabilityResponse>, AppError> {
     if !egress_gateway_enabled() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "egress gateway disabled".into(),
-        ));
+        )
+            .into());
     }
     let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
     let signed_agent = headers
@@ -614,7 +616,8 @@ pub async fn issue_egress_capability(
         return Err((
             StatusCode::UNAUTHORIZED,
             "capability agent_id does not match the signed caller".into(),
-        ));
+        )
+            .into());
     }
     let method = req.method.trim().to_ascii_uppercase();
     reqwest::Method::from_bytes(method.as_bytes())
@@ -630,13 +633,15 @@ pub async fn issue_egress_capability(
         return Err((
             StatusCode::BAD_REQUEST,
             "capability URL must be http(s) without userinfo, query, or fragment".into(),
-        ));
+        )
+            .into());
     }
     if req.body_hash_hex.len() != 64 || !req.body_hash_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err((
             StatusCode::BAD_REQUEST,
             "body_hash_hex must be 32-byte hex".into(),
-        ));
+        )
+            .into());
     }
 
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
@@ -650,7 +655,7 @@ pub async fn issue_egress_capability(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if claim_agent != req.agent_id {
-        return Err((StatusCode::UNAUTHORIZED, "A-JWT agent_id mismatch".into()));
+        return Err((StatusCode::UNAUTHORIZED, "A-JWT agent_id mismatch".into()).into());
     }
     {
         let st = state.read_or_recover();
@@ -693,7 +698,7 @@ pub async fn issue_egress_capability(
             )
         })?,
         Some(v) => v.clone(),
-        None => return Err((StatusCode::UNAUTHORIZED, "A-JWT missing intent".into())),
+        None => return Err((StatusCode::UNAUTHORIZED, "A-JWT missing intent".into()).into()),
     };
 
     let validated = crate::agent_action::validate_agent_action(
@@ -749,7 +754,8 @@ pub async fn issue_egress_capability(
         return Err((
             StatusCode::UNAUTHORIZED,
             "capability would already be expired".into(),
-        ));
+        )
+            .into());
     }
     let capability = format!(
         "egc_{}{}",
@@ -807,12 +813,13 @@ pub async fn agent_egress_proxy(
     tenant: Option<axum::Extension<crate::tenancy::TenantId>>,
     headers: HeaderMap,
     Json(req): Json<EgressProxyRequest>,
-) -> Result<Json<EgressProxyResponse>, (StatusCode, String)> {
+) -> Result<Json<EgressProxyResponse>, AppError> {
     if !egress_gateway_enabled() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "egress gateway disabled (set SAURON_EGRESS_GATEWAY=1)".into(),
-        ));
+        )
+            .into());
     }
     let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
     // Identity comes from the sig header the middleware already verified.
@@ -822,7 +829,7 @@ pub async fn agent_egress_proxy(
         .unwrap_or("")
         .to_string();
     if agent_id.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, "missing x-sauron-agent-id".into()));
+        return Err((StatusCode::UNAUTHORIZED, "missing x-sauron-agent-id".into()).into());
     }
 
     let url = reqwest::Url::parse(&req.url)
@@ -831,7 +838,8 @@ pub async fn agent_egress_proxy(
         return Err((
             StatusCode::BAD_REQUEST,
             "only http/https targets allowed".into(),
-        ));
+        )
+            .into());
     }
     let host = url
         .host_str()
@@ -845,7 +853,7 @@ pub async fn agent_egress_proxy(
     let now = crate::agent_action::now_secs();
 
     // Helper to record + audit a denial, then return the 403.
-    let deny = |reason: String| -> (StatusCode, String) {
+    let deny = |reason: String| -> AppError {
         {
             let st = state.read_or_recover();
             let mut db = st.db.lock().unwrap();
@@ -874,7 +882,15 @@ pub async fn agent_egress_proxy(
                 reason: reason.clone(),
             },
         );
-        (StatusCode::FORBIDDEN, reason)
+        // A stable code rather than a bare 403: an agent that hits the egress
+        // policy needs to tell "this destination is not on my allowlist" apart
+        // from "my credentials are wrong", and the status alone cannot say.
+        AppError::with_hint(
+            StatusCode::FORBIDDEN,
+            "egress_denied",
+            reason,
+            "the destination is outside this agent's egress policy; widen the policy or route the call through an allowed host",
+        )
     };
 
     if !url.username().is_empty() || url.password().is_some() {
@@ -917,7 +933,7 @@ pub async fn agent_egress_proxy(
                     format!(
                         "egress allowlist references credential '{cred_name}' but it is not configured (SAURON_EGRESS_CREDENTIALS)"
                     ),
-                ));
+                ).into());
             }
         },
         None => None,
@@ -997,7 +1013,8 @@ pub async fn agent_egress_proxy(
                 "request body exceeds target policy max_request_bytes ({})",
                 matched.max_request_bytes
             ),
-        ));
+        )
+            .into());
     }
     let original_body_hash = sha256_hex(&original_body);
     let (fwd_body, redacted) = if redact_enabled() {
@@ -1036,7 +1053,7 @@ pub async fn agent_egress_proxy(
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "egress capability is invalid, expired, already used, or not bound to this exact request".into(),
-            ));
+            ).into());
         }
     }
 
@@ -1118,7 +1135,8 @@ pub async fn agent_egress_proxy(
                 format!(
                     "upstream response {len} bytes exceeds SAURON_EGRESS_MAX_RESP_BYTES ({cap})"
                 ),
-            ));
+            )
+                .into());
         }
     }
     let mut buf: Vec<u8> = Vec::new();
@@ -1129,7 +1147,8 @@ pub async fn agent_egress_proxy(
                     return Err((
                         StatusCode::PAYLOAD_TOO_LARGE,
                         format!("upstream response exceeds SAURON_EGRESS_MAX_RESP_BYTES ({cap})"),
-                    ));
+                    )
+                        .into());
                 }
                 buf.extend_from_slice(&chunk);
             }
@@ -1138,7 +1157,8 @@ pub async fn agent_egress_proxy(
                 return Err((
                     StatusCode::BAD_GATEWAY,
                     format!("read response failed: {e}"),
-                ));
+                )
+                    .into());
             }
         }
     }

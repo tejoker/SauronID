@@ -18,7 +18,7 @@ The existing `docs/empirical-comparison.md` keeps the A1-A16 invariant matrix vs
 | P5 | proof-forgery | Period_start 6 months ago. | Server rejects outside the configured freshness/duration window. | dynamic — `proof-stale-period.ts` |
 | R1 | replay | Replay A-JWT JTI. | Second call rejected (UNIQUE `ajwt_used_jtis`). | source-review — full path in `redteam/src/scenarios/jti-replay.ts` (existing); S12 anchor in `replay-ajwt-jti.ts` |
 | R2 | replay | Replay per-call nonce. | UNIQUE`(agent_id, nonce)` on `agent_call_nonces` rejects. | source-review — full path in `call-sig-binding.ts` (existing); S12 anchor in `replay-call-nonce.ts` |
-| R3 | replay | Concurrent burst of `/kyc/retrieve` with same consent_token. | 1 winner, rest 409. | dynamic (when `SAURON_TEST_CONSENT_TOKEN` set) — `replay-consent-token.ts` |
+| R3 | replay | Concurrent burst of `/agent/payment/consume` with the same `authorization_id`. | 1 winner, rest 409. | dynamic — `replay-consent-token.ts` (mints its own authorization, so it always runs) |
 | R4 | replay | POST `/v1/agents/:id/spend` twice with same body. | Two distinct `log_id`s by design (server doesn't dedup; documented). | dynamic — `replay-spend-record.ts` |
 | T1 | cross-tenant | Random-UUID probe on `/v1/policy/{id}`. | Uniform 404 (no existence leak). | dynamic — `tenant-list-leak.ts` |
 | T2 | cross-tenant | GET spend for unknown (agent, policy). | Zeros or uniform 404 (shape-identical). | dynamic — `tenant-spend-leak.ts` |

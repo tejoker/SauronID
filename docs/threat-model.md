@@ -14,7 +14,7 @@ This document states what SauronID protects against, what it does NOT protect ag
 | **Session token forgery** | Constant-time HMAC comparison via `subtle::ConstantTimeEq`. No timing oracle. |
 | **Admin key brute-force** | Production: ≥32-byte random keys required. Dev: warns on known-weak defaults. Read-only vs full-write key roles. |
 | **Cross-origin attacks** | Hard panic if `SAURON_ALLOWED_ORIGINS` resolves to no valid headers; never falls back to permissive CORS. |
-| **Endpoint enumeration / register flooding** | Sliding-window rate limits via `risk::check_and_increment` on `/agent/register`, `/agent/verify`, `/kyc/retrieve`, `/agent/payment/authorize`, `/agent/kyc/consent`. |
+| **Endpoint enumeration / register flooding** | Sliding-window rate limits via `risk::check_and_increment` on `/agent/register`, `/agent/verify`, `/agent/payment/authorize`. |
 | **Tamper-evident audit log** | Merkle commitments anchored to Bitcoin via OpenTimestamps (`opentimestamps` provider in `bitcoin_anchor.rs`); upgraded asynchronously to full Bitcoin block attestations. External parties verify via `ots verify` CLI. |
 
 ## Agent boundary enforcement: where the leash applies
@@ -27,7 +27,7 @@ Every agent-initiated route now carries the per-call DPoP-style signature in enf
 | `/agent/payment/nonexistence/material` | ✓ | — | ✓ **enforced** | — |
 | `/agent/payment/nonexistence/verify` | ✓ | — | ✓ **enforced** | — |
 | `/agent/action/challenge` | ✓ | — | ✓ **enforced** | ✓ |
-| `/agent/kyc/consent` | ✓ | ✓ | ✓ **enforced** | ✓ |
+| `/agent/payment/consume` | ✓ | ✓ | ✓ **enforced** | ✓ |
 | `/agent/vc/issue` | ✓ | ✓ | ✓ **enforced** | — |
 | `/policy/authorize` | ✓ | — | ✓ **enforced** | — |
 | `/agent/egress/log` | ✓ | — | ✓ **enforced** | — |
@@ -38,9 +38,9 @@ Every agent-initiated route now carries the per-call DPoP-style signature in enf
 **Two leashes exist** because they target different threat classes:
 
 - **Per-call DPoP sig** binds the call to method, path, exact body bytes, timestamp, and nonce. Defeats: replay, body tampering, cross-endpoint replay. Currently applied only to `/agent/payment/authorize`.
-- **Action-envelope ring sig** binds the call to a canonical envelope `{action, resource, merchant, amount, nonce}`. Defeats: replay (via `agent_action_nonces`), action substitution. Currently applied to all `/agent/action/*` and `/agent/kyc/consent`.
+- **Action-envelope ring sig** binds the call to a canonical envelope `{action, resource, merchant, amount, nonce}`. Defeats: replay (via `agent_action_nonces`), action substitution. Currently applied to all `/agent/action/*`.
 
-**Gap 1: closed.** Per-call signature is now applied to every agent-initiated route. Empirical test A4 (cross-endpoint A-JWT replay) verifies the failure mode against `/agent/payment/authorize`; the same protection now extends to `/agent/vc/issue`, `/policy/authorize`, `/agent/kyc/consent`, `/agent/payment/nonexistence/*`, `/agent/action/challenge`, and `/agent/egress/log`.
+**Gap 1: closed.** Per-call signature is now applied to every agent-initiated route. Empirical test A4 (cross-endpoint A-JWT replay) verifies the failure mode against `/agent/payment/authorize`; the same protection now extends to `/agent/vc/issue`, `/policy/authorize`, `/agent/payment/consume`, `/agent/payment/nonexistence/*`, `/agent/action/challenge`, and `/agent/egress/log`.
 
 ## Gap 4 enforcement: agent runtime config drift
 
@@ -170,7 +170,7 @@ The STRIDE matrix below decomposes the system into five components and walks eac
 | **Repudiation** | Tenant denies an admin action | Sprint 12 security audit log captures `(actor, action, target, ts)` rows in a tamper-evident HMAC hash chain (per-row `seq`/`prev_hash`/`entry_hash`; verify via `verify_audit_chain`). NOTE: the chain is HMAC-keyed, not on-chain anchored — on-chain anchoring covers `agent_action_receipts`, not the security-audit log | Audit log retention is operator-configured; default 90 d |
 | **Information disclosure** | Cross-tenant data leak | Tenant resolution is header-vs-JWT reconciled: an authenticated admin-JWT `tnt` claim is authoritative and a request header can NEVER override it (mismatch → 403); `core/src/tenancy/mod.rs::resolve_tenant`. Admin queries (agents/receipts/egress/metrics/revoke) are **scoped to the resolved tenant by default**; the cross-tenant aggregate view is opt-in via `SAURON_ADMIN_CROSS_TENANT=1`. `users` (not tenant-scoped) is super-admin-only. | **App-level scoping only — no Postgres RLS / tenant-bound DB role yet** (defense-in-depth TODO). The static admin key is still global: in header-only mode (no admin JWT) the tenant is caller-asserted, so multi-customer deployments MUST use admin-JWT auth or one deployment per customer. |
 | **Information disclosure** | Timing oracle on session HMAC | `subtle::ConstantTimeEq` everywhere on secret comparison | Confirm no string-compare snuck in during a refactor |
-| **Denial of service** | Endpoint flooding | Sliding-window rate limits via `risk::check_and_increment` on `/agent/register`, `/agent/verify`, `/kyc/retrieve`, `/agent/payment/authorize`, `/agent/kyc/consent` (`core/src/risk.rs`) | Per-tenant rate limit; one noisy tenant cannot starve others (redteam `tenant-rate-limit-cross.ts`) |
+| **Denial of service** | Endpoint flooding | Sliding-window rate limits via `risk::check_and_increment` on `/agent/register`, `/agent/verify`, `/agent/payment/authorize` (`core/src/risk.rs`) | Per-tenant rate limit; one noisy tenant cannot starve others (redteam `tenant-rate-limit-cross.ts`) |
 | **Denial of service** | Cryptographic CPU exhaustion (slow proof verify) | ZK verify timeout; rate-limited on `/v1/proofs/verify` | Pentest: submit deeply-nested malformed Groth16 proofs and measure |
 | **Elevation of privilege** | Read-only admin escalates to write | Distinct `read_only_keys` vs full-write key set; scope check at route layer (`core/src/admin.rs` ~L77-85) | Operator misconfiguration risk; covered by startup validator |
 | **Elevation of privilege** | Agent escalates beyond intent_json | `assert_child_scopes_subset_of_parent` on every delegate-issue; intent JSON treated as server-evaluated leash, not metadata | Empirical test A10 + delegation-scope-denied redteam scenario |
@@ -250,7 +250,7 @@ Non-exhaustive list of hostile scenarios pentest should specifically rehearse. E
 | **Network MITM on the bus** | If the SauronID core <-> ZKP issuer / Vault / KMS / Postgres traffic is unencrypted, secrets leak in transit. | Enforce TLS on all internal hops; mTLS between core and issuer is recommended. |
 | **Untrusted ZKP issuer** | If the ZKP issuer is compromised, all VCs it signs can be forged. | Wrap the issuer seed in Vault Transit / KMS (same envelope-encryption pattern as the core). Optional Phase: deploy issuer in a Nitro Enclave. |
 | **Quantum adversary** | Ed25519, ristretto255, secp256k1 signatures are not post-quantum. | Out of scope; revisit when NIST PQC standards stabilize for signing schemes. |
-| **End-user identity verification (KYC/AML)** | SauronID is **agent identity**, not human identity. The bank-KYC, sanctions-screening and PEP modules are optional, opt-in features for legacy deployments and are NOT part of the core agent-binding product surface. | If you need OFAC/PEP screening, set `SAURON_DISABLE_BANK_KYC=0` and wire your own provider into `compliance_screening.rs`. SauronID does not replace your existing IdP. |
+| **End-user identity verification (KYC/AML)** | SauronID is **agent identity**, not human identity. The sanctions-screening and PEP modules are optional, opt-in features and are NOT part of the core agent-binding product surface; the bank-KYC and end-user KYC routes have been removed. | The bank-KYC ingest and end-user KYC routes have been removed entirely. If you need OFAC/PEP screening, wire your own provider into `compliance_screening.rs`. SauronID does not replace your existing IdP. |
 | **Application-layer authorization** | SauronID verifies the agent is who it claims to be and has scope X. It does NOT decide whether the agent's specific request is allowed by your business rules. | Implement application-level RBAC/ABAC on top of `VerifiedCallSig` + `intent_json` extracted from request extensions. |
 | **Physical security of operator host** | If an attacker has physical access to the SauronID host, they can dump RAM, copy disk, install firmware implants. Game over for that host. | Standard datacenter / cloud-region physical security; HSM-backed key storage so even disk dump does not yield raw secrets; consider TEE-resident execution for the most sensitive paths. |
 | **Social engineering of operators** | Phishing / pretexting the human operator into sharing the admin key, approving a malicious config push, signing a malicious DKG share rotation. | Out of scope for code. Operator-level controls: dual-control admin actions (`SAURON_ADMIN_DUAL_CONTROL=1`), hardware MFA on all admin login paths, phishing-resistant FIDO2 keys for the operator's IdP, security awareness training. |
@@ -273,7 +273,7 @@ For the security claims to hold, the operator must guarantee:
 |---|---|
 | Replay protection | Run `redteam` `jti_replay_blocked` scenario. |
 | Per-call signature | Run with `SAURON_REQUIRE_CALL_SIG=1` and execute `call_sig_binding` scenario (4 cases: missing/signed/replay/tamper). |
-| TOCTOU fixes | (Phase 1.3 cargo integration tests TBD.) For now, manual concurrent `curl` against `/kyc/retrieve` with same `consent_token`. |
+| TOCTOU fixes | (Phase 1.3 cargo integration tests TBD.) Covered by empirical A11 and redteam R3: concurrent `/agent/payment/consume` on one `authorization_id`. |
 | OTS anchor | After a merkle commitment, query the `bitcoin_merkle_anchors` row, extract `ots_receipt_blob`, run `ots verify <blob>` against the original digest. |
 | Rate limits | `risk` table grows with each call; metrics endpoint shows hit rates. |
 | Observability | `/metrics` returns Prometheus exposition; `tracing` emits structured logs. |

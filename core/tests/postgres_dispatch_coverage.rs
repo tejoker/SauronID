@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 const SQLITE_ONLY: &[(&str, usize, &str)] = &[
     (
         "repository.rs",
-        33,
+        34,
         "the SQLite half of Repo's own backend match; the Postgres half is sqlx",
     ),
     (
@@ -262,10 +262,11 @@ fn every_upsert_names_its_conflict_target() {
     // The consequence is that a bare `INSERT OR REPLACE` is a syntax error under
     // SAURON_DB_BACKEND=postgres — "syntax error at or near OR" — at whatever
     // moment that code path first runs. Two shipped in the port: the
-    // bank_kyc_links link in `/bank/register`, reachable in production whenever
-    // SAURON_DISABLE_BANK_KYC is not set, and the agents seed in
-    // `/dev/leash/demo`. Neither is covered by the empirical suite, because the
-    // bank flow is flag-gated off and the dev route is not mounted in prod.
+    // bank_kyc_links link in `/bank/register`, and the agents seed in
+    // `/dev/leash/demo`. Neither was covered by the empirical suite, because the
+    // bank flow was flag-gated off and the dev route is not mounted in prod.
+    // `/bank/register` has since been deleted with the rest of the banking
+    // surface; the check stays, because the class of bug is not specific to it.
     //
     // Grep found them once. This keeps them found.
     let mut files = Vec::new();

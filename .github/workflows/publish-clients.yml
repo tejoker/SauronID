@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
       - name: Build and test
         working-directory: mcp-server
@@ -61,6 +61,36 @@ jobs:
           npm ci
           npm test
           npm run build
+      # `mcp-server` depends on `@sauronid/agentic` as `file:../agentic`, which
+      # is right for local development and unresolvable for anyone installing
+      # from npm — published as-is, `npx @sauronid/mcp-server` fails during
+      # install. Pin it to the version in the tree instead.
+      #
+      # That version must already be on npm: `agentic` publishes from
+      # release-publish.yml, not this workflow, so publishing the MCP server
+      # ahead of a matching agentic release produces a package that cannot be
+      # installed. The check below refuses rather than shipping that.
+      - name: Pin the agentic dependency to a published version
+        working-directory: mcp-server
+        run: |
+          ver=$(node -p "require('../agentic/package.json').version")
+          VER="$ver" node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const cur = pkg.dependencies["@sauronid/agentic"];
+            if (!cur.startsWith("file:")) {
+              console.error(`expected a file: dependency, found ${cur}`);
+              process.exit(1);
+            }
+            pkg.dependencies["@sauronid/agentic"] = `^${process.env.VER}`;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          npm view "@sauronid/agentic@^${ver}" version >/dev/null 2>&1 || {
+            echo "@sauronid/agentic@^${ver} is not on npm — publish agentic first (release-publish.yml)" >&2
+            exit 1
+          }
+          echo "pinned @sauronid/agentic to ^${ver}"
+
       - name: Publish
         working-directory: mcp-server
         env:
