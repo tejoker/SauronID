@@ -183,6 +183,14 @@ jobs:
         run: |
           # Never pass on a stale artifact from a previous run / crash.
           rm -f empirical-results.json
+          # Build BEFORE the health-wait. The launch below used to be
+          # `cargo run --release`, which compiles first — so on a cold release
+          # cache the 90 s wait expired mid-build and the step reported "core
+          # never came up", which reads as a boot failure rather than a slow
+          # compile. Nothing else in this job builds the release profile, so the
+          # cache is cold whenever a dependency changed. Compiling here leaves
+          # the wait to measure what it is named for.
+          ( cd ../core && cargo build --locked --release --bin sauron-core )
           # Boot core: fresh DB, call-sig enforced. Raise the GLOBAL (coarse,
           # per-IP) rate limiter so the harness's setup burst isn't throttled —
           # the suite exercises the specific PER-ENDPOINT risk limits via its own
