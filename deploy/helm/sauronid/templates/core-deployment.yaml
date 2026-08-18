@@ -52,8 +52,6 @@ spec:
               value: "0"
             - name: SAURON_ENABLE_LEGACY_OPRF_AUTH
               value: "0"
-            - name: SAURON_ENABLE_UNAUDITED_PAILLIER
-              value: "0"
             - name: SAURON_ENABLE_VOLUNTARY_EGRESS_LOG
               value: "0"
             - name: SAURON_ENABLE_LEGACY_TOKEN_MAC

@@ -48,7 +48,10 @@ impl RuntimeCheck for PiiDetectionCheck {
     }
 
     fn evaluate(&self, ctx: &EvaluationContext) -> Verdict {
-        // Primary: trust the caller's flag.
+        // The server sets this on the egress path from the same rules the
+        // redactor uses, so `true` is a server observation, not an agent claim.
+        // Absent means there was no payload to scan — see the metadata trust
+        // model in `super`.
         if let Some(true) = ctx
             .action
             .metadata
@@ -127,5 +130,27 @@ mod tests {
         a.metadata
             .insert("payload".into(), json!("nothing sensitive here"));
         assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_allow());
+    }
+
+    /// The regex backstop still catches a caller that claims `false` and ships an
+    /// email anyway — the flag is a hint the server usually writes, not the last
+    /// word.
+    #[test]
+    fn a_false_claim_is_still_checked_against_the_payload_body() {
+        let mut a = Action::default();
+        a.metadata.insert("pii_detected".into(), json!(false));
+        a.metadata
+            .insert("payload".into(), json!("reach me at jane@example.com"));
+        assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_deny());
+    }
+
+    /// A caller that claims `false` but ships an email is still caught.
+    #[test]
+    fn a_false_claim_is_still_checked_against_the_payload() {
+        let mut a = Action::default();
+        a.metadata.insert("pii_detected".into(), json!(false));
+        a.metadata
+            .insert("payload".into(), json!("reach me at jane@example.com"));
+        assert!(PiiDetectionCheck::new().evaluate(&ctx(&a)).is_deny());
     }
 }

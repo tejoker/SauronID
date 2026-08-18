@@ -11,6 +11,7 @@ The active SauronID product is agent binding and bounded authorization. Routes n
 - `GET /admin/requests`
 - `GET /admin/site/{name}/users`
 - `GET /admin/site/{name}/zkp_proofs`
+- `POST /admin/users/{key_image}/revoke_sessions` — invalidate every owner session for a key image (leaked-session response; does not touch already-registered agents)
 
 ## Agent Binding
 
@@ -25,7 +26,7 @@ The active SauronID product is agent binding and bounded authorization. Routes n
 
 - `POST /policy/authorize`
 - `POST /agent/payment/authorize`
-- `POST /merchant/payment/consume`
+- `POST /agent/payment/consume` — redeem an authorization exactly once (single-use; concurrent burst yields 1 × 200 + N-1 × 409)
 - `POST /lightning/l402/challenge`
 - `POST /lightning/l402/settle`
 - `GET /paid/agent-score/{agent_id}`
@@ -40,7 +41,6 @@ Merkle roots are anchored through `SAURON_BITCOIN_ANCHOR_PROVIDER=mock` by defau
 
 ## Supporting Proof and Owner Routes
 
-- `POST /oprf`
 - `POST /zkp/proof_material`
 - `POST /user/auth`
 - `GET /user/credential`
@@ -61,4 +61,10 @@ These routes are rejected outside development-like runtimes:
 - **Python KYC adapter** → `archive/banking-2025/KYC/` (not started by default compose / `scripts/dev/start.sh`).
 - **CAMARA, card login, phone verification, consent-popup UIs** → see `archive/banking-2025/` (e.g. `archive/banking-2025/camara/`, archived portal flows per `archive/banking-2025/README.md`).
 
-Rust core still exposes `/kyc/*` and `/agent/kyc/*` routes for **consent + retrieval** against the in-process DB; those are **not** the archived Python service. If you want those removed too, that is a separate core refactor.
+The Rust core no longer exposes any of them. `/oprf`, `/register` (KYC deposit),
+`/bank/register`, `/register/bank`, `/kyc/request`, `/kyc/consent`,
+`/kyc/consent_info/{request_id}`, `/kyc/retrieve` and `/agent/kyc/consent` were
+deleted along with their handlers, the `SAURON_DISABLE_BANK_KYC` /
+`SAURON_DISABLE_USER_KYC` flags that gated them, and the ~2,100 lines of
+`main.rs` they occupied. SauronID binds agents, not human identities; human KYC
+belongs in the operator's own IdP.

@@ -59,7 +59,7 @@ fn build_binding_state(test_name: &str) -> (Arc<DbHandle>, Arc<PolicyStore>) {
 const FX_MINIMAL: &str = include_str!("../../schemas/fixtures/policy_minimal.yaml");
 
 fn seed_agent(db: &Arc<DbHandle>, tenant_id: &str, agent_id: &str) {
-    let conn = db.lock().unwrap();
+    let conn = db.lock_sqlite().unwrap();
     conn.execute(
         "INSERT INTO agents
          (agent_id, human_key_image, agent_checksum, issued_at, expires_at, tenant_id)

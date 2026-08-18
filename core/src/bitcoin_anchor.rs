@@ -20,7 +20,7 @@
 //! `ots verify` CLI against the original merkle root. SauronID exposes the proof
 //! via an HTTP endpoint (operator may add a thin route over `bitcoin_merkle_anchors`).
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -193,7 +193,7 @@ impl BitcoinAnchorService {
             now.to_string().as_bytes(),
         ]);
 
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
         conn.any_conn().execute(
             "INSERT INTO bitcoin_merkle_anchors
              (anchor_id, merkle_root_hex, provider, network, op_return_hex, txid, broadcast, no_real_money, created_at)
@@ -282,7 +282,7 @@ impl BitcoinAnchorService {
             calendar_url.as_bytes(),
         ]);
 
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
         conn.any_conn().execute(
             "INSERT INTO bitcoin_merkle_anchors
              (anchor_id, merkle_root_hex, provider, network, op_return_hex, txid, broadcast, no_real_money, created_at, ots_calendar_url, ots_receipt_blob, ots_upgraded)
@@ -335,7 +335,7 @@ pub fn spawn_ots_upgrader(db: Arc<DbHandle>) {
             let pending: Vec<(String, String, String)> = match db.lock() {
                 // Best-effort: a failed poll is retried on the next tick, so the
                 // worker skips the round rather than dying.
-                Ok(conn) => conn
+                Ok(mut conn) => conn
                     .any_conn()
                     .query_map(
                         "SELECT anchor_id, merkle_root_hex, ots_calendar_url
@@ -364,7 +364,7 @@ pub fn spawn_ots_upgrader(db: Arc<DbHandle>) {
                 match client.get(&url).send().await {
                     Ok(r) if r.status().is_success() => match r.bytes().await {
                         Ok(b) => {
-                            if let Ok(conn) = db.lock() {
+                            if let Ok(mut conn) = db.lock() {
                                 let _ = conn.any_conn().execute(
                                     "UPDATE bitcoin_merkle_anchors
                                      SET ots_receipt_blob = ?1, ots_upgraded = 1, broadcast = 1
@@ -447,7 +447,8 @@ mod tests {
         assert_eq!(receipt.network, "regtest-mock");
         assert!(receipt.no_real_money);
 
-        let conn = db_handle.lock().unwrap();
+        // lock_sqlite: asserting on the SQLite handle this test built.
+        let conn = db_handle.lock_sqlite().unwrap();
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM bitcoin_merkle_anchors WHERE anchor_id = ?1 AND no_real_money = 1",

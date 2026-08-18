@@ -63,7 +63,6 @@ services:
       # Unreviewed/legacy protocol surfaces remain fail-closed.
       - SAURON_ENABLE_LEGACY_OPRF=0
       - SAURON_ENABLE_LEGACY_OPRF_AUTH=0
-      - SAURON_ENABLE_UNAUDITED_PAILLIER=0
       - SAURON_ENABLE_VOLUNTARY_EGRESS_LOG=0
       - SAURON_ENABLE_LEGACY_TOKEN_MAC=0
       - SAURON_ENABLE_GROTH16=0

@@ -117,10 +117,14 @@ fn healthcare_requires_two_clinician_signatures() {
     assert!(evaluate(&c, &ctx(&a, 0.0, &[], 1000, "12:00")).is_deny());
 }
 
+/// The devtools fixture declares `max_payload_bytes`, `max_chain_depth` and a
+/// `domain_denylist`. Before the enforcement path populated `Action.metadata`,
+/// none of those three checks could see anything and all three allowed
+/// unconditionally — they compiled, appeared in the trace, and could not fire.
+/// This pins both directions now that the server fills the bag.
 #[test]
-fn devtools_compiles_and_allows_no_external_call() {
+fn devtools_checks_fire_once_the_action_carries_its_facts() {
     let c = compile(parse(FX_DEVTOOLS).unwrap()).unwrap();
-    // pick a tool from the allowlist
     let tool = c
         .raw
         .binding
@@ -129,12 +133,51 @@ fn devtools_compiles_and_allows_no_external_call() {
         .and_then(|v| v.first())
         .cloned()
         .unwrap_or_else(|| "tool".to_string());
-    let a = Action {
-        action_id: "a1".into(),
-        tool,
-        ..Default::default()
+
+    let declared = |bytes: u64, depth: u64, domain: &str| {
+        let mut a = Action {
+            action_id: "a1".into(),
+            tool: tool.clone(),
+            ..Default::default()
+        };
+        a.metadata
+            .insert("payload_bytes".into(), serde_json::json!(bytes));
+        a.metadata
+            .insert("chain_depth".into(), serde_json::json!(depth));
+        a.metadata
+            .insert("target_domain".into(), serde_json::json!(domain));
+        a
     };
-    assert!(evaluate(&c, &ctx(&a, 0.0, &[], 1000, "12:00")).is_allow());
+
+    // In limits, off the denylist → allowed.
+    let ok = declared(4096, 0, "localhost");
+    let verdict = evaluate(&c, &ctx(&ok, 0.0, &[], 1000, "12:00"));
+    assert!(
+        verdict.is_allow(),
+        "in-limits action must pass: {verdict:?}"
+    );
+
+    // Over the 1 MiB payload cap → denied. This is the assertion that would have
+    // passed vacuously before, because the check never received a payload size.
+    let big = declared(2 * 1_048_576, 0, "localhost");
+    assert!(
+        evaluate(&c, &ctx(&big, 0.0, &[], 1000, "12:00")).is_deny(),
+        "payload over max_payload_bytes must be denied"
+    );
+
+    // Past the chain-depth cap → denied.
+    let deep = declared(4096, 99, "localhost");
+    assert!(
+        evaluate(&c, &ctx(&deep, 0.0, &[], 1000, "12:00")).is_deny(),
+        "chain_depth over max_chain_depth must be denied"
+    );
+
+    // On the denylist → denied.
+    let bad = declared(4096, 0, "pastebin.com");
+    assert!(
+        evaluate(&c, &ctx(&bad, 0.0, &[], 1000, "12:00")).is_deny(),
+        "a denylisted destination must be denied"
+    );
 }
 
 #[test]

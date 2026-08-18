@@ -8,7 +8,7 @@
 //! the only non-deterministic field is `generated_at` (intentionally
 //! excluded from the canonical-form signature — see `report.rs`).
 
-use crate::any_db::{AnyRowGet, AsAnyConn, SqlValue};
+use crate::any_db::{AnyRowGet, SqlValue};
 use crate::sql_params;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -86,7 +86,7 @@ pub async fn build_audit_report(
     };
 
     // ── 1. Receipts in the period ──────────────────────────────────
-    let conn = db.lock().map_err(|e| AuditError::Storage(e.to_string()))?;
+    let mut conn = db.lock().map_err(|e| AuditError::Storage(e.to_string()))?;
     let canonical_agents = req.agent_ids.clone().unwrap_or_default();
 
     // Pull receipts. When agent_ids is empty we pull every agent for
@@ -493,7 +493,9 @@ mod tests {
     }
 
     fn seed_receipt(db: &DbHandle, tenant: &str, agent: &str, ts: i64, idx: u32) {
-        let conn = db.lock().unwrap();
+        // lock_sqlite: test fixture writing raw rusqlite into the SQLite handle
+        // these tests build.
+        let conn = db.lock_sqlite().unwrap();
         conn.execute(
             "INSERT INTO agent_action_receipts
              (receipt_id, action_hash, agent_id, ring_key_image_hex,
@@ -511,7 +513,8 @@ mod tests {
     }
 
     fn seed_stats(db: &DbHandle, tenant: &str, metric: &str, claimed: i64, period: (i64, i64)) {
-        let conn = db.lock().unwrap();
+        // lock_sqlite: raw-rusqlite fixture against the SQLite handle under test.
+        let conn = db.lock_sqlite().unwrap();
         conn.execute(
             "INSERT INTO customer_stats
              (tenant_id, agent_id, metric_id, claimed_value, n_records,

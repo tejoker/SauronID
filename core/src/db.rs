@@ -46,12 +46,29 @@ pub struct DbHandle {
     /// take `lock()` and speak rusqlite, so during the migration both are live
     /// and each converted call site moves to `any()`. When the last one moves,
     /// the SQLite pool becomes the dev-only default rather than a sidecar.
-    pg_pool: Option<Pool<PostgresConnectionManager<postgres::NoTls>>>,
+    pg_pool: Option<Pool<PostgresConnectionManager<PgTls>>>,
 }
 
 impl DbHandle {
-    /// Pooled SQLite connection. The un-migrated path.
-    pub fn lock(&self) -> Result<PooledConnection<SqliteConnectionManager>, PoolTimeout> {
+    /// A pooled connection to the configured backend.
+    ///
+    /// Was the SQLite-only accessor; it is now an alias for [`conn`], which is
+    /// what made the port atomic. Every call site acquires here, so pointing
+    /// this one function at the dispatching guard moved all of them at once —
+    /// and the compiler then found each site that still spoke rusqlite
+    /// directly, because `DbConn` has no `query_row`/`execute` of its own.
+    pub fn lock(&self) -> Result<DbConn, PoolTimeout> {
+        self.conn()
+    }
+
+    /// A pooled *SQLite* connection, whatever backend is configured.
+    ///
+    /// Using this asserts "this does not work on Postgres and is not meant
+    /// to". There are two such cases, both deliberate: schema initialisation
+    /// (Postgres takes its schema from `migrations/postgres/`, not from
+    /// `init_schema`) and SQLite's online backup API, which has no Postgres
+    /// equivalent. Every caller says which one it is at the site.
+    pub fn lock_sqlite(&self) -> Result<PooledConnection<SqliteConnectionManager>, PoolTimeout> {
         self.pool.get().map_err(PoolTimeout)
     }
 
@@ -75,7 +92,7 @@ impl DbHandle {
                 f(&mut AnyConn::Postgres(&mut client))
             }
             None => {
-                let conn = self.lock().map_err(|e| e.to_string())?;
+                let conn = self.lock_sqlite().map_err(|e| e.to_string())?;
                 f(&mut AnyConn::Sqlite(&conn))
             }
         }
@@ -102,8 +119,24 @@ impl DbHandle {
     /// borrowed mutably.
     pub fn conn(&self) -> Result<DbConn, PoolTimeout> {
         match &self.pg_pool {
-            Some(pool) => Ok(DbConn::Postgres(Box::new(pool.get().map_err(PoolTimeout)?))),
-            None => Ok(DbConn::Sqlite(self.lock()?)),
+            // `pool.get()` may open a connection or reap a broken one, and both
+            // run the blocking driver — so the acquisition needs the same
+            // treatment as a query.
+            Some(pool) => Ok(DbConn::Postgres(Some(Box::new(
+                crate::any_db::blocking(|| pool.get()).map_err(PoolTimeout)?,
+            )))),
+            None => Ok(DbConn::Sqlite(self.lock_sqlite()?)),
+        }
+    }
+}
+
+impl Drop for DbHandle {
+    fn drop(&mut self) {
+        // Dropping the r2d2 pool closes every idle Postgres client, and each
+        // close runs the blocking driver. At process shutdown that happens on a
+        // runtime thread, so it needs the same guard as a query.
+        if let Some(pool) = self.pg_pool.take() {
+            crate::any_db::blocking(move || drop(pool));
         }
     }
 }
@@ -120,7 +153,44 @@ impl DbHandle {
 /// are all of them today.
 pub enum DbConn {
     Sqlite(PooledConnection<SqliteConnectionManager>),
-    Postgres(Box<PooledConnection<PostgresConnectionManager<postgres::NoTls>>>),
+    /// `Option` only so [`Drop`] can take the client out and release it from a
+    /// context where blocking is allowed; it is `Some` for the guard's whole
+    /// usable life.
+    Postgres(Option<Box<PooledConnection<PostgresConnectionManager<PgTls>>>>),
+}
+
+impl Drop for DbConn {
+    fn drop(&mut self) {
+        // Returning a pooled Postgres client can close it, and closing runs the
+        // blocking driver's `block_on`. Dropping a guard at the end of an async
+        // handler would then panic — the same failure as an unwrapped query,
+        // arriving during unwind. Only the Postgres arm needs this; the SQLite
+        // guard's drop is pure bookkeeping.
+        if let DbConn::Postgres(slot) = self {
+            if let Some(client) = slot.take() {
+                use tokio::runtime::{Handle, RuntimeFlavor};
+                match Handle::try_current() {
+                    // Multi-thread runtime: hand the thread to the blocking
+                    // driver for the duration of the close.
+                    Ok(h) if h.runtime_flavor() != RuntimeFlavor::CurrentThread => {
+                        tokio::task::block_in_place(move || drop(client));
+                    }
+                    // Current-thread runtime: `block_in_place` is unavailable and
+                    // dropping inline runs the driver's `block_on` on the very
+                    // thread driving the reactor, which panics with "cannot start
+                    // a runtime from within a runtime". In a destructor that is
+                    // not a catchable panic — it aborts the process. So the
+                    // client goes to a plain OS thread, off the reactor, where
+                    // the close can block as much as it likes.
+                    Ok(_) => {
+                        std::thread::spawn(move || drop(client));
+                    }
+                    // No runtime at all: nothing to block, so close inline.
+                    Err(_) => drop(client),
+                }
+            }
+        }
+    }
 }
 
 impl DbConn {
@@ -131,7 +201,9 @@ impl DbConn {
     pub fn any_conn(&mut self) -> AnyConn<'_> {
         match self {
             DbConn::Sqlite(c) => AnyConn::Sqlite(c),
-            DbConn::Postgres(c) => AnyConn::Postgres(c),
+            DbConn::Postgres(c) => {
+                AnyConn::Postgres(c.as_mut().expect("guard used after its own Drop"))
+            }
         }
     }
 
@@ -156,45 +228,120 @@ impl DbConn {
     }
 }
 
+/// TLS connector for the blocking Postgres pool.
+///
+/// One concrete type for every `sslmode`, because `PostgresConnectionManager` is
+/// generic over the connector and [`DbHandle`] has to name a single one.
+/// `SslMode::Disable` simply never asks it for a session, so carrying the
+/// connector costs nothing on a plaintext link.
+pub type PgTls = tokio_postgres_rustls::MakeRustlsConnect;
+
+/// Normalise libpq `sslmode` values that `tokio-postgres` does not parse.
+///
+/// `tokio-postgres` accepts only `disable`, `prefer` and `require`; the two
+/// modes a managed provider actually hands you — `verify-ca` and `verify-full` —
+/// are a parse ERROR. That error used to be swallowed into "staying on SQLite",
+/// which is how a deployment could end up with `Repo` on Postgres (sqlx parses
+/// them fine) and every `lock()` call site on the SQLite sidecar at the same
+/// time: two backends, one process, silently.
+///
+/// Mapping them to `require` is safe in the strict direction. Under libpq
+/// `require` encrypts but does NOT verify the chain; under rustls the
+/// certificate is verified against the root store regardless, and the hostname
+/// is checked in `TlsConnect::connect`. So `require` here is what libpq calls
+/// `verify-full`, and promoting `verify-ca`/`verify-full` to it does not weaken
+/// anything. The reverse mapping would, which is why it is not done.
+fn normalise_sslmode(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    let mut rest = url;
+    while let Some(at) = rest.to_ascii_lowercase().find("sslmode=") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + "sslmode=".len()..];
+        let stop = after.find(['&', '?', ' ']).unwrap_or(after.len());
+        let value = after[..stop].to_ascii_lowercase();
+        let mapped = match value.as_str() {
+            "verify-ca" | "verify-full" => "require",
+            other => other,
+        };
+        out.push_str("sslmode=");
+        out.push_str(mapped);
+        rest = &after[stop..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Build the Postgres pool when the deployment asks for it.
 ///
-/// Returns None (and logs) rather than failing when the backend is not selected
-/// or the URL is absent, so a SQLite deployment is unaffected.
-fn open_pg_pool(pool_size: u32) -> Option<Pool<PostgresConnectionManager<postgres::NoTls>>> {
+/// **The runtime must be multi-threaded.** `postgres` is the blocking driver, so
+/// closing a connection calls `block_on`. On a current-thread runtime that runs
+/// on the very thread driving the reactor and panics with "cannot start a
+/// runtime from within a runtime" — and because the close happens in `Drop`,
+/// it aborts the process instead of failing a request. `#[tokio::main]` is
+/// multi-threaded by default, which is why the server is fine; anything
+/// embedding this handle under `flavor = "current_thread"` is not.
+///
+/// `Ok(None)` means "this deployment did not ask for Postgres". Every other
+/// failure is an `Err`: once `SAURON_DB_BACKEND=postgres` is set, falling back
+/// to SQLite is not a degraded mode, it is a second database that `Repo` — which
+/// builds its own sqlx pool from the same URL — is not using. The caller turns
+/// this into a refusal to start.
+fn open_pg_pool(pool_size: u32) -> Result<Option<Pool<PostgresConnectionManager<PgTls>>>, String> {
     let backend = std::env::var("SAURON_DB_BACKEND")
         .unwrap_or_default()
         .to_ascii_lowercase();
     if !matches!(backend.as_str(), "postgres" | "pg" | "postgresql") {
-        return None;
+        return Ok(None);
     }
     let url = match std::env::var("DATABASE_URL") {
         Ok(u) if !u.trim().is_empty() => u,
-        _ => {
-            tracing::error!(
-                target: "sauron::db",
-                "SAURON_DB_BACKEND=postgres but DATABASE_URL is unset; staying on SQLite"
-            );
-            return None;
-        }
+        _ => return Err("SAURON_DB_BACKEND=postgres but DATABASE_URL is unset".into()),
     };
-    let config = match url.parse::<postgres::Config>() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(target: "sauron::db", error = %e, "DATABASE_URL is not a valid postgres config; staying on SQLite");
-            return None;
-        }
-    };
-    let manager = PostgresConnectionManager::new(config, postgres::NoTls);
-    match Pool::builder().max_size(pool_size).build(manager) {
-        Ok(pool) => {
-            tracing::info!(target: "sauron::db", pool_size, "postgres pool ready");
-            Some(pool)
-        }
-        Err(e) => {
-            tracing::error!(target: "sauron::db", error = %e, "could not build the postgres pool; staying on SQLite");
-            None
-        }
+
+    let normalised = normalise_sslmode(&url);
+    let config = normalised
+        .parse::<postgres::Config>()
+        .map_err(|e| format!("DATABASE_URL is not a valid postgres config: {e}"))?;
+
+    // rustls needs a process-wide crypto provider. Another dependency may have
+    // installed one already (reqwest's platform verifier does), and a second
+    // install is an error rather than a no-op — so an existing provider is the
+    // success case, not a failure.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
     }
+
+    let (tls, cert_errors) = PgTls::with_native_certs().map_err(|errors| {
+        format!(
+            "no usable certificates in the system trust store, so a TLS connection to Postgres cannot be verified: {errors:?}"
+        )
+    })?;
+    if !cert_errors.is_empty() {
+        // Some roots failed to parse but others loaded. Worth saying out loud —
+        // a thinned trust store is how "verified" quietly becomes "verified
+        // against less than you thought".
+        tracing::warn!(
+            target: "sauron::db",
+            errors = ?cert_errors,
+            "some native root certificates could not be loaded"
+        );
+    }
+
+    let ssl_mode = format!("{:?}", config.get_ssl_mode()).to_ascii_lowercase();
+    let manager = PostgresConnectionManager::new(config, tls);
+    let pool = Pool::builder()
+        .max_size(pool_size)
+        .connection_timeout(pool_timeout())
+        .build(manager)
+        .map_err(|e| format!("could not build the postgres pool: {e}"))?;
+
+    tracing::info!(
+        target: "sauron::db",
+        pool_size,
+        %ssl_mode,
+        "postgres pool ready"
+    );
+    Ok(Some(pool))
 }
 
 /// Opens persistent SQLite (path from DATABASE_PATH, default ./sauron.db).
@@ -250,11 +397,21 @@ pub fn open_db_at_with_timeout(path: &str, pool_size: u32, timeout: Duration) ->
         )
     });
 
+    // `build_unchecked`, not `build`: r2d2's `build` blocks until it has
+    // established `max_size` connections and gives up after `connection_timeout`
+    // — the same budget the request path uses to shed load. Those are different
+    // jobs. `pool_exhaustion_503` deliberately passes a 200 ms timeout so a
+    // saturated pool answers quickly, and on a busy machine that same 200 ms was
+    // not always enough to open the file, so the pool failed to build and the
+    // test panicked instead of exercising what it tests.
+    //
+    // Construction no longer waits for connections; the `pool.get()` immediately
+    // below still runs `init_schema`, so a genuinely unusable path is still a
+    // startup failure rather than a deferred surprise.
     let pool = Pool::builder()
         .max_size(pool_size)
         .connection_timeout(timeout)
-        .build(manager)
-        .unwrap_or_else(|e| panic!("cannot open SQLite pool at '{}': {}", path, e));
+        .build_unchecked(manager);
 
     {
         let conn = pool.get().unwrap_or_else(|e| {
@@ -268,7 +425,12 @@ pub fn open_db_at_with_timeout(path: &str, pool_size: u32, timeout: Duration) ->
 
     tracing::info!(target: "sauron::db", %path, pool_size, "SQLite opened");
 
-    let pg_pool = open_pg_pool(pool_size);
+    // Fail closed. A Postgres deployment whose blocking pool did not come up is
+    // not "running on SQLite" — `Repo` builds its own sqlx pool from the same
+    // URL and would still be on Postgres, so the process would serve two
+    // databases at once and silently split the writes between them.
+    let pg_pool = open_pg_pool(pool_size)
+        .unwrap_or_else(|reason| panic!("[FATAL] SAURON_DB_BACKEND=postgres: {reason}"));
     DbHandle { pool, pg_pool }
 }
 
@@ -314,7 +476,20 @@ pub fn init_schema(conn: &Connection) {
         CREATE TABLE IF NOT EXISTS user_auth_credentials (
             key_image_hex          TEXT PRIMARY KEY,
             ed25519_public_key_b64u TEXT UNIQUE NOT NULL,
-            created_at             INTEGER NOT NULL
+            created_at             INTEGER NOT NULL,
+            -- Session revocation. The owner session is a stateless HMAC with a
+            -- one-hour lifetime, so before this column existed a leaked session
+            -- could not be shortened: nothing on the server was consulted, so
+            -- there was nothing to change. The epoch is folded into the signed
+            -- payload, so incrementing it invalidates every session ever issued
+            -- for this owner on the next request.
+            --
+            -- Per-owner rather than per-session on purpose: the response to a
+            -- suspected leak is "cut this owner off", and a per-session table
+            -- would need a row per login for a capability that expires in an
+            -- hour anyway. A single integer costs one indexed read on a row the
+            -- session path already has to touch.
+            session_epoch          INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS user_auth_challenges (
             challenge_id  TEXT PRIMARY KEY,
@@ -936,18 +1111,6 @@ pub fn init_schema(conn: &Connection) {
         -- a new aggregation row will corrupt the running sum. Operators
         -- MUST treat the (cohort, metric, period) tuple as bound to a
         -- single public key for the lifetime of the row.
-        CREATE TABLE IF NOT EXISTS he_aggregations (
-            aggregation_id    TEXT PRIMARY KEY,
-            cohort_id         TEXT NOT NULL,
-            metric_id         TEXT NOT NULL,
-            period_start      INTEGER NOT NULL,
-            pk_id             TEXT NOT NULL,
-            sum_ciphertext_b64 TEXT NOT NULL,
-            n_contributions   INTEGER NOT NULL DEFAULT 0,
-            last_updated      INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_he_agg_cohort
-            ON he_aggregations(cohort_id, period_start);
 
         -- S10: server-side agent → policy binding registry.
         -- One row per (tenant_id, agent_id); last-write-wins via UPSERT.
@@ -1080,6 +1243,13 @@ pub fn init_schema(conn: &Connection) {
     );
     let _ = conn.execute(
         "ALTER TABLE bitcoin_merkle_anchors ADD COLUMN ots_upgraded INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+
+    // Session revocation epoch, for databases created before the column existed.
+    // Bumping it invalidates every session already issued for that owner.
+    let _ = conn.execute(
+        "ALTER TABLE user_auth_credentials ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0",
         [],
     );
 
@@ -1418,9 +1588,11 @@ mod pool_timeout_tests {
             pool,
             pg_pool: None,
         };
-        let _held = handle.lock().expect("first connection is free");
+        let _held = handle.lock_sqlite().expect("first connection is free");
 
-        let err = handle.lock().expect_err("a saturated pool must fail");
+        let err = handle
+            .lock_sqlite()
+            .expect_err("a saturated pool must fail");
         let shown = err.to_string();
         assert!(shown.contains("pool exhausted"), "got: {shown}");
         assert!(!shown.contains(POOL_TIMEOUT_MARKER), "got: {shown}");
@@ -1439,7 +1611,7 @@ mod durability_tests {
             std::thread::current().name().unwrap_or("test")
         ));
         let db = open_db_at(path.to_str().unwrap(), 1);
-        let conn = db.lock().expect("connection");
+        let conn = db.lock_sqlite().expect("connection");
         let synchronous: i64 = conn
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .expect("read synchronous pragma");
@@ -1449,5 +1621,67 @@ mod durability_tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+}
+
+#[cfg(test)]
+mod pg_tls_tests {
+    use super::normalise_sslmode;
+
+    /// The two modes a managed provider actually hands you. `tokio-postgres`
+    /// rejects both at parse time, and that rejection used to mean "silently run
+    /// on SQLite while `Repo` runs on Postgres".
+    #[test]
+    fn verify_modes_are_promoted_to_require() {
+        for url in [
+            "postgres://u:p@host/db?sslmode=verify-full",
+            "postgres://u:p@host/db?sslmode=verify-ca",
+            "postgres://u:p@host/db?sslmode=VERIFY-FULL",
+        ] {
+            let out = normalise_sslmode(url);
+            assert!(out.ends_with("sslmode=require"), "{url} -> {out}");
+            assert!(out.parse::<postgres::Config>().is_ok(), "{out}");
+        }
+    }
+
+    /// Modes `tokio-postgres` already understands must survive untouched — in
+    /// particular `disable`, because silently promoting it to `require` would
+    /// break every plaintext local deployment.
+    #[test]
+    fn understood_modes_are_left_alone() {
+        for mode in ["disable", "prefer", "require"] {
+            let url = format!("postgres://u:p@host/db?sslmode={mode}");
+            assert_eq!(normalise_sslmode(&url), url);
+        }
+    }
+
+    /// The rewrite must not eat the rest of the query string, and must cope with
+    /// `sslmode` appearing anywhere in it.
+    #[test]
+    fn other_parameters_are_preserved() {
+        let out = normalise_sslmode(
+            "postgres://u:p@host/db?application_name=sauron&sslmode=verify-full&connect_timeout=5",
+        );
+        assert_eq!(
+            out,
+            "postgres://u:p@host/db?application_name=sauron&sslmode=require&connect_timeout=5"
+        );
+        assert!(out.parse::<postgres::Config>().is_ok());
+
+        // No sslmode at all: unchanged, and still parses. tokio-postgres then
+        // defaults to `prefer`.
+        let plain = "postgres://u:p@host/db";
+        assert_eq!(normalise_sslmode(plain), plain);
+    }
+
+    /// A URL with no `sslmode` defaults to `prefer`, which negotiates TLS when
+    /// the server offers it. The old code could not have done this at all.
+    #[test]
+    fn the_default_mode_still_attempts_tls() {
+        let cfg: postgres::Config = "postgres://u:p@host/db".parse().unwrap();
+        assert!(matches!(
+            cfg.get_ssl_mode(),
+            postgres::config::SslMode::Prefer
+        ));
     }
 }

@@ -60,7 +60,13 @@ export function signPopJws(challenge: string, privateKey: KeyObject): string {
     return `${signingInput}.${signature}`;
 }
 
-function runAgentActionTool(args: string[]): string {
+/** Run the agent-action-tool, preferring a built binary and falling back to cargo.
+ *
+ * Exported because scenarios that must sign `/agent/action/challenge` themselves
+ * — anything running under `SAURON_REQUIRE_CALL_SIG=1`, where
+ * `buildAgentActionProof` cannot be used since it sends no call signature —
+ * still need the same binary resolution. */
+export function runAgentActionTool(args: string[]): string {
     const configured = process.env.AGENT_ACTION_TOOL;
     const direct = configured || resolve(process.cwd(), "../core/target/debug/agent-action-tool");
     if (existsSync(direct)) {
@@ -222,11 +228,21 @@ export class CoreApi {
         return this.post<Record<string, unknown>>("/agent/payment/authorize", body);
     }
 
-    async merchantPaymentConsume(
-        body: Record<string, unknown>
+    /// Redeem a payment authorization. Single-use: the second call 409s.
+    ///
+    /// This pointed at `/merchant/payment/consume`, a route that was documented
+    /// in the route map but never existed, so every call 404'd. The real
+    /// endpoint lives under `/agent/` because that prefix is what the
+    /// default-deny call-signature layer covers.
+    async agentPaymentConsume(
+        authorizationId: string,
+        headers: Record<string, string> = {}
     ): Promise<{ status: number; data: Record<string, unknown>; raw: string }> {
-        requireAgentAction("/merchant/payment/consume", body);
-        return this.post<Record<string, unknown>>("/merchant/payment/consume", body);
+        return this.post<Record<string, unknown>>(
+            "/agent/payment/consume",
+            { authorization_id: authorizationId },
+            headers
+        );
     }
 
     async agentVcIssue(
@@ -268,26 +284,6 @@ export class CoreApi {
         return { allowed: !!data.allowed, reason: data.reason };
     }
 
-    async kycRequest(siteName: string, requestedClaims: string[]): Promise<string> {
-        const { status, data, raw } = await this.post<{ request_id?: string }>("/kyc/request", {
-            site_name: siteName,
-            requested_claims: requestedClaims,
-        });
-        if (status !== 200 || !data.request_id) throw new Error(`kyc/request ${status}: ${raw}`);
-        return data.request_id;
-    }
-
-    async agentKycConsent(body: {
-        ajwt: string;
-        site_name: string;
-        request_id: string;
-        pop_challenge_id?: string;
-        pop_jws?: string;
-        agent_action: Record<string, unknown>;
-    }): Promise<{ status: number; data: Record<string, unknown>; raw: string }> {
-        requireAgentAction("/agent/kyc/consent", body);
-        return this.post<Record<string, unknown>>("/agent/kyc/consent", body);
-    }
 }
 
 export function randSuffix(): string {

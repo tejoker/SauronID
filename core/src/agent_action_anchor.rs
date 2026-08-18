@@ -37,7 +37,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ajwt_support::random_hex_32;
-use crate::any_db::{AnyRow, AsAnyConn};
+use crate::any_db::AnyRow;
 use crate::sql_params;
 use crate::state::ServerState;
 use crate::sync_recover::RwLockRecover;
@@ -171,7 +171,7 @@ pub async fn anchor_pending_actions(
 ) -> Result<Option<String>, String> {
     let tenants: Vec<String> = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn().query_map(
             "SELECT DISTINCT tenant_id FROM agent_action_receipts ORDER BY tenant_id",
             sql_params![],
@@ -198,7 +198,7 @@ pub async fn anchor_pending_actions_for_tenant(
     // `to_created_at` we've already covered.
     let (last_to, last_receipt_id): (i64, String) = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn()
             .query_row(
                 "SELECT to_created_at, to_receipt_id FROM agent_action_anchors
@@ -215,7 +215,7 @@ pub async fn anchor_pending_actions_for_tenant(
     // 2. Pull all receipts after that watermark, ordered.
     let receipts: Vec<AnchoredReceipt> = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn().query_map(
             "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
                         policy_version, ajwt_jti, pop_jkt, status, signature,
@@ -255,8 +255,8 @@ pub async fn anchor_pending_actions_for_tenant(
     //    it is a hash chain.
     let audit_head = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
-        crate::middleware::audit_log::audit_chain_head(&conn)
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
+        crate::middleware::audit_log::audit_chain_head(&mut conn.any_conn())
     };
     let mut leaves: Vec<[u8; 32]> = receipts.iter().map(leaf_hash_v2).collect();
     if let Some((seq, ref entry_hash)) = audit_head {
@@ -281,7 +281,7 @@ pub async fn anchor_pending_actions_for_tenant(
     // 4. Persist the batch row first (so the on-chain anchors can reference it).
     {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn()
             .execute(
                 "INSERT INTO agent_action_anchors
@@ -383,7 +383,7 @@ pub async fn anchor_pending_actions_for_tenant(
     // 6. Update the batch row with the on-chain anchor ids.
     {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         // Anchor providers predate tenant partitioning and insert their local
         // receipt with the legacy `default` tenant. Re-stamp the rows here so
         // proof/status queries cannot cross a tenant boundary.
@@ -478,7 +478,7 @@ pub fn proof_for_receipt_for_tenant(
     // batch is determined by created_at first.
     let receipt_created_at: i64 = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         match conn.any_conn().query_row(
             "SELECT created_at FROM agent_action_receipts
              WHERE receipt_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
@@ -504,7 +504,7 @@ pub fn proof_for_receipt_for_tenant(
         i64,
     )> = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn()
             .query_row(
             "SELECT anchor_id, batch_root_hex, from_created_at, to_created_at, btc_anchor_id, sol_anchor_id, from_receipt_id, to_receipt_id, leaf_version
@@ -544,7 +544,7 @@ pub fn proof_for_receipt_for_tenant(
         (false, None::<i64>, None::<String>)
     } else {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn()
             .query_row(
                 "SELECT confirmed, slot, signature FROM solana_merkle_anchors
@@ -566,7 +566,7 @@ pub fn proof_for_receipt_for_tenant(
         (false, "opentimestamps".to_string())
     } else {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn()
             .query_row(
                 "SELECT ots_upgraded, provider FROM bitcoin_merkle_anchors
@@ -601,7 +601,7 @@ pub fn proof_for_receipt_for_tenant(
     // the original ordered LIMIT-capped batch.
     let receipts: Vec<AnchoredReceipt> = {
         let st = state.read_or_recover();
-        let conn = st.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = st.db.lock().map_err(|e| e.to_string())?;
         conn.any_conn().query_map(
             "SELECT receipt_id, action_hash, agent_id, ring_key_image_hex,
                         policy_version, ajwt_jti, pop_jkt, status, signature,
@@ -691,7 +691,7 @@ pub fn recent_batches_for_tenant(
     tenant_id: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
     let st = state.read_or_recover();
-    let conn = st.db.lock().map_err(|e| e.to_string())?;
+    let mut conn = st.db.lock().map_err(|e| e.to_string())?;
     let batches: Vec<(String, String, i64, String, String, i64, String, String)> =
         conn.any_conn().query_map(
             "SELECT anchor_id, batch_root_hex, n_actions, btc_anchor_id, sol_anchor_id, created_at, anchor_status, anchor_error
@@ -724,7 +724,7 @@ pub fn recent_batches_for_tenant(
             (false, None::<i64>, None::<String>)
         } else {
             let st = state.read_or_recover();
-            let conn = st.db.lock().map_err(|e| e.to_string())?;
+            let mut conn = st.db.lock().map_err(|e| e.to_string())?;
             conn.any_conn()
                 .query_row(
                     "SELECT confirmed, slot, signature FROM solana_merkle_anchors
@@ -746,7 +746,7 @@ pub fn recent_batches_for_tenant(
             (false, "opentimestamps".to_string())
         } else {
             let st = state.read_or_recover();
-            let conn = st.db.lock().map_err(|e| e.to_string())?;
+            let mut conn = st.db.lock().map_err(|e| e.to_string())?;
             conn.any_conn()
                 .query_row(
                     "SELECT ots_upgraded, provider FROM bitcoin_merkle_anchors

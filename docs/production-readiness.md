@@ -34,7 +34,7 @@ deployment network isolation and independent review remain release gates.
   `SAURON_TRANSPARENT_IMAGE_IDS_JSON`; production startup validates the map.
 - Use only structured production egress entries with explicit methods, path,
   byte caps, allowed headers, request-body policy and response disclosure mode.
-- Keep legacy OPRF auth, unaudited Paillier, voluntary egress logging,
+- Keep legacy OPRF auth, voluntary egress logging,
   server-derived PoP, custom checksums, legacy token MAC, and Groth16 disabled.
 - Configure `SAURON_ALLOWED_ORIGINS` explicitly for deployed web origins.
 - Use `SAURON_COMPLIANCE_JURISDICTION_MODE=enforce` with a non-empty `SAURON_COMPLIANCE_JURISDICTION_ALLOWLIST` where required.
@@ -42,7 +42,11 @@ deployment network isolation and independent review remain release gates.
 
 ## Data Tier
 
-SQLite is the local/CI default. Production-like startup requires `SAURON_ACCEPT_SINGLE_NODE_SQLITE=1` to avoid silent HA claims. Before real production, replace or wrap the data tier with:
+SQLite is the local/CI default. Production-like startup on SQLite requires
+`SAURON_ACCEPT_SINGLE_NODE_SQLITE=1` to avoid silent HA claims; a deployment
+with `SAURON_DB_BACKEND=postgres` and `DATABASE_URL` set no longer needs the
+acknowledgement, because it is no longer single-node. Before real production,
+replace or wrap the data tier with:
 
 - managed backups and restore drills,
 - migration tooling,
@@ -55,8 +59,9 @@ For an explicitly accepted single-node deployment, create and validate online
 snapshots with `scripts/ops/verify-sqlite-backup.sh`; a release drill must also
 restore the produced file into a clean instance. The script exercises SQLite's
 online backup API, integrity/foreign-key checks and critical-table presence. It
-does not create HA. The partial Postgres adapter remains transitional and the
-startup warning deliberately says SQLite is still load-bearing.
+does not create HA, and it has no Postgres equivalent — SQLite's backup API is
+SQLite's. A Postgres deployment takes its backups from the operator's Postgres,
+not from this script.
 
 Partner private keys must be generated and retained by the partner/HSM. The
 production registration API accepts only public material and does not return
@@ -67,91 +72,178 @@ by nothing.
 
 ### How far the Postgres port actually is
 
-Setting `SAURON_DB_BACKEND=postgres` does **not** move the deployment off
-SQLite, and the single-node acknowledgement is required with or without it.
+`SAURON_DB_BACKEND=postgres` now moves the deployment to PostgreSQL. It was
+previously a flag that did nothing; this section records what changed and what
+is still deliberately on SQLite, because the previous revision of this document
+was wrong in a way worth remembering.
 
-The gap is **not** where you would guess, and counting call sites by eye gets it
-wrong — an earlier revision of this document said "59% converted" on exactly
-that mistake. The SQL itself is essentially done. What is missing is dispatch.
-
-**Writing portable SQL and reaching Postgres are two different things.** There
-are two ways to obtain an `AnyConn`, they look identical at the call site, and
-only one of them can ever produce a Postgres connection:
+**Writing portable SQL and reaching Postgres used to be two different things.**
+There were two ways to obtain an `AnyConn`, they looked identical at the call
+site, and only one could ever yield a Postgres connection:
 
 ```rust
-// Dispatches. Yields AnyConn::Postgres when the pg pool exists.
+// Dispatched. Yielded AnyConn::Postgres when the pg pool existed.
 st.db.any(|conn| { conn.query_row(...) })?;
 
-// Does NOT dispatch. `impl AsAnyConn for rusqlite::Connection` hard-returns
-// AnyConn::Sqlite, so this is SQLite regardless of SAURON_DB_BACKEND.
+// Did NOT dispatch. `impl AsAnyConn for rusqlite::Connection` hard-returns
+// AnyConn::Sqlite, so this was SQLite regardless of SAURON_DB_BACKEND.
 let db = st.db.lock().unwrap();
 db.any_conn().query_row(...)?;
 ```
 
-The real number is the caller count of `DbHandle::any`, and **it is zero.**
-Verified the only way that cannot be argued with: rename the function and see
-whether anything fails to compile. Nothing does.
+`DbHandle::any` had **zero callers** — verified by renaming it and watching
+nothing fail to compile — so for its whole life the dual-backend layer was
+unreachable. An earlier revision of this document reported "59% converted" by
+counting the portable idiom as evidence of portability. It measured spelling.
+
+**What the port did.** `DbHandle::lock()` — the one function every call site
+uses to acquire a connection — now returns the dispatching `DbConn` guard
+instead of a SQLite connection. That converted every site at once, and the
+compiler then located each one that still spoke rusqlite directly, because
+`DbConn` has no `query_row`/`execute` of its own:
 
 ```
-186  any_conn() statements  → still resolved against whatever the caller holds
-  5  DbHandle::conn() sites → dispatch, each verified against a real PostgreSQL
-  0  callers of DbHandle::any()  → the closure-based dispatcher, still unused
-
-Converted so far: audit/store.rs, agent_checksum.rs, the agent-registration
-block in agent.rs (the path postgres_backend_drift.sh uses to demonstrate the
-split), and risk.rs — the global rate limiter, whose eight call sites across
-agent.rs, egress_gateway.rs and main.rs now pass a dispatching connection.
-
-**The first conversion to run against Postgres found a dialect bug.** The
-limiter's upsert said `DO UPDATE SET cnt = cnt + 1`, which SQLite accepts and
-Postgres rejects as an ambiguous column reference — in a `DO UPDATE` the bare
-name could mean the target row or `excluded`. It had never failed because it had
-never executed against Postgres. Qualifying it as `risk_rate_counters.cnt + 1`
-satisfies both. Notably `Repo::risk_increment`'s Postgres branch already spelled
-it that way, so the knowledge existed; the shared path just never exercised it.
-
-That is the argument for the round-trip tests. Compiling, passing 643 unit tests
-and reading correctly all held while the statement was invalid on the backend it
-claimed to support.
+168 compiler errors, in three shapes:
+     75  E0596  needs `let mut` — mechanical, applied with `cargo fix`
+     57  E0599  raw rusqlite — real rewrites (params macro, row getters,
+                and `Result<Option<T>>` instead of `Result<T>`)
+     36  E0308  helper typed on `&rusqlite::Connection` → `&mut AnyConn<'_>`
 ```
 
-So the dual-backend work is *finished and unplugged*. `sql_translate.rs`
-rewrites the dialect, `AnyConn` abstracts the rows and parameters, all 55 tables
-exist in `migrations/postgres/` — and none of it is reachable, because nothing
-ever asks the handle for a Postgres connection. Outside `repository.rs`, which
-carries its own pool and its own explicit Postgres branches, no part of the core
-touches Postgres at all.
+Staying on SQLite is now the thing you have to ask for, by name, through
+`DbHandle::lock_sqlite()`. There are **26 such sites in production code**, and
+they are enumerated in `core/tests/postgres_dispatch_coverage.rs`, which fails
+if the set moves:
 
-`core/tests/postgres_dispatch_coverage.rs` pins these numbers so the claim in
-this document cannot drift away from the code again.
-
-This is worth stating plainly because the code sets the trap: a reviewer reads
-`db.any_conn().query_row(...)` as backend-agnostic, and it is not.
-
-The good news is that it makes the remaining task one repeated edit rather than
-186 separate ports. `DbHandle::conn()` returns a `DbConn` guard whose
-`any_conn()` dispatches, so a call site changes only where it acquires the
-connection:
-
-```rust
-let db = st.db.lock().unwrap();     →   let mut db = st.db.conn()?;
-db.any_conn().query_row(..)         →   db.any_conn().query_row(..)   // unchanged
+```
+22  repository.rs        the SQLite half of Repo's own backend match; the
+                         Postgres half next to it is sqlx, and both arms are
+                         selected from the same SAURON_DB_BACKEND
+ 2  db.rs                the dispatcher itself
+ 1  audit/store.rs       ensure_audit_reports_schema
+ 1  middleware/audit_log.rs  ensure_security_audit_schema
 ```
 
-The SQL, the row closures and the parameter binding are all untouched. Two
-things are not mechanical and set the order: 45 helpers still typed on
-`&rusqlite::Connection` have to take `&mut AnyConn` instead, and schema DDL
-stays on the SQLite path because Postgres gets its schema from
-`migrations/postgres/`.
+The two schema helpers are deliberate: under Postgres those tables come from
+`migrations/postgres/`, and running `CREATE TABLE` from application code would
+fight the migration that already owns the schema.
 
-**Compiling proves nothing here.** The unconverted code compiles too, and reads
-identically. `core/tests/postgres_slice_roundtrip.rs` is the real check: it
-writes through a converted path against a live PostgreSQL and asserts the row is
-in Postgres *and absent from the SQLite sidecar*. Every converted slice gets one.
+**Five defects were only findable by running against a real PostgreSQL.**
 
-`core/tests/postgres_backend_drift.sh` is the empirical check, and its passing
-is the proof the gap is real: it registers an agent, sees the row in SQLite, and
-sees the Postgres `agents` table still empty.
+1. *The blocking driver panics inside async handlers.* `AnyConn::Postgres`
+   wraps the synchronous `postgres` crate, which drives a private Tokio runtime
+   with `block_on`. Tokio refuses that from a thread already running tasks, and
+   essentially every call site is inside an async axum handler — so the first
+   Postgres query of any request panicked with `Cannot start a runtime from
+   within a runtime`. This was latent in the dual-backend layer from the start
+   and invisible because nothing could reach `AnyConn::Postgres` from a handler,
+   and because the only two converted slices were covered by synchronous
+   `#[test]`s. Fixed in `any_db::blocking`, which defers to
+   `tokio::task::block_in_place` on the multi-threaded runtime; releasing a
+   pooled client also closes it, so `DbConn` and `DbHandle` need the same
+   treatment in `Drop`.
+
+2. *Every Postgres error read as `db error`.* `postgres::Error` Displays as
+   that bare string, with the SQLSTATE, constraint name and message one level
+   down in `source()`. Mapping with `to_string()` therefore made all failures
+   indistinguishable — including to the code itself: the replay paths choose
+   between 401 and 500 by looking for `unique`/`duplicate key` in that string,
+   so on Postgres they would all have taken the 500 branch.
+
+3. *Two statements used SQLite's anonymous `?` placeholder*, which has no
+   positional Postgres equivalent and which `sql_translate` deliberately leaves
+   alone so it fails loudly. It duly did, in `consume_ajwt_jti` and
+   `insert_pop_challenge` — both on the replay-protection path.
+
+4. *Integer width.* `SqlValue::Int` is an `i64` because SQLite has one integer
+   type; this schema has 99 BIGINT columns and 23 INTEGER ones, and the driver
+   refuses an `i64` for an `int4`. The read side already coped by trying `i64`
+   then `i32`; the write side did not, and agent registration failed with
+   "cannot convert between the Rust type `i64` and the Postgres type `int4`".
+   `impl ToSql for SqlValue` now binds against the type the server asks for,
+   narrowing only when the value fits.
+
+5. *A 409 that reported as a 500.* `Repo::consume_consent_token`'s Postgres arm
+   decoded `token_used`/`revoked` — both INTEGER — as `i64`, and sqlx is strict.
+   The atomic UPDATE was doing its job: a second claim was correctly refused,
+   and then failed while working out *why* to say so. The 16-attack suite reads
+   that as the consent-token TOCTOU defence being absent (A11 counts 409s), so
+   a working defence scored as a live vulnerability.
+
+An earlier conversion had already found a dialect bug the same way: the rate
+limiter's `DO UPDATE SET cnt = cnt + 1`, which SQLite accepts and Postgres
+rejects as ambiguous. All four held while the code compiled, read correctly, and
+644 unit tests passed.
+
+**And one earlier conversion had to be reverted**, which is why this one was
+atomic. Dispatching the agent-registration write while `agents` was still read
+from 40 SQLite call sites meant an agent registered into Postgres and then
+failed every signed call with 401 `call_sig_unknown_agent`. A table moves whole
+or not at all.
+
+**Compiling proves nothing here.** The unconverted code compiled too, and read
+identically. `core/tests/postgres_slice_roundtrip.rs` is the real check: each
+test writes through a public code path against a live PostgreSQL, reads back
+through a *different* one, and asserts the row is in Postgres **and absent from
+the SQLite sidecar**. It covers `audit_reports`, `agent_checksum_inputs`,
+`risk_rate_counters`, `agents` (registration write vs. the call-signature
+lookup — the pair that broke last time), `agent_action_receipts` with its hash
+chain, `agent_action_anchors` via the anchor batcher, and the single-use
+`ajwt_used_jtis` / `agent_pop_challenges` tables.
+
+Those tests acquire with `lock()` rather than `conn()` on purpose: `lock()` is
+what the converted call sites call, so re-pinning it makes six of the eight
+fail. A test written against `conn()` passes either way and proves nothing.
+
+### The port cannot be done incrementally
+
+This was tried, table by table, and the attempt is what proved it impossible.
+Record it here so nobody plans it that way again.
+
+A connection is acquired per request-block, not per table, and one block usually
+touches several tables. So converting a table means converting every block that
+reads it — and those blocks drag in whatever else they touch, transitively.
+Measuring that closure over `core/src` (union-find over tables sharing a
+`lock()` acquisition, filtered to names that really exist in the schema):
+
+```
+55 tables in the schema, 34 reachable from a shared connection
+3 connected components:
+
+  29 tables  <-- contains `agents`
+     agent_action_anchors, agent_action_nonces, agent_action_receipts,
+     agent_call_nonces, agent_checksum_audit, agent_checksum_inputs,
+     agent_egress_log, agent_payment_authorizations, agent_pop_challenges,
+     agent_vcs, agents, ajwt_used_jtis, api_usage, bank_attestation_nonces,
+     bank_kyc_links, bitcoin_merkle_anchors, client_tenant_bindings, clients,
+     consent_log, credential_codes, customer_stats, requests_log,
+     risk_rate_counters, security_audit_log, solana_merkle_anchors,
+     spend_ledger, spend_log, stats_submission_receipts, zk_proof_checkpoints
+
+   3 tables  user_auth_challenges, user_auth_credentials, user_auth_tenant_bindings
+   2 tables  user_registrations, users
+```
+
+`agents` sits in a component of **29**. Converting it converts all 29, because
+they share connections. "One table at a time" is not a smaller version of this
+job; it is the same job with a misleading name.
+
+Two components are genuinely separable — the user-auth trio and the users pair —
+and could move on their own. They are also the least interesting.
+
+**So the change is atomic and should be scheduled as such.** Reproduce the
+measurement before starting, since the components shift as code moves:
+
+```bash
+python3 scripts/dev/pg-port-components.py
+```
+
+The shape of the work, measured by making `lock()` return the dispatching guard
+and reading the compiler: **168 errors, of which ~92 are real rewrites** — not
+`.any_conn()` insertions, because the raw sites use rusqlite's `[]` params and
+`r.get(0)`, while `AnyConn` wants `sql_params![]`, `r.get_i64(0)`, and returns
+`Result<Option<T>>` rather than `Result<T>`. Every one of those changes error
+handling at the call site.
 
 **The receipts and anchors subsystem must move as one unit.**
 `agent_action_receipts` plus `bitcoin_merkle_anchors` / `solana_merkle_anchors`
@@ -175,9 +267,8 @@ Full detail and the per-table sweep is in
   `/user/auth/challenge` and `/user/auth/finish`. The legacy password-derived
   endpoint is development-only. OPAQUE is needed only if passwords are added
   back as a requirement.
-- The Paillier implementation is quarantined in production. It is not a
-  production aggregation claim. Transparent local aggregation is the supported
-  replacement; threshold HE is a separate future product choice.
+- The homomorphic-aggregation (Paillier) subsystem has been removed, not
+  quarantined. There is no flag to leave off and no code to review.
 
 ## Release Gate
 

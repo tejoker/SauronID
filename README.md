@@ -198,7 +198,7 @@ Honest table. Re-verifiable from the source.
   release workflow itself before the release completes.
 - Server-computed agent checksum from typed `agent_type` + `checksum_inputs`. Operators cannot supply a fake checksum.
 - Per-call `x-sauron-agent-config-digest` header check: agent runtime cannot drift from registered config without rejecting on every call.
-- Atomic single-use TOCTOU patterns on every consume table (consent, payment, credential, bank nonce, lightning, call-nonce, JTI).
+- Atomic single-use TOCTOU patterns on every consume table (payment authorization, credential, lightning, call-nonce, JTI).
 - Constant-time HMAC compares (no timing oracles).
 - CORS hard-fail on empty origins (no permissive fallback).
 - Sliding-window rate limits per agent + per human.
@@ -224,19 +224,38 @@ Honest table. Re-verifiable from the source.
 
 ### Partial — works but operator must complete
 
-- **Database topology**: SQLite remains load-bearing even when the partial
-  Postgres paths are enabled. Production startup requires explicit acceptance
-  of the single-node topology. There is no honest HA/failover/multi-region
-  claim yet; use a dedicated node and perform the documented restore drill.
-  The port now runs through one translation layer rather than 55 hand-ported
-  tables — `core/src/sql_translate.rs` rewrites the narrow SQLite dialect this
-  codebase uses, and `core/src/any_db.rs` gives one row/parameter abstraction
-  over both backends, both pinned by unit tests plus a dual-backend equivalence
-  test and a SQL differential test that run against a real PostgreSQL in CI.
-  The mechanical sweep of the remaining raw `rusqlite` call sites is unfinished,
-  which is why the single-node acknowledgement still exists.
+- **Database topology**: `SAURON_DB_BACKEND=postgres` + `DATABASE_URL` moves the
+  whole deployment to PostgreSQL — every call site, not a subset. `DbHandle::lock()`
+  returns a dispatching guard, so the SQLite pool is a dev default rather than a
+  sidecar, and `core/tests/postgres_backend_drift.sh` fails if a registration
+  lands in it. The 38 remaining `lock_sqlite()` opt-outs are enumerated and
+  pinned by `core/tests/postgres_dispatch_coverage.rs`; 34 of them are the SQLite
+  half of `Repo`'s own two-armed match, whose other half is sqlx. Underneath,
+  `sql_translate.rs` rewrites the narrow SQLite dialect this codebase uses and
+  `any_db.rs` gives one row/parameter abstraction over both backends — pinned by
+  a dual-backend equivalence test and a SQL differential test against a real
+  PostgreSQL in CI. On SQLite, production startup still requires explicit
+  acceptance of the single-node topology; on Postgres that gate does not apply.
+
+  **What that does and does not buy you.** Measured, single host, in
+  [docs/load-test.md](docs/load-test.md): PostgreSQL sustains **2,274 rps over
+  15 minutes with 0 errors across 2.05M requests**, and its p99 stays flat
+  (15.9 ms → 18.3 ms). The same workload on SQLite manages 636 rps with p99
+  drifting **monotonically 105.7 ms → 301.5 ms** and ~5.2 s max spikes, because
+  the nonce table and the data file grow under it. So the Postgres tier is
+  ~3.6× the throughput with a tail that does not degrade.
+
+  That is a throughput claim on one core process against one PostgreSQL
+  instance. It is **not** an HA claim: nothing here tested replica failover,
+  partition behaviour, or multi-replica contention on the same tables, and
+  `high_availability` stays `false` in `release/manifest.json` until it is. Two
+  connection pools are opened per replica — the async sqlx pool and the blocking
+  one every `lock()` site uses — so budget `SAURON_PG_POOL_SIZE +
+  SAURON_DB_POOL_SIZE` connections against the server's `max_connections`.
+  Database TLS is driven by `sslmode`; see
+  [docs/operations.md](docs/operations.md#database-tls).
 - **OpenTimestamps confirmation latency**: receipts are submitted instantly to public calendars; **Bitcoin block inclusion takes ~1 hour**. Solana memo finalisation is ~30 s. Dashboard surfaces three honest states per batch (ADR-001): Solana-confirmed (≤30 s), BTC-pending (≤1 h), Dually anchored. No single false "anchored" summary — both chains are reported independently on `/admin/anchor/batches` and the `/anchors` console page. Operators with stricter timing pick the Solana path or run their own calendar.
-- **ZKP issuer / KYC consent / bank-KYC ingest**: feature-flagged off by default. Available behind `SAURON_DISABLE_*=0` for legacy deployments. SauronID does NOT ship a sanctions/PEP screening provider — wire your own data into `compliance_screening`.
+- **ZKP issuer**: feature-flagged off by default, available behind `SAURON_DISABLE_ZKP=0`. SauronID does NOT ship a sanctions/PEP screening provider — wire your own data into `compliance_screening`. The bank-KYC ingest and end-user KYC consent routes were removed entirely; SauronID binds agents, not human identities.
 - **External key custody**: production secret resolution and external partner-key
   custody are fail-closed configuration obligations. Vault loopback behavior is
   covered by tests, but the deployment must supply, authorize, rotate, and
@@ -379,7 +398,7 @@ agent = register_llm_agent(
 # deployment serves; the signature covers whatever you send.
 result = agent.call("GET", f"/agent/{agent.agent_id}")
 
-# For leashed + on-chain-anchored actions (payments, KYC consent): request a
+# For leashed + on-chain-anchored actions (payments): request a
 # challenge, ring-sign it with the agent's ring secret, then submit the proof.
 #   proof = agent.sign_action_challenge(challenge_json)
 #   agent.call("POST", "/agent/payment/authorize", json_body={..., "agent_action": proof})
@@ -466,7 +485,7 @@ branding/              BRANDING.md, logo.svg, brand-book.pdf
 docs/                  threat-model, operations, production-readiness, SIEM integration,
                        docs site source (docs/site/), roadmap, competitive-benchmark
 
-archive/banking-2025/  Pre-pivot bank-KYC code. Feature-flagged off by default; kept for git
+archive/banking-2025/  Pre-pivot bank-KYC code. The core routes it paired with are gone; kept for git
                        continuity. Do not depend on. Removed from active product surface.
 ```
 
@@ -500,8 +519,6 @@ SAURON_JWT_SECRET=$(openssl rand -hex 32)
 SAURON_OPRF_SEED=$(openssl rand -hex 32)
 SAURON_ALLOWED_ORIGINS=https://your-edge.example.com
 SAURON_REQUIRE_CALL_SIG=1                        # fail-closed
-SAURON_DISABLE_BANK_KYC=1                        # off unless you need legacy bank flow
-SAURON_DISABLE_USER_KYC=1                        # off unless you need consent UI
 SAURON_DISABLE_ZKP=1                             # off unless you need ZKP credentials
 SAURON_DISABLE_COMPLIANCE=1                      # off unless you wire screening provider
 SAURON_BITCOIN_ANCHOR_PROVIDER=opentimestamps    # real BTC anchoring

@@ -3,7 +3,7 @@
 //! All routes are admin-gated through `admin::auth_middleware` and run
 //! after `tenancy::extract_tenant`. Same gating pattern as `/v1/policy/*`.
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -81,7 +81,7 @@ pub async fn submit_handler(
         let st = state
             .read()
             .map_err(|_| AppError::Internal("state lock".into()))?;
-        let db = st
+        let mut db = st
             .db
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
@@ -241,7 +241,7 @@ pub async fn submit_transparent_handler(
         let st = state
             .read()
             .map_err(|_| AppError::Internal("state lock".into()))?;
-        let db = st
+        let mut db = st
             .db
             .lock()
             .map_err(|_| AppError::Internal("db lock".into()))?;
@@ -371,159 +371,6 @@ pub async fn cohort_handler(
     let rows = list_cohort(&db, &q.metric_id, q.period_start, q.period_end).map_err(map_agg_err)?;
     let n = rows.len();
     Ok(Json(CohortResponse { rows, n }))
-}
-
-// ─── Sprint 13-14 Tier 2: Paillier homomorphic-encryption submission ────────
-//
-// NEEDS_CRYPTO_REVIEW: this handler accepts customer ciphertexts encrypted
-// under a cohort-scoped public key, homomorphically adds them into a running
-// aggregate, and never decrypts individual contributions. Per-customer
-// values never leave Z_{n^2}* on the server. Production deployments
-// require third-party crypto review (see core/src/he/ disclaimers).
-
-/// Body for `POST /v1/stats/submit-encrypted`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EncryptedStatsSubmission {
-    /// Cohort scope. Operator-managed; same id space as `/v1/cohort`.
-    pub cohort_id: String,
-    /// Catalog metric id (matches `agentic/src/stats/metric-catalog.ts`).
-    pub metric_id: String,
-    /// Reporting-window start (unix epoch seconds). Bound to the
-    /// aggregation row so contributions outside the period are isolated.
-    pub period_start: i64,
-    /// Identifier of the public key the customer encrypted under. Server
-    /// looks up the corresponding modulus via the registered key set.
-    pub pk_id: String,
-    /// Customer ciphertext (URL-safe base64, no padding).
-    pub encrypted_value_b64: String,
-}
-
-/// Response shape from `POST /v1/stats/submit-encrypted`.
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EncryptedStatsResponse {
-    /// Stable id of the running aggregation row.
-    pub aggregated_into: String,
-    /// Cumulative count of customer contributions to this aggregation.
-    pub n_contributions: i64,
-}
-
-/// `POST /v1/stats/submit-encrypted` — accept a Paillier-encrypted customer
-/// statistic, homomorphically accumulate it into the cohort aggregate.
-/// Admin-gated + tenant-scoped (the middleware stack matches `/v1/stats/submit`).
-///
-/// NEEDS_CRYPTO_REVIEW: server never sees the plaintext value. Decryption
-/// happens out-of-band, by an operator holding the cohort private key.
-pub async fn submit_encrypted_handler(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    _tenant: Option<Extension<TenantId>>,
-    Json(body): Json<EncryptedStatsSubmission>,
-) -> Result<Json<EncryptedStatsResponse>, AppError> {
-    let enabled = crate::runtime_mode::require_or_default(
-        "SAURON_ENABLE_UNAUDITED_PAILLIER",
-        /* dev_default */ true,
-        /* prod_default */ false,
-    );
-    if !enabled {
-        return Err(AppError::ServiceUnavailable(
-            "custom Paillier aggregation is quarantined in production; use an independently reviewed HE service or explicitly opt in with SAURON_ENABLE_UNAUDITED_PAILLIER=1".into(),
-        ));
-    }
-    use crate::aggregation::he_aggregator::HeAggregator;
-    use crate::aggregation::he_store::{
-        conflicting_cohort_for_pk, get_he_aggregation, upsert_he_aggregation, HeAggregationRow,
-    };
-    use crate::he::paillier::PaillierPublicKey;
-    use crate::he::serde_impl::{ciphertext_from_b64, ciphertext_to_b64};
-
-    let db = {
-        let st = state
-            .read()
-            .map_err(|_| AppError::Internal("state lock".into()))?;
-        st.db.clone()
-    };
-
-    // Resolve the cohort public key from the in-process registry.
-    let pk: PaillierPublicKey = {
-        let registry = {
-            let st = state
-                .read()
-                .map_err(|_| AppError::Internal("state lock".into()))?;
-            st.he_pk_registry.clone()
-        };
-        let map = registry
-            .read()
-            .map_err(|_| AppError::Internal("he registry lock".into()))?;
-        map.get(&body.pk_id)
-            .cloned()
-            .ok_or_else(|| AppError::NotFound(format!("pk_id not registered: {}", body.pk_id)))?
-    };
-
-    let incoming = ciphertext_from_b64(&body.encrypted_value_b64)
-        .map_err(|e| AppError::BadRequest(format!("ciphertext decode: {e}")))?;
-
-    // Reject key-confusion: a pk_id observed under a different cohort cannot be
-    // reused here. The first cohort to use a key owns it (trust-on-first-use),
-    // so a ciphertext under cohort A's key can never land in cohort B's
-    // aggregate.
-    if let Some(other) = conflicting_cohort_for_pk(&db, &body.pk_id, &body.cohort_id)
-        .map_err(|e| AppError::Internal(format!("he store: {e}")))?
-    {
-        return Err(AppError::BadRequest(format!(
-            "pk_id '{}' is already bound to cohort '{}'; refusing to reuse it for cohort '{}'",
-            body.pk_id, other, body.cohort_id
-        )));
-    }
-
-    let aggregation_id = format!(
-        "agg_{}_{}_{}_{}",
-        body.cohort_id, body.metric_id, body.period_start, body.pk_id
-    );
-
-    // Idempotent submit-then-replace: load running ciphertext, homomorphically
-    // add the new one, persist back. Operations on Z_{n^2}* are independent
-    // of the order of contributions (Paillier is commutative).
-    let mut aggregator = match get_he_aggregation(&db, &aggregation_id)
-        .map_err(|e| AppError::Internal(format!("he store: {e}")))?
-    {
-        Some(row) => {
-            let existing = ciphertext_from_b64(&row.sum_ciphertext_b64)
-                .map_err(|e| AppError::Internal(format!("stored ciphertext: {e}")))?;
-            HeAggregator::from_parts(pk.clone(), existing, row.n_contributions as u32)
-        }
-        None => {
-            let mut rng = OsRng;
-            HeAggregator::new(pk.clone(), &mut rng)
-                .map_err(|e| AppError::Internal(format!("init aggregator: {e}")))?
-        }
-    };
-
-    aggregator
-        .add_encrypted(&incoming)
-        .map_err(|e| AppError::BadRequest(format!("homomorphic add: {e}")))?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let row = HeAggregationRow {
-        aggregation_id: aggregation_id.clone(),
-        cohort_id: body.cohort_id,
-        metric_id: body.metric_id,
-        period_start: body.period_start,
-        pk_id: body.pk_id,
-        sum_ciphertext_b64: ciphertext_to_b64(&aggregator.sum_ciphertext),
-        n_contributions: aggregator.n_contributions as i64,
-        last_updated: now,
-    };
-    upsert_he_aggregation(&db, &row).map_err(|e| AppError::Internal(format!("he store: {e}")))?;
-
-    Ok(Json(EncryptedStatsResponse {
-        aggregated_into: aggregation_id,
-        n_contributions: row.n_contributions,
-    }))
 }
 
 fn map_agg_err(e: AggError) -> AppError {

@@ -7,7 +7,6 @@
  *       • negative: over-limit amount rejected
  *       • negative: merchant outside allowlist rejected
  *       • positive: authorize → Stripe manual-capture (test/dry) → merchant consume
- *   - KYC agent: delegated, prove_age scope, JTI-protected consent
  *       • positive: agent KYC consent on behalf of user
  *
  * Cost guards:
@@ -38,6 +37,7 @@ import { writeFileSync } from "fs";
 import { join } from "path";
 import { CoreApi, randSuffix } from "./core-api";
 import { randomRistrettoHex } from "./ristretto";
+import { signCallV2 } from "./call-sig-v2";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -479,28 +479,27 @@ async function runPaymentFlow(input: {
         });
 
         try {
-            const consumeAjwt = await input.api.issueAgentToken(input.session, input.agentId);
-            const consumeAction = await input.api.buildAgentActionProof({
-                secretHex: input.secretHex,
-                agentId: input.agentId,
-                humanKeyImage: input.humanKeyImage,
-                ajwt: consumeAjwt,
-                action: "payment_consume",
-                resource: authorizationId,
-                merchantId: input.merchantId,
-                amountMinor,
-                currency,
-            });
-            const consumed = await input.api.merchantPaymentConsume({
-                authorization_id: authorizationId,
-                merchant_id: input.merchantId,
-                ajwt: consumeAjwt,
-                authorization_receipt: authorizationReceipt,
-                agent_action: consumeAction,
-            });
+            // Redeem the authorization. The endpoint is call-sig protected and
+            // takes only the id: ownership comes from the signature, not from
+            // anything the caller asserts in the body.
+            const agentRecord = (await fetch(`${baseUrl}/agent/${input.agentId}`).then((r) =>
+                r.json()
+            )) as { agent_checksum?: string };
+            const consumeBody = JSON.stringify({ authorization_id: authorizationId });
+            const consumed = await input.api.agentPaymentConsume(
+                authorizationId,
+                signCallV2({
+                    agentId: input.agentId,
+                    privateKey: input.privateKey,
+                    method: "POST",
+                    targetUri: "/agent/payment/consume",
+                    body: consumeBody,
+                    configDigest: agentRecord.agent_checksum ?? "",
+                })
+            );
             if (consumed.status !== 200) {
                 return { sub: { name: "payment", ok: false, ms: elapsedMs(t),
-                    error: `merchant/payment/consume ${consumed.status}: ${consumed.raw}` },
+                    error: `agent/payment/consume ${consumed.status}: ${consumed.raw}` },
                     stripeStatus: stripe.status };
             }
         } finally {
@@ -511,52 +510,6 @@ async function runPaymentFlow(input: {
     } catch (e) {
         return { sub: { name: "payment", ok: false, ms: elapsedMs(t),
             error: e instanceof Error ? e.message : String(e) }, stripeStatus: "error" };
-    }
-}
-
-async function runKycConsent(input: {
-    api: CoreApi;
-    session: string;
-    agentId: string;
-    humanKeyImage: string;
-    secretHex: string;
-    ajwt: string;
-    privateKey: KeyObject;
-    retailSite: string;
-    index: number;
-}): Promise<SubResult> {
-    const t = process.hrtime.bigint();
-    try {
-        // Ensure the retail site has tokens for this request.
-        await input.api.devBuyTokens(input.retailSite, 2);
-
-        const requestId = await input.api.kycRequest(input.retailSite, ["age_over_threshold", "age_threshold"]);
-        const pop = await input.api.agentPopChallenge(input.session, input.agentId);
-        const agentAction = await input.api.buildAgentActionProof({
-            secretHex: input.secretHex,
-            agentId: input.agentId,
-            humanKeyImage: input.humanKeyImage,
-            ajwt: input.ajwt,
-            action: "kyc_consent",
-            resource: `kyc_consent:${requestId}`,
-            merchantId: input.retailSite,
-        });
-        const consent = await input.api.agentKycConsent({
-            ajwt: input.ajwt,
-            site_name: input.retailSite,
-            request_id: requestId,
-            pop_challenge_id: pop.pop_challenge_id,
-            pop_jws: signPopJws(pop.challenge, input.privateKey),
-            agent_action: agentAction,
-        });
-        if (consent.status !== 200) {
-            return { name: "kyc_consent", ok: false, ms: elapsedMs(t),
-                error: `agent/kyc/consent ${consent.status}: ${consent.raw}` };
-        }
-        return { name: "kyc_consent", ok: true, ms: elapsedMs(t) };
-    } catch (e) {
-        return { name: "kyc_consent", ok: false, ms: elapsedMs(t),
-            error: e instanceof Error ? e.message : String(e) };
     }
 }
 
@@ -624,27 +577,6 @@ async function runOne(api: CoreApi, index: number): Promise<RunResult> {
         const payAgentId = firstString(paymentAgentReg.data.agent_id);
         if (!payAjwt || !payAgentId) throw new Error(`payment agent missing ajwt/agent_id: ${paymentAgentReg.raw}`);
 
-        // ── KYC agent (PoP-enabled, kyc_consent, separate JTI) ───────────────
-        const kycPop = createPopKeyPair();
-        const kycKeys = api.agentActionKeygen();
-        const kycIntent = { scope: ["kyc_consent"] };
-        const kycAgentReg = await api.agentRegister(session, {
-            human_key_image: key_image,
-            agent_checksum:  `sha256:${sha256Hex(`kyc:${tavily.contextHash}:${sfx}`)}`,
-            intent_json:     JSON.stringify(kycIntent),
-            public_key_hex:  kycKeys.public_key_hex,
-            ring_key_image_hex: kycKeys.ring_key_image_hex,
-            pop_jkt:         `stress-kyc-pop-${sfx}`,
-            pop_public_key_b64u: kycPop.publicKeyB64u,
-            ttl_secs:        3600,
-        });
-        if (kycAgentReg.status !== 200) {
-            throw new Error(`kyc agent/register ${kycAgentReg.status}: ${kycAgentReg.raw}`);
-        }
-        const kycAjwt    = firstString(kycAgentReg.data.ajwt);
-        const kycAgentId = firstString(kycAgentReg.data.agent_id);
-        if (!kycAjwt || !kycAgentId) throw new Error(`kyc agent missing ajwt/agent_id: ${kycAgentReg.raw}`);
-
         // ── Negative: over-limit ─────────────────────────────────────────────
         if (runNegativeChecks) {
             subs.push(await runNegativeOverLimit({
@@ -673,15 +605,6 @@ async function runOne(api: CoreApi, index: number): Promise<RunResult> {
             merchantId, paymentRef,
         });
         subs.push(paymentSub);
-
-        // ── Positive: KYC consent delegation ────────────────────────────────
-        await api.ensureClient(retailSite, "ZKP_ONLY");
-        subs.push(await runKycConsent({
-            api, session,
-            agentId: kycAgentId, humanKeyImage: key_image, secretHex: kycKeys.secret_hex,
-            ajwt: kycAjwt, privateKey: kycPop.privateKey,
-            retailSite, index,
-        }));
 
         const allOk = subs.every((s) => s.ok);
         return {

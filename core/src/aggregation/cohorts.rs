@@ -18,7 +18,7 @@
 //!                                                  └─► publish::publish_cohort
 //! ```
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::sql_params;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -221,7 +221,7 @@ impl CohortStore {
     /// Load all rows from `cohort_definitions` into the in-memory map.
     /// Returns the number of cohorts loaded.
     pub fn hydrate(&self) -> Result<usize, CohortError> {
-        let conn = self
+        let mut conn = self
             .db
             .lock()
             .map_err(|e| CohortError::Storage(e.to_string()))?;
@@ -308,7 +308,7 @@ impl CohortStore {
         let tenants_json = serde_json::to_string(&def.tenant_ids)
             .map_err(|e| CohortError::Storage(format!("tenant_ids json: {e}")))?;
         {
-            let conn = self
+            let mut conn = self
                 .db
                 .lock()
                 .map_err(|e| CohortError::Storage(e.to_string()))?;
@@ -373,7 +373,7 @@ impl CohortStore {
     /// is absent (matches the policy store contract).
     pub fn delete(&self, id: &str) -> Result<(), CohortError> {
         {
-            let conn = self
+            let mut conn = self
                 .db
                 .lock()
                 .map_err(|e| CohortError::Storage(e.to_string()))?;

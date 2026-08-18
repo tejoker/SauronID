@@ -25,7 +25,26 @@ import sqlite3
 import subprocess
 import sys
 
+# A schema of its own, forced onto every psql invocation via PGOPTIONS.
+#
+# This script used to run in `public`, where it did:
+#
+#     DROP TABLE IF EXISTS agent_action_receipts;
+#     CREATE TABLE agent_action_receipts ( ...8 fixture columns... );
+#
+# against whatever database `PGDATABASE` names — in CI, the same `sauron_test`
+# the backend is launched against two steps later. It replaced the real
+# 16-column receipt table with an 8-column stand-in and never put it back, so
+# every later step in that job ran against a mutilated schema. The failure
+# surfaced far from here, as a 500 from `/agent/payment/authorize`:
+# `column "agent_id" does not exist`.
+#
+# The fixture is deliberately not the real table — it only needs the constructs
+# the translator cares about — so the fix is to stop it sharing a namespace with
+# anything, rather than to make it match.
+SCHEMA = "sql_differential"
 PSQL = ["psql", "-At", "-v", "ON_ERROR_STOP=1"]
+PSQL_ENV = {**os.environ, "PGOPTIONS": f"-c search_path={SCHEMA}"}
 
 
 def to_postgres(sql: str) -> str:
@@ -67,8 +86,10 @@ def to_postgres(sql: str) -> str:
     return s
 
 
-def psql(sql: str) -> str:
-    proc = subprocess.run(PSQL, input=sql, capture_output=True, text=True)
+def psql(sql: str, *, env: dict | None = None) -> str:
+    proc = subprocess.run(
+        PSQL, input=sql, capture_output=True, text=True, env=env or PSQL_ENV
+    )
     if proc.returncode != 0:
         raise SystemExit(
             f"postgres rejected a translated statement:\n  {sql[:160]}\n  {proc.stderr.strip()[:300]}"
@@ -117,7 +138,12 @@ READS = [
 def main() -> None:
     con = sqlite3.connect(":memory:")
     con.executescript(DDL.format(int="INTEGER"))
-    psql("DROP TABLE IF EXISTS agent_action_receipts;")
+    # Build the sandbox with the default search_path, then let PGOPTIONS put
+    # every later statement inside it.
+    psql(
+        f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE; CREATE SCHEMA {SCHEMA};",
+        env={**os.environ},
+    )
     psql(DDL.format(int="BIGINT") + ";")
 
     for sql in WRITES:
@@ -143,6 +169,12 @@ def main() -> None:
 
     total = len(READS)
     print(f"\n{total - failures}/{total} queries identical across backends")
+
+    # Leave the database as it was found. The sandbox is dropped on the way out
+    # even when a query differed, so a failing run does not leave a stray schema
+    # behind for the next one to trip over.
+    psql(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE;", env={**os.environ})
+
     if failures:
         raise SystemExit(1)
 

@@ -650,22 +650,185 @@ fn map_repo_err(e: RepoError) -> AppError {
 /// If the policy has no `time_window`, returns `"00:00"` (the value is
 /// unused by other checks). Falls back to UTC if the tz lookup fails.
 fn compute_tz_hhmm(policy: &super::ast::Policy, now_epoch: i64) -> String {
-    use chrono::TimeZone;
-    use std::str::FromStr;
+    policy_wall_clock(policy, now_epoch).hhmm
+}
 
-    let tz_name = policy
+/// The policy's timezone, resolved once. `time_window` is where an operator
+/// declares it; the other clock-driven checks (`business_hours`,
+/// `holiday_blackout`, `daily_budget`) then read the SAME zone, so "Monday" and
+/// "today" mean the same thing to all of them.
+fn policy_tz(policy: &super::ast::Policy) -> chrono_tz::Tz {
+    use std::str::FromStr;
+    let name = policy
         .binding
         .time_window
         .as_ref()
         .map(|tw| tw.timezone.as_str())
         .unwrap_or("UTC");
-    let tz = chrono_tz::Tz::from_str(tz_name).unwrap_or(chrono_tz::UTC);
+    chrono_tz::Tz::from_str(name).unwrap_or(chrono_tz::UTC)
+}
+
+/// Wall-clock facts every time-gated invariant needs, all derived from one
+/// timezone lookup at one instant.
+struct PolicyWallClock {
+    /// `HH:MM` in the policy timezone — `TimeCheck`, `BusinessHoursCheck`.
+    hhmm: String,
+    /// 0 = Sunday … 6 = Saturday, in the policy timezone — `BusinessHoursCheck`.
+    weekday: u8,
+    /// `YYYY-MM-DD` in the policy timezone — `HolidayBlackoutCheck`.
+    date: String,
+    /// Unix epoch of local midnight today, in the policy timezone. The lower
+    /// bound for `DailyBudgetCheck`: "daily" has to mean the operator's day, not
+    /// a UTC day that rolls over mid-afternoon for a US tenant.
+    day_start_epoch: i64,
+}
+
+/// Read the clock in the policy's timezone.
+///
+/// This replaced a hard-coded `now_weekday = 1` / `now_date = "2026-05-21"` in
+/// the enforcement path, which was there "so the test path isn't blocked by
+/// ambient time". The cost of that convenience was that `BusinessHoursCheck`
+/// always saw a Monday — so weekend gating never denied anything — and
+/// `HolidayBlackoutCheck` only ever matched one date in May 2026. Both checks
+/// compiled, appeared in the trace, and could not fire.
+fn policy_wall_clock(policy: &super::ast::Policy, now_epoch: i64) -> PolicyWallClock {
+    use chrono::{Datelike, TimeZone};
+
+    let tz = policy_tz(policy);
     let utc = match chrono::Utc.timestamp_opt(now_epoch, 0) {
         chrono::LocalResult::Single(t) => t,
-        _ => return "00:00".to_string(),
+        // An unrepresentable epoch is not a licence to skip time checks: return
+        // a wall clock that denies rather than one that waves everything past.
+        // "00:00" on weekday 7 matches no configured business day, and the empty
+        // date string is what HolidayBlackoutCheck treats as "no date supplied".
+        _ => {
+            return PolicyWallClock {
+                hhmm: "00:00".to_string(),
+                weekday: 7,
+                date: String::new(),
+                day_start_epoch: now_epoch,
+            }
+        }
     };
     let local = utc.with_timezone(&tz);
-    local.format("%H:%M").to_string()
+    let day_start_epoch = local
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| match tz.from_local_datetime(&naive) {
+            chrono::LocalResult::Single(t) => Some(t),
+            // DST spring-forward can delete local midnight; the later of the two
+            // ambiguous instants is the conservative choice for a spend window.
+            chrono::LocalResult::Ambiguous(_, later) => Some(later),
+            chrono::LocalResult::None => None,
+        })
+        .map(|t| t.timestamp())
+        .unwrap_or(now_epoch);
+
+    PolicyWallClock {
+        hhmm: local.format("%H:%M").to_string(),
+        weekday: local.weekday().num_days_from_sunday() as u8,
+        date: local.format("%Y-%m-%d").to_string(),
+        day_start_epoch,
+    }
+}
+
+/// Ceiling on how many action timestamps the rate windows read.
+///
+/// ponytail: `RateCheck` and `WeeklyRateCheck` only need a COUNT, but the
+/// `RuntimeCheck` trait hands them a `&[i64]`, so the context has to carry the
+/// timestamps. Truncating to the most recent N is fail-closed — an agent with
+/// more than N actions in the window is over any sane configured limit, so the
+/// check denies either way. Upgrade path: give the two rate checks a count
+/// instead of a slice and this bound disappears.
+const MAX_RATE_WINDOW_ROWS: i64 = 20_000;
+
+/// Per-agent runtime state the invariant library reads but the `Action` does not
+/// carry. Every field here was previously left at its `with_defaults` value in
+/// the enforcement path, which meant the check that reads it could not deny:
+/// an empty timestamp slice is zero calls, a zero `daily_spend_usd` is an unused
+/// budget, `in_flight_actions = 0` is no concurrency, and `last_action_at = None`
+/// skips the cooldown outright.
+#[derive(Debug, Default)]
+struct AgentRuntimeFacts {
+    /// Action timestamps in the last 60s — `RateCheck`.
+    recent_call_timestamps: Vec<i64>,
+    /// Action timestamps in the last 7 days — `WeeklyRateCheck`.
+    weekly_call_timestamps: Vec<i64>,
+    /// Spend since local midnight in the policy timezone — `DailyBudgetCheck`.
+    daily_spend_usd: f64,
+    /// Authorizations issued and not yet spent — `ConcurrencyCheck`.
+    in_flight_actions: u32,
+    /// Most recent action timestamp — `CooldownCheck`.
+    last_action_at: Option<i64>,
+}
+
+/// Load [`AgentRuntimeFacts`] for one (tenant, agent, policy) at `now`.
+///
+/// One pass over the 7-day receipt window serves the weekly rate, the 60s rate
+/// and the cooldown, because all three are questions about the same rows.
+fn load_agent_runtime_facts(
+    db_handle: &Arc<crate::db::DbHandle>,
+    tenant_id: &str,
+    agent_id: &str,
+    policy_id: &str,
+    now_epoch: i64,
+    day_start_epoch: i64,
+) -> Result<AgentRuntimeFacts, AppError> {
+    use crate::sql_params;
+
+    const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
+    const MINUTE_SECS: i64 = 60;
+
+    let mut conn = db_handle.lock().map_err(AppError::internal)?;
+    let mut db = conn.any_conn();
+
+    let week_lower = now_epoch.saturating_sub(WEEK_SECS);
+    let weekly: Vec<i64> = db
+        .query_map(
+            "SELECT created_at FROM agent_action_receipts
+             WHERE tenant_id = ?1 AND agent_id = ?2 AND created_at > ?3
+             ORDER BY created_at DESC LIMIT ?4",
+            sql_params![tenant_id, agent_id, week_lower, MAX_RATE_WINDOW_ROWS],
+            |r| r.get_i64(0),
+        )
+        .map_err(AppError::internal)?;
+
+    let minute_lower = now_epoch.saturating_sub(MINUTE_SECS);
+    let recent: Vec<i64> = weekly
+        .iter()
+        .copied()
+        .filter(|t| *t > minute_lower)
+        .collect();
+    // `weekly` is ordered newest-first, so the head is the last action.
+    let last_action_at = weekly.first().copied();
+
+    let daily_spend_usd: f64 = db.scalar_or(
+        "SELECT COALESCE(SUM(amount_usd), 0) FROM spend_log
+             WHERE tenant_id = ?1 AND policy_id = ?2 AND agent_id = ?3 AND recorded_at >= ?4",
+        sql_params![tenant_id, policy_id, agent_id, day_start_epoch],
+        |r| r.get_f64(0),
+        0.0,
+    );
+
+    // Issued-but-unspent egress capabilities are the one honest in-flight signal
+    // this server has: each row is an authorization the agent may still redeem.
+    // It undercounts a non-egress action already executing, which the gateway
+    // does not track as a separate lifecycle.
+    let in_flight_actions: i64 = db.scalar_or(
+        "SELECT COUNT(*) FROM agent_egress_capabilities
+         WHERE tenant_id = ?1 AND agent_id = ?2 AND used_at IS NULL AND expires_at >= ?3",
+        sql_params![tenant_id, agent_id, now_epoch],
+        |r| r.get_i64(0),
+        0,
+    );
+
+    Ok(AgentRuntimeFacts {
+        recent_call_timestamps: recent,
+        weekly_call_timestamps: weekly,
+        daily_spend_usd,
+        in_flight_actions: in_flight_actions.clamp(0, u32::MAX as i64) as u32,
+        last_action_at,
+    })
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -721,6 +884,125 @@ pub async fn enforce_bound_policy_for_action(
     enforce_bound_policy_with_handles(&db_handle, &store, &repo, tenant_id, agent_id, action).await
 }
 
+/// Run the bound policy for `action` and translate the outcome into the
+/// caller's control flow.
+///
+/// Every action route wants the same six-way decision — allow, deny, binding
+/// absent, binding unloadable, infra error, and the process enforcement mode on
+/// top of all of them. That decision was written out inline on
+/// `/agent/payment/authorize` and nowhere else, which is why a bound policy
+/// governed payments and governed nothing about egress, capability issuance or
+/// action challenges. Having it in one function is what makes "call the policy
+/// engine from this route" a one-line change instead of a 90-line copy.
+///
+/// `Ok(())` means proceed. `Err((status, message))` is the refusal to return
+/// verbatim. `route` appears only in logs and the audit record.
+pub async fn gate_action_on_bound_policy(
+    state: &Arc<RwLock<ServerState>>,
+    tenant_id: &str,
+    agent_id: &str,
+    action: &Action,
+    route: &'static str,
+) -> Result<(), AppError> {
+    use crate::runtime_mode::{policy_enforcement_mode, PolicyEnforcementMode};
+
+    let mode = policy_enforcement_mode();
+    if matches!(mode, PolicyEnforcementMode::Off) {
+        return Ok(());
+    }
+    let enforce = matches!(mode, PolicyEnforcementMode::Enforce);
+
+    match enforce_bound_policy_for_action(state, tenant_id, agent_id, action).await {
+        Ok(BoundPolicyOutcome::Allow { .. }) => Ok(()),
+
+        Ok(BoundPolicyOutcome::Deny {
+            policy_id,
+            check,
+            reason,
+        }) => {
+            tracing::warn!(
+                target: "sauron::policy::enforcement",
+                %tenant_id, %agent_id, %policy_id, %check, %reason, %route, enforce,
+                "bound policy denied action",
+            );
+            // A denial is a security event whether or not this deployment
+            // enforces it: advisory mode exists to show an operator what WOULD
+            // be blocked, and that is only useful if it is recorded.
+            crate::middleware::audit_log::record(
+                crate::middleware::audit_log::AuditEvent::PolicyViolation {
+                    tenant_id: tenant_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    policy_id: policy_id.clone(),
+                    check: check.clone(),
+                    reason: reason.clone(),
+                },
+            );
+            if enforce {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("policy {policy_id} denied {check}: {reason}"),
+                )
+                    .into());
+            }
+            Ok(())
+        }
+
+        Ok(BoundPolicyOutcome::PolicyUnavailable { policy_id }) => {
+            // A binding exists but its policy will not load. Never a licence to
+            // allow — the operator asked for a constraint and the server cannot
+            // apply it.
+            tracing::error!(
+                target: "sauron::policy::enforcement",
+                %tenant_id, %agent_id, %policy_id, %route, enforce,
+                "bound policy unavailable — failing closed",
+            );
+            if enforce {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("bound policy {policy_id} is unavailable (failing closed)"),
+                )
+                    .into());
+            }
+            Ok(())
+        }
+
+        Ok(BoundPolicyOutcome::NoBinding) => {
+            if enforce && crate::runtime_mode::policy_require_binding() {
+                tracing::warn!(
+                    target: "sauron::policy::enforcement",
+                    %tenant_id, %agent_id, %route,
+                    "no bound policy and SAURON_POLICY_REQUIRE_BINDING=1 — denying",
+                );
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "no bound policy for agent (SAURON_POLICY_REQUIRE_BINDING)".to_string(),
+                )
+                    .into());
+            }
+            Ok(())
+        }
+
+        Err(e) => {
+            // An infra error during evaluation must not authorise the action:
+            // an attacker who can induce one (DB pressure, pool exhaustion)
+            // would otherwise have a bypass.
+            tracing::warn!(
+                target: "sauron::policy::enforcement",
+                error = %e, %tenant_id, %agent_id, %route, enforce,
+                "bound policy enforcement errored",
+            );
+            if enforce {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("policy enforcement unavailable (failing closed): {e}"),
+                )
+                    .into());
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Low-level enforcement driven by raw handles. Sibling of
 /// [`enforce_bound_policy_for_action`] used by tests + by call sites that
 /// don't have a full `ServerState`. Production handlers go through the
@@ -768,16 +1050,27 @@ pub async fn enforce_bound_policy_with_handles(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let now_tz_hhmm = compute_tz_hhmm(&compiled.raw, now_epoch);
+    let clock = policy_wall_clock(&compiled.raw, now_epoch);
+    let facts = load_agent_runtime_facts(
+        db_handle,
+        tenant_id,
+        agent_id,
+        &policy_id,
+        now_epoch,
+        clock.day_start_epoch,
+    )?;
 
     let mut ctx = EvaluationContext::with_defaults(action);
     ctx.spend_total_usd = spend;
     ctx.now_epoch = now_epoch;
-    ctx.now_tz_hhmm = now_tz_hhmm;
-    // Weekday/date defaults: pass a Monday at noon UTC if the policy has
-    // weekday-gated checks so the test path isn't blocked by ambient time.
-    ctx.now_weekday = 1;
-    ctx.now_date_yyyy_mm_dd = "2026-05-21".into();
+    ctx.now_tz_hhmm = clock.hhmm;
+    ctx.now_weekday = clock.weekday;
+    ctx.now_date_yyyy_mm_dd = clock.date;
+    ctx.recent_call_timestamps = &facts.recent_call_timestamps;
+    ctx.weekly_call_timestamps = &facts.weekly_call_timestamps;
+    ctx.daily_spend_usd = facts.daily_spend_usd;
+    ctx.in_flight_actions = facts.in_flight_actions;
+    ctx.last_action_at = facts.last_action_at;
 
     match crate::policy::evaluator::evaluate(&compiled, &ctx) {
         Verdict::Allow => Ok(BoundPolicyOutcome::Allow { policy_id }),

@@ -246,23 +246,54 @@ impl AnyRow for postgres::Row {
     }
 }
 
-/// A NULL that fits any column.
+/// Bind a `SqlValue` against the column type PostgreSQL actually asks for.
 ///
-/// rust-postgres asks the server for each parameter's type and then calls
-/// `to_sql` with it, so `None::<i64>` is a NULL *typed int8* and Postgres
-/// refuses it for a TEXT column ("error serializing parameter"). SQLite has no
-/// such notion — NULL is NULL. This accepts whatever type the server asks for
-/// and writes nothing, which is what the call sites mean.
-#[derive(Debug)]
-struct AnyNull;
-
-impl postgres::types::ToSql for AnyNull {
+/// Two mismatches made this necessary, and neither can be seen from the call
+/// site:
+///
+/// * **Width.** `SqlValue::Int` is an `i64` because SQLite has one integer
+///   type. This schema has 99 BIGINT columns and 23 INTEGER ones, and the
+///   driver refuses an `i64` for an `int4` — "cannot convert between the Rust
+///   type `i64` and the Postgres type `int4`". The reader already copes by
+///   trying `i64` then `i32`; this is the write half. Narrowing is checked, not
+///   truncating: a value that does not fit is a call-site bug, and silently
+///   storing a different number is the worst available answer.
+///
+/// * **NULL.** A typed `Option::<String>::None` is a *text* null, and the
+///   server refuses it for an integer column. SQLite has no such notion. A
+///   `SqlValue::Null` writes nothing whatever type is requested, which is what
+///   the call sites mean.
+///
+/// `accepts` is a static method and cannot see which variant it will be asked
+/// to encode, so it accepts broadly and `to_sql` produces the specific error.
+impl postgres::types::ToSql for SqlValue {
     fn to_sql(
         &self,
-        _ty: &postgres::types::Type,
-        _out: &mut postgres::types::private::BytesMut,
+        ty: &postgres::types::Type,
+        out: &mut postgres::types::private::BytesMut,
     ) -> Result<postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        Ok(postgres::types::IsNull::Yes)
+        use postgres::types::Type;
+        let too_wide = |v: i64, what: &str| -> Box<dyn std::error::Error + Sync + Send> {
+            format!("{v} does not fit {what}").into()
+        };
+        match self {
+            SqlValue::Null => Ok(postgres::types::IsNull::Yes),
+            SqlValue::Int(v) => match *ty {
+                Type::INT2 => i16::try_from(*v)
+                    .map_err(|_| too_wide(*v, "a smallint column"))?
+                    .to_sql(ty, out),
+                Type::INT4 => i32::try_from(*v)
+                    .map_err(|_| too_wide(*v, "an integer column"))?
+                    .to_sql(ty, out),
+                _ => v.to_sql(ty, out),
+            },
+            // Normalised to Int before binding; handled here so the match is
+            // total rather than relying on that invariant holding forever.
+            SqlValue::Bool(v) => SqlValue::Int(i64::from(*v)).to_sql(ty, out),
+            SqlValue::Real(v) => v.to_sql(ty, out),
+            SqlValue::Text(v) => v.to_sql(ty, out),
+            SqlValue::Blob(v) => v.to_sql(ty, out),
+        }
     }
 
     fn accepts(_ty: &postgres::types::Type) -> bool {
@@ -289,20 +320,10 @@ impl SqlValue {
         }
     }
 
-    /// Borrow as a postgres parameter. Call on the output of
-    /// [`SqlValue::normalized_for_pg`], never on a raw `Bool`.
+    /// Borrow as a postgres parameter. The encoding lives in
+    /// `impl ToSql for SqlValue`, which sees the target column type.
     fn as_pg(&self) -> &(dyn postgres::types::ToSql + Sync) {
-        match self {
-            SqlValue::Null => &AnyNull,
-            SqlValue::Int(v) => v,
-            SqlValue::Real(v) => v,
-            SqlValue::Text(v) => v,
-            SqlValue::Blob(v) => v,
-            // Unreachable via the query paths, which normalise first. Binding
-            // a real bool would only be correct against a BOOLEAN column, and
-            // this schema has none.
-            SqlValue::Bool(v) => v,
-        }
+        self
     }
 
     fn as_sqlite(&self) -> rusqlite::types::Value {
@@ -325,6 +346,52 @@ impl SqlValue {
 pub enum AnyConn<'a> {
     Sqlite(&'a rusqlite::Connection),
     Postgres(&'a mut postgres::Client),
+}
+
+/// Run a blocking backend call from wherever the caller happens to be.
+///
+/// The `postgres` crate is the synchronous client: every `query`/`execute`
+/// drives a private Tokio runtime with `block_on`. Tokio refuses that from a
+/// thread already driving tasks — `Cannot start a runtime from within a
+/// runtime` — and essentially every call site here is inside an async axum
+/// handler, so without this the first Postgres query of any request panics.
+///
+/// This never surfaced before the call-site sweep because nothing could reach
+/// `AnyConn::Postgres` from a handler: `DbHandle::any` had no callers and
+/// `conn()` had only two, both covered by synchronous `#[test]`s.
+///
+/// `block_in_place` hands the worker's remaining tasks to another thread and
+/// permits blocking on this one. It is only legal on the multi-threaded
+/// runtime, which is what `#[tokio::main]` builds; off a runtime, or on a
+/// current-thread one, the call runs directly, because there is no work being
+/// starved in either case.
+///
+/// ponytail: correct, not fast — a query holds a worker thread for its
+/// duration. The fix if that bites is `tokio-postgres` end to end, which means
+/// making `AnyConn` async and every call site with it.
+/// Render a `postgres::Error` with the detail the server actually sent.
+///
+/// `postgres::Error` Displays as the bare string `"db error"`; the SQLSTATE,
+/// the constraint name and the message all live one level down in `source()`.
+/// Mapping with `to_string()` therefore produced an identical, useless string
+/// for every failure — and worse, the replay paths decide between 401 and 500
+/// by looking for "unique"/"duplicate key" in that string, so on Postgres they
+/// would all have taken the 500 branch.
+fn pg_err(e: postgres::Error) -> String {
+    use std::error::Error;
+    match e.source() {
+        Some(src) => format!("{e}: {src}"),
+        None => e.to_string(),
+    }
+}
+
+pub(crate) fn blocking<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
 }
 
 /// A column type readable from either backend's row.
@@ -522,9 +589,11 @@ impl AnyConn<'_> {
                 let owned: Vec<SqlValue> = params.iter().map(SqlValue::normalized_for_pg).collect();
                 let bound: Vec<&(dyn postgres::types::ToSql + Sync)> =
                     owned.iter().map(SqlValue::as_pg).collect();
-                client
-                    .execute(translated.as_str(), bound.as_slice())
-                    .map_err(|e| e.to_string())
+                blocking(|| {
+                    client
+                        .execute(translated.as_str(), bound.as_slice())
+                        .map_err(pg_err)
+                })
             }
         }
     }
@@ -555,9 +624,11 @@ impl AnyConn<'_> {
                 let owned: Vec<SqlValue> = params.iter().map(SqlValue::normalized_for_pg).collect();
                 let bound: Vec<&(dyn postgres::types::ToSql + Sync)> =
                     owned.iter().map(SqlValue::as_pg).collect();
-                let rows = client
-                    .query(translated.as_str(), bound.as_slice())
-                    .map_err(|e| e.to_string())?;
+                let rows = blocking(|| {
+                    client
+                        .query(translated.as_str(), bound.as_slice())
+                        .map_err(pg_err)
+                })?;
                 match rows.first() {
                     Some(row) => map(row as &dyn AnyRow).map(Some),
                     None => Ok(None),
@@ -592,9 +663,11 @@ impl AnyConn<'_> {
                 let owned: Vec<SqlValue> = params.iter().map(SqlValue::normalized_for_pg).collect();
                 let bound: Vec<&(dyn postgres::types::ToSql + Sync)> =
                     owned.iter().map(SqlValue::as_pg).collect();
-                let rows = client
-                    .query(translated.as_str(), bound.as_slice())
-                    .map_err(|e| e.to_string())?;
+                let rows = blocking(|| {
+                    client
+                        .query(translated.as_str(), bound.as_slice())
+                        .map_err(pg_err)
+                })?;
                 rows.iter().map(|r| map(r as &dyn AnyRow)).collect()
             }
         }

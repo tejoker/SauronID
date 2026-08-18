@@ -735,152 +735,9 @@ paths:
             text/plain:
               schema: { type: string }
 
-  /oprf:
-    post:
-      tags: [public]
-      summary: Legacy OPRF evaluation
-      description: >-
-        Evaluates a blinded Ristretto point. Quarantined in production unless
-        SAURON_ENABLE_LEGACY_OPRF=1 (dev default on).
-      operationId: oprfEvaluate
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [blinded_point]
-              properties:
-                blinded_point: { $ref: '#/components/schemas/Bytes32' }
-      responses:
-        '200':
-          description: Evaluated point.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [evaluated_point]
-                properties:
-                  evaluated_point: { $ref: '#/components/schemas/Bytes' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /register:
-    post:
-      tags: [public]
-      summary: KYC deposit (partner-signed user registration)
-      description: >-
-        Registers a user identity. Authenticated by a partner ring signature
-        over the canonical registration payload (domain
-        sauron.partner-registration.v2), verified against the tenant's
-        FULL_KYC client ring. Error responses have empty bodies (status code only).
-      operationId: registerUser
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [public_key, key_image, profile, client_signature]
-              properties:
-                public_key: { $ref: '#/components/schemas/Bytes32' }
-                key_image: { $ref: '#/components/schemas/Bytes32' }
-                profile: { $ref: '#/components/schemas/UserData' }
-                client_signature: { $ref: '#/components/schemas/RingSignature' }
-                commitment: { type: [string, "null"] }
-                auth_public_key_b64u: { type: string, default: "", description: Ed25519 user auth public key (base64url unpadded); required outside development. }
-      responses:
-        '200':
-          description: Registered. Merkle fields present only when a commitment was supplied.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [status]
-                properties:
-                  status: { type: string, const: success }
-                  merkle_root: { type: string }
-                  merkle_proof: { type: array, items: { type: string } }
-                  leaf_index: { type: integer, minimum: 0 }
-        '400': { description: "Invalid key material, commitment, or auth key (empty body)." }
-        '401': { description: Invalid or unauthorized partner ring signature (empty body). }
 
-  /bank/register:
-    post:
-      tags: [public]
-      summary: Bank-attested user registration
-      description: >-
-        Registers a user via a bank partner. Authenticated by an HMAC-SHA256
-        attestation keyed per bank (BANK_PROVIDER_SECRETS_JSON), 5-minute
-        skew, nonce replay-consumed. Disabled by SAURON_DISABLE_BANK_KYC=1.
-      operationId: bankRegisterUser
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [bank_client_name, public_key_hex, key_image_hex, first_name, last_name, email, date_of_birth, nationality, auth_public_key_b64u, attestation_signature, attestation_issued_at, attestation_nonce]
-              properties:
-                bank_client_name: { type: string }
-                bank_customer_id: { type: [string, "null"] }
-                public_key_hex: { type: string, description: 32-byte compressed Ristretto point (hex). }
-                key_image_hex: { type: string }
-                first_name: { type: string }
-                last_name: { type: string }
-                email: { type: string }
-                date_of_birth: { type: string }
-                nationality: { type: string }
-                auth_public_key_b64u: { type: string }
-                attestation_signature: { type: string, description: hex HMAC-SHA256 over the canonical payload. }
-                attestation_issued_at: { type: integer, format: int64 }
-                attestation_nonce: { type: string }
-      responses:
-        '200':
-          description: Registered (or pre-existing user re-linked).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [status, bank_client_name, key_image_hex, user_preexisting]
-                properties:
-                  status: { type: string, const: success }
-                  bank_client_name: { type: string }
-                  key_image_hex: { type: string }
-                  user_preexisting: { type: boolean }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /register/bank:
-    post:
-      tags: [public]
-      summary: Bank-attested user registration (alias of /bank/register)
-      operationId: bankRegisterUserAlias
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              description: Same body as POST /bank/register.
-              additionalProperties: true
-      responses:
-        '200':
-          description: Same response as POST /bank/register.
-          content:
-            application/json:
-              schema: { type: object, additionalProperties: true }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /zkp/proof_material:
     post:
@@ -1330,6 +1187,57 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  /agent/rings/{ring_id}/members:
+    get:
+      tags: [agent-actions]
+      summary: Ring members, rule and version for anonymous signing
+      description: >
+        Returns the stealth pseudonyms making up a ring, plus the rule the ring
+        enforces and its version. Gated by SAURON_ANON_RINGS=1 (phase 4).
+
+        Deliberately NOT per-call-signature protected: a call signature carries
+        `x-sauron-agent-id`, so requiring one would make every agent announce
+        which rings it is about to sign for — the exact correlation the
+        pseudonym scheme prevents. Serving the set without proof of membership
+        is safe because the rows are per-ring stealth pseudonyms
+        `P_R = A + h_R*G`, not identities; linking two across rings, or
+        recovering the master key behind one, needs the operator trapdoor.
+
+        `members` ordering is load-bearing. An LSAG is computed across the ring
+        in sequence, so a signer that re-sorts this array produces a signature
+        that fails verification for no visible reason. Sign over it as returned.
+      operationId: listRingMembers
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: ring_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Ring members in canonical signing order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ring_id, policy_version, rule, members, count]
+                properties:
+                  ring_id: { type: string }
+                  policy_version:
+                    type: string
+                    description: 'Stamp for the envelope, as `ring:{ring_id}:v{n}`.'
+                  rule:
+                    type: string
+                    description: The rule an action must satisfy to be admitted.
+                  members:
+                    type: array
+                    description: Compressed Ristretto points, hex. Do not re-sort.
+                    items: { type: string }
+                  count: { type: integer, format: int64 }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /agent/usage:
     post:
       tags: [agent-actions]
@@ -1365,6 +1273,57 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /agent/payment/consume:
+    post:
+      tags: [agent-actions]
+      summary: Redeem a payment authorization exactly once
+      description: >
+        Consumes an authorization minted by `POST /agent/payment/authorize`.
+        Single-use: the first call returns 200 and every later or concurrent one
+        returns 409, enforced by an atomic `UPDATE … WHERE consumed = 0` under
+        BEGIN IMMEDIATE (SQLite) or FOR UPDATE (PostgreSQL).
+
+        Only the agent that obtained the authorization may consume it; the call
+        signature identifies the caller and the handler checks ownership before
+        consuming, so holding the id is not sufficient.
+
+        Under `/agent/`, so the default-deny per-call signature layer applies:
+        the request must carry the `x-sauron-call-*` headers and the agent's
+        config digest.
+      operationId: agentPaymentConsume
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authorization_id]
+              properties:
+                authorization_id:
+                  type: string
+                  maxLength: 128
+                  description: The `authorization_id` returned by /agent/payment/authorize.
+      responses:
+        '200':
+          description: Authorization consumed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [consumed, authorization_id]
+                properties:
+                  consumed: { type: boolean, const: true }
+                  authorization_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The authorization belongs to a different agent.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Already consumed or expired — a payment authorization is single-use.
 
   /agent/payment/authorize:
     post:
@@ -1759,58 +1718,6 @@ paths:
         '502': { $ref: '#/components/responses/BadGateway' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /agent/kyc/consent:
-    post:
-      tags: [agent-actions]
-      summary: Agent claims a pending KYC consent on behalf of its human (call-signed)
-      description: >-
-        Requires A-JWT (in body), PoP challenge/JWS, and a ring-signature
-        action leash. delegated_nonbank agents are refused.
-      operationId: agentKycConsent
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - $ref: '#/components/parameters/CallSigAgentId'
-        - $ref: '#/components/parameters/CallSigTs'
-        - $ref: '#/components/parameters/CallSigNonce'
-        - $ref: '#/components/parameters/CallSigSig'
-        - $ref: '#/components/parameters/CallSigAudience'
-        - $ref: '#/components/parameters/CallSigProtocolVersion'
-        - $ref: '#/components/parameters/CallSigConfigDigest'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [ajwt, site_name, request_id, agent_action]
-              properties:
-                ajwt: { type: string }
-                site_name: { type: string }
-                request_id: { type: string }
-                pop_challenge_id: { type: string, default: "" }
-                pop_jws: { type: string, default: "" }
-                agent_action: { $ref: '#/components/schemas/AgentActionProof' }
-      responses:
-        '200':
-          description: Consent token issued to the agent.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [consent_token, expires_at, on_behalf_of, agent_id, assurance_level, action_receipt]
-                properties:
-                  consent_token: { type: string }
-                  expires_at: { type: integer, format: int64, description: now + 300. }
-                  on_behalf_of: { type: string, description: Human key image. }
-                  agent_id: { type: string }
-                  assurance_level: { type: string }
-                  action_receipt: { $ref: '#/components/schemas/ActionReceipt' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '426': { $ref: '#/components/responses/UpgradeRequired' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /agent/vc/issue:
     post:
@@ -1889,208 +1796,9 @@ paths:
 
   # ── End-user KYC consent flow ──
 
-  /kyc/request:
-    post:
-      tags: [kyc]
-      summary: Create a consent request for a ZKP_ONLY site
-      description: >-
-        Site must be registered as ZKP_ONLY. Default requested_claims:
-        ["age_over_threshold","age_threshold"]. Supported claims:
-        age_over_threshold, age_threshold, credential_valid,
-        nationality_match, merkle_inclusion. Disabled by
-        SAURON_DISABLE_USER_KYC=1.
-      operationId: kycRequest
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [site_name]
-              properties:
-                site_name: { type: string }
-                requested_claims: { type: array, items: { type: string }, default: [] }
-                redirect_origin: { type: string, default: "" }
-      responses:
-        '200':
-          description: Consent request created.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [request_id, consent_url, expires_at]
-                properties:
-                  request_id: { type: string }
-                  consent_url: { type: string }
-                  expires_at: { type: integer, format: int64 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /kyc/consent:
-    post:
-      tags: [kyc]
-      summary: Grant consent (email + password)
-      description: Disabled by SAURON_DISABLE_USER_KYC=1.
-      operationId: kycConsent
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [request_id, email, password]
-              properties:
-                request_id: { type: string }
-                email: { type: string }
-                password: { type: string }
-      responses:
-        '200':
-          description: Consent token issued.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [consent_token, expires_at]
-                properties:
-                  consent_token: { type: string }
-                  expires_at: { type: integer, format: int64, description: now + 300. }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /kyc/consent_info/{request_id}:
-    get:
-      tags: [kyc]
-      summary: Poll a consent request's status
-      operationId: kycConsentInfo
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - name: request_id
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Consent request status.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [request_id, site_name, requested_claims, status]
-                properties:
-                  request_id: { type: string }
-                  site_name: { type: string }
-                  requested_claims: { type: array, items: { type: string } }
-                  status: { type: string, enum: [granted, pending] }
-        '404': { $ref: '#/components/responses/NotFound' }
 
-  /kyc/retrieve:
-    post:
-      tags: [kyc]
-      summary: Retrieve ZKP-only KYC claims with a consent token
-      description: >-
-        Consumes the consent token and verifies the supplied ZK proof
-        (AgeVerification or CredentialVerification). Agent-issued consents are
-        additionally bound to the delegated agent via the x-agent-ajwt header
-        (delegated_agent_binding_middleware) plus an agent_action ring leash.
-        Disabled by SAURON_DISABLE_USER_KYC=1.
-      operationId: kycRetrieve
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - name: x-agent-ajwt
-          in: header
-          required: false
-          schema: { type: string }
-          description: A-JWT of the delegated agent (required when the consent was issued to an agent).
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [consent_token, site_name]
-              properties:
-                consent_token: { type: string }
-                site_name: { type: string }
-                zkp_proof: { description: Groth16 proof JSON. }
-                zkp_circuit: { type: [string, "null"], description: Defaults to CredentialVerification. }
-                zkp_public_signals:
-                  oneOf:
-                    - type: array
-                      items: { type: string }
-                    - type: "null"
-                required_action: { type: [string, "null"], description: Mandatory for agent-mediated retrieval. }
-                agent_action:
-                  oneOf:
-                    - $ref: '#/components/schemas/AgentActionProof'
-                    - type: "null"
-      responses:
-        '200':
-          description: ZKP-only disclosure.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [disclosure_mode, proof, billing, claims, identity, controls]
-                properties:
-                  disclosure_mode: { type: string, const: zkp_only }
-                  proof:
-                    type: object
-                    required: [verified, circuit, public_signals]
-                    properties:
-                      verified: { type: boolean, const: true }
-                      circuit: { type: string }
-                      public_signals: { type: array, items: { type: string } }
-                  billing:
-                    type: object
-                    required: [charged, unit, amount, tokens_b_remaining]
-                    properties:
-                      charged: { type: boolean }
-                      unit: { type: string, const: connection }
-                      amount: { type: integer }
-                      tokens_b_remaining: { type: integer, format: int64 }
-                  claims:
-                    type: object
-                    additionalProperties: true
-                    description: Disclosed claim subset; values are booleans or numbers.
-                  identity:
-                    type: object
-                    required: [is_agent, human_in_user_ring, trust_verified]
-                    properties:
-                      is_agent: { type: boolean }
-                      agent_id: { type: [string, "null"] }
-                      agent_pub_key_hex: { type: [string, "null"] }
-                      agent_assurance_level: { type: [string, "null"] }
-                      human_in_user_ring: { type: boolean }
-                      agent_in_agent_ring: { type: [boolean, "null"] }
-                      trust_verified: { type: boolean }
-                      policy:
-                        type: [object, "null"]
-                        properties:
-                          action: { type: string }
-                          allowed: { type: boolean }
-                          reason: { type: string }
-                          assurance_level: { type: string }
-                          policy_version: { type: string }
-                      action_receipt:
-                        oneOf:
-                          - $ref: '#/components/schemas/ActionReceipt'
-                          - type: "null"
-                  controls: { type: object, additionalProperties: true, description: "Compliance decision, issuer snapshots, risk window." }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '402': { $ref: '#/components/responses/PaymentRequired' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-        '502': { $ref: '#/components/responses/BadGateway' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   # ── User self-service ──
 
@@ -2692,6 +2400,42 @@ paths:
                 properties:
                   revoked: { type: boolean, const: true }
                   agent_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/users/{key_image}/revoke_sessions:
+    post:
+      tags: [admin]
+      summary: Revoke every owner session for a key image
+      description: >
+        Bumps the owner's `session_epoch`, invalidating every owner session
+        already issued for that key image. The owner session authorises
+        `POST /agent/register` and `POST /agent/{agent_id}/checksum/update`, so
+        it mints agent authority; this is the operator response to a suspected
+        leak. Already-registered agents are unaffected — they authenticate with
+        their own proof-of-possession keys, not with the owner session. A
+        tenant-locked admin may only revoke owners bound to its own tenant.
+      operationId: adminRevokeUserSessions
+      security: [{ adminKey: [] }, { adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: key_image
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+      responses:
+        '200':
+          description: Sessions revoked; the new epoch is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked, key_image, session_epoch]
+                properties:
+                  revoked: { type: boolean, const: true }
+                  key_image: { type: string }
+                  session_epoch: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -3537,43 +3281,6 @@ paths:
               schema: { $ref: '#/components/schemas/StatsSubmitResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /v1/stats/submit-encrypted:
-    post:
-      tags: [v1-stats]
-      summary: Submit a Paillier-encrypted contribution (quarantined in prod)
-      operationId: statsSubmitEncrypted
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [cohort_id, metric_id, period_start, pk_id, encrypted_value_b64]
-              properties:
-                cohort_id: { type: string }
-                metric_id: { type: string }
-                period_start: { type: integer, format: int64 }
-                pk_id: { type: string }
-                encrypted_value_b64: { type: string }
-      responses:
-        '200':
-          description: Aggregated homomorphically.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [aggregated_into, n_contributions]
-                properties:
-                  aggregated_into: { type: string }
-                  n_contributions: { type: integer, format: int64 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /v1/stats/cohort:
     get:

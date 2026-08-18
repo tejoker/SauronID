@@ -188,6 +188,54 @@ pub fn from_db_message(context: &str, message: impl std::fmt::Display) -> AppErr
     AppError::Internal(format!("{context}: {message}"))
 }
 
+/// Adopt a legacy `(StatusCode, String)` handler error.
+///
+/// Handlers used to return that tuple directly, which axum renders as a
+/// plain-text body — no `code`, no `fix`, and a different shape from the
+/// `AppError` routes next to them. The README documents
+/// `.json()["error"]["fix"]`, so half the surface was quietly not honouring the
+/// contract the other half advertised.
+///
+/// This exists so those handlers can move by changing their return type alone:
+/// `?` applies the conversion at the ~120 `map_err(|e| (StatusCode::X, e))` and
+/// `ok_or((StatusCode::X, …))` sites without touching them. The message is
+/// carried through byte-for-byte, which is what keeps the substring assertions
+/// in the red-team and e2e suites passing.
+///
+/// The resulting `code` is the status-derived one — `bad_request`,
+/// `unauthorized`, and so on. That is the same code the hand-written
+/// `AppError::BadRequest` arms produce, so this is parity with the already
+/// converted handlers, not a weaker version of them. Where a caller needs to
+/// discriminate more finely than the status allows, the site says so explicitly
+/// with [`AppError::with_hint`] — as the call-signature rejections do.
+impl From<(StatusCode, String)> for AppError {
+    fn from((status, message): (StatusCode, String)) -> Self {
+        match status {
+            StatusCode::BAD_REQUEST => AppError::BadRequest(message),
+            StatusCode::UNAUTHORIZED => AppError::Unauthorized(message),
+            StatusCode::NOT_FOUND => AppError::NotFound(message),
+            StatusCode::CONFLICT => AppError::Conflict(message),
+            StatusCode::SERVICE_UNAVAILABLE => AppError::ServiceUnavailable(message),
+            StatusCode::INTERNAL_SERVER_ERROR => AppError::Internal(message),
+            // 403, 422, 429 and the rest have no variant of their own. Keeping
+            // the status verbatim matters more than inventing one: a caller that
+            // branches on 429 must keep seeing 429.
+            other => AppError::Detailed {
+                status: other,
+                code: match other {
+                    StatusCode::FORBIDDEN => "forbidden",
+                    StatusCode::UNPROCESSABLE_ENTITY => "unprocessable_entity",
+                    StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+                    StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+                    _ => "error",
+                },
+                message,
+                fix: "see the message; docs/sdk-integration.md lists the headers and body each route expects",
+            },
+        }
+    }
+}
+
 impl From<rusqlite::Error> for AppError {
     fn from(e: rusqlite::Error) -> Self {
         // Losing a race for the write lock is load, not a fault. Reported as

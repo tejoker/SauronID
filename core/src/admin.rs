@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock, RwLock};
 use subtle::ConstantTimeEq;
 
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::error::AppError;
 use crate::identity::Identity;
 use crate::risk;
@@ -318,12 +318,66 @@ fn extract_x_admin_key_bytes(request: &Request) -> Vec<u8> {
         .to_vec()
 }
 
+/// Principal kinds, for the audit trail. Never carries key material.
+const PRINCIPAL_JWT: &str = "admin_jwt";
+const PRINCIPAL_STATIC: &str = "static_key";
+
+/// A static admin key is operator-global by construction: it carries no scopes
+/// and no tenant allowlist, so the only thing deciding which tenant it reads is
+/// the caller's own `x-sauron-tenant-id` header. That is fine for a single-tenant
+/// or single-operator deployment and is NOT fine once the key is handed to
+/// someone who administers one tenant among several — they read every other
+/// tenant by editing a header.
+///
+/// So in production a static key may only target a non-default tenant when the
+/// operator has explicitly declared the key operator-global with
+/// `SAURON_ADMIN_CROSS_TENANT=1`. Without that declaration the request is a 403
+/// and the operator is pointed at `/admin/keys/issue`, which mints a
+/// tenant-locked JWT — the credential that actually carries a scope.
+///
+/// Development is unaffected: the seeded demo drives several tenants through one
+/// key and blocking that would break every local walkthrough.
+fn static_key_may_target(tenant: &str) -> bool {
+    tenant == crate::tenancy::DEFAULT_TENANT
+        || cross_tenant_admin()
+        || crate::runtime_mode::is_development_runtime()
+}
+
 pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<impl IntoResponse, StatusCode> {
     let cfg = admin_cfg();
     let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let tenant = request_tenant(&request);
+
+    // Run the handler, then record that an authenticated admin request
+    // completed. Emitted here rather than in `audit_log_middleware` because
+    // this is the only layer that knows HOW the caller authenticated and
+    // whether it was allowed beyond its own tenant.
+    async fn run_audited(
+        request: Request,
+        next: Next,
+        principal: &'static str,
+        cross_tenant: bool,
+        tenant_id: String,
+        method: Method,
+        path: String,
+    ) -> axum::response::Response {
+        let response = next.run(request).await;
+        crate::middleware::audit_log::record(
+            crate::middleware::audit_log::AuditEvent::AdminAction {
+                tenant_id,
+                principal: principal.to_string(),
+                cross_tenant,
+                method: method.to_string(),
+                path,
+                status: response.status().as_u16(),
+            },
+        );
+        response
+    }
 
     // 1. Admin JWT (Bearer) — carries scopes (read/write/super) + optional
     //    tenant allowlist for per-operator least-privilege.
@@ -337,8 +391,7 @@ pub async fn auth_middleware(
                 let cross_tenant = if !is_super && !tnt.is_empty() {
                     // Tenant-locked operator: may act ONLY on an allowlisted
                     // tenant, regardless of the global cross-tenant flag.
-                    let rt = request_tenant(&request);
-                    if !tnt.iter().any(|t| t == &rt) {
+                    if !tnt.iter().any(|t| t == &tenant) {
                         return Err(StatusCode::FORBIDDEN);
                     }
                     false
@@ -347,7 +400,16 @@ pub async fn auth_middleware(
                     is_super || cross_tenant_admin()
                 };
                 request.extensions_mut().insert(AdminAuthz { cross_tenant });
-                return Ok(next.run(request).await);
+                return Ok(run_audited(
+                    request,
+                    next,
+                    PRINCIPAL_JWT,
+                    cross_tenant,
+                    tenant,
+                    method,
+                    path,
+                )
+                .await);
             }
         }
         // A Bearer token that is not a valid admin JWT is accepted as a static
@@ -355,20 +417,28 @@ pub async fn auth_middleware(
         // The SDK enforcement layers send the static key as
         // `Authorization: Bearer <key>`; same secret, alternate transport.
         let bearer_bytes = token.trim().as_bytes().to_vec();
-        if key_matches_any(&bearer_bytes, &cfg.full_write_keys) {
-            request.extensions_mut().insert(AdminAuthz {
-                cross_tenant: cross_tenant_admin(),
-            });
-            return Ok(next.run(request).await);
-        }
-        if key_matches_any(&bearer_bytes, &cfg.read_only_keys) {
-            if method == Method::GET || method == Method::HEAD {
-                request.extensions_mut().insert(AdminAuthz {
-                    cross_tenant: cross_tenant_admin(),
-                });
-                return Ok(next.run(request).await);
+        if key_matches_any(&bearer_bytes, &cfg.full_write_keys)
+            || key_matches_any(&bearer_bytes, &cfg.read_only_keys)
+        {
+            let read_only = !key_matches_any(&bearer_bytes, &cfg.full_write_keys);
+            if read_only && method != Method::GET && method != Method::HEAD {
+                return Err(StatusCode::FORBIDDEN);
             }
-            return Err(StatusCode::FORBIDDEN);
+            if !static_key_may_target(&tenant) {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            let cross_tenant = cross_tenant_admin();
+            request.extensions_mut().insert(AdminAuthz { cross_tenant });
+            return Ok(run_audited(
+                request,
+                next,
+                PRINCIPAL_STATIC,
+                cross_tenant,
+                tenant,
+                method,
+                path,
+            )
+            .await);
         }
         // Not a JWT, not a known static key: fall through to x-admin-key.
     }
@@ -380,23 +450,29 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    if key_matches_any(&key_bytes, &cfg.full_write_keys) {
-        request.extensions_mut().insert(AdminAuthz {
-            cross_tenant: cross_tenant_admin(),
-        });
-        return Ok(next.run(request).await);
+    let full = key_matches_any(&key_bytes, &cfg.full_write_keys);
+    let read = key_matches_any(&key_bytes, &cfg.read_only_keys);
+    if !full && !read {
+        return Err(StatusCode::UNAUTHORIZED);
     }
-    if key_matches_any(&key_bytes, &cfg.read_only_keys) {
-        if method == Method::GET || method == Method::HEAD {
-            request.extensions_mut().insert(AdminAuthz {
-                cross_tenant: cross_tenant_admin(),
-            });
-            return Ok(next.run(request).await);
-        }
+    if !full && method != Method::GET && method != Method::HEAD {
         return Err(StatusCode::FORBIDDEN);
     }
-
-    Err(StatusCode::UNAUTHORIZED)
+    if !static_key_may_target(&tenant) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let cross_tenant = cross_tenant_admin();
+    request.extensions_mut().insert(AdminAuthz { cross_tenant });
+    Ok(run_audited(
+        request,
+        next,
+        PRINCIPAL_STATIC,
+        cross_tenant,
+        tenant,
+        method,
+        path,
+    )
+    .await)
 }
 
 // ─────────────────────────────────────────────────────
@@ -431,7 +507,7 @@ pub async fn add_client(
     State(state): State<Arc<RwLock<ServerState>>>,
     tenant: Option<axum::Extension<crate::tenancy::TenantId>>,
     Json(payload): Json<AddClientRequest>,
-) -> Result<Json<AddClientResponse>, (StatusCode, String)> {
+) -> Result<Json<AddClientResponse>, AppError> {
     let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
     let require_external = crate::runtime_mode::require_or_default(
         "SAURON_REQUIRE_EXTERNAL_CLIENT_KEYS",
@@ -459,7 +535,8 @@ pub async fn add_client(
                     return Err((
                         StatusCode::BAD_REQUEST,
                         format!("{label} must not be the identity point"),
-                    ));
+                    )
+                        .into());
                 }
             }
             (pub_hex.clone(), ki_hex.clone(), None)
@@ -476,13 +553,14 @@ pub async fn add_client(
             return Err((
                     StatusCode::BAD_REQUEST,
                     "production requires externally generated public_key_hex and key_image_hex; private partner keys must never enter SauronID custody".into(),
-                ));
+                ).into());
         }
         _ => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "public_key_hex and key_image_hex must be supplied together".into(),
-            ));
+            )
+                .into());
         }
     };
     let type_str = payload.client_type.as_db_str();
@@ -490,7 +568,7 @@ pub async fn add_client(
     // Persistance en DB.
     {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         // Both rows or neither: a client without its tenant binding is
         // unreachable and would block the name from being re-registered.
         db.any_conn()
@@ -588,15 +666,16 @@ pub async fn get_action_anchor_proof(
     axum::Extension(tenant): axum::Extension<crate::tenancy::TenantId>,
     authz: Option<axum::Extension<AdminAuthz>>,
     axum::extract::Query(q): axum::extract::Query<ActionAnchorProofQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     match crate::agent_action_anchor::proof_for_receipt_for_tenant(&state, &q.receipt_id, &scope) {
         Ok(Some(v)) => Ok(Json(v)),
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
             "receipt_id not yet anchored (next anchor batch will include it)".into(),
-        )),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+        )
+            .into()),
+        Err(e) => Err(AppError::Internal(e)),
     }
 }
 
@@ -628,12 +707,12 @@ pub async fn get_anchor_batches(
     axum::Extension(tenant): axum::Extension<crate::tenancy::TenantId>,
     authz: Option<axum::Extension<AdminAuthz>>,
     axum::extract::Query(q): axum::extract::Query<AnchorBatchesQuery>,
-) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     match crate::agent_action_anchor::recent_batches_for_tenant(&state, limit, &scope) {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => Err(AppError::Internal(e)),
     }
 }
 
@@ -686,7 +765,7 @@ pub async fn get_anchor_ots(
 
     let row: Option<(String, Vec<u8>)> = {
         let st = state.read_or_recover();
-        let conn = match st.db.lock() {
+        let mut conn = match st.db.lock() {
             Ok(c) => c,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
@@ -757,7 +836,7 @@ pub async fn force_action_anchor_run(
     State(state): State<Arc<RwLock<ServerState>>>,
     axum::Extension(tenant): axum::Extension<crate::tenancy::TenantId>,
     authz: Option<axum::Extension<AdminAuthz>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     // A cross-tenant operator may still trigger one batch per tenant; the
     // endpoint returns only the batch for the requested tenant unless the
@@ -773,7 +852,7 @@ pub async fn force_action_anchor_run(
         Ok(None) => Ok(Json(
             serde_json::json!({ "anchor_id": null, "reason": "no new receipts" }),
         )),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => Err(AppError::Internal(e)),
     }
 }
 
@@ -790,7 +869,7 @@ pub async fn health_public(
     let ok = {
         let st = state.read_or_recover();
         match st.db.lock() {
-            Ok(conn) => conn
+            Ok(mut conn) => conn
                 .any_conn()
                 .query_row("SELECT 1", sql_params![], |r| r.get::<i64>(0))
                 .is_ok(),
@@ -812,7 +891,7 @@ pub async fn readyz(
     let db_ok = {
         let st = state.read_or_recover();
         match st.db.lock() {
-            Ok(conn) => match conn
+            Ok(mut conn) => match conn
                 .any_conn()
                 .query_row("SELECT 1", sql_params![], |r| r.get_i64(0))
             {
@@ -875,8 +954,6 @@ pub struct HealthComponent {
 
 #[derive(Serialize)]
 pub struct HealthFlags {
-    pub bank_kyc_enabled: bool,
-    pub user_kyc_enabled: bool,
     pub zkp_issuer_enabled: bool,
     pub compliance_enabled: bool,
 }
@@ -970,7 +1047,7 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
     let database = {
         let st = state.read_or_recover();
         match st.db.lock() {
-            Ok(conn) => match conn
+            Ok(mut conn) => match conn
                 .any_conn()
                 .query_row("SELECT 1", sql_params![], |r| r.get_i64(0))
             {
@@ -991,8 +1068,6 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
     };
 
     let feature_flags = HealthFlags {
-        bank_kyc_enabled: crate::feature_flags::bank_kyc_enabled(),
-        user_kyc_enabled: crate::feature_flags::user_kyc_enabled(),
         zkp_issuer_enabled: crate::feature_flags::zkp_issuer_enabled(),
         compliance_enabled: crate::feature_flags::compliance_enabled(),
     };
@@ -1102,6 +1177,18 @@ pub struct AdminAgentRecord {
     /// only render "no intents declared" for every agent, which is the one thing
     /// about an agent a reviewer actually wants to see.
     pub intent_json: String,
+    /// Attestation kind recorded at registration, normalised (`""` for none).
+    pub attestation_kind: String,
+    /// Whether that kind carries hardware-rooted evidence this build verifies.
+    ///
+    /// `SAURON_REQUIRE_HARDWARE_ATTESTATION` defaults OFF in production, so a
+    /// default deployment accepts an unattested agent. Flipping that default
+    /// would break every deployment not running on Nitro or TPM2, and it would
+    /// not stop the escape it looks like it stops — a compromised agent inside
+    /// an attested enclave still holds its owner's session. So the posture is
+    /// surfaced instead of forced: an operator can see an unattested agent in
+    /// the console rather than having to infer it from an absent field.
+    pub hardware_attested: bool,
 }
 
 /// POST /admin/agents/{agent_id}/revoke — operator-side revocation (admin auth).
@@ -1161,11 +1248,11 @@ pub async fn revoke_agent_admin(
     axum::Extension(tenant): axum::Extension<crate::tenancy::TenantId>,
     authz: Option<axum::Extension<AdminAuthz>>,
     Path(agent_id): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let rows = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .execute(
                 "UPDATE agents SET revoked = 1 WHERE agent_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
@@ -1174,12 +1261,12 @@ pub async fn revoke_agent_admin(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
     };
     if rows == 0 {
-        return Err((StatusCode::NOT_FOUND, "Agent not found".into()));
+        return Err((StatusCode::NOT_FOUND, "Agent not found".into()).into());
     }
     // M-3: prune the revoked agent's point from the in-memory ring.
     let pubkey: Option<String> = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn()
             .query_row(
                 "SELECT public_key_hex FROM agents WHERE agent_id = ?1 AND (?2 = '*' OR tenant_id = ?2)",
@@ -1201,6 +1288,86 @@ pub async fn revoke_agent_admin(
     ))
 }
 
+/// Is this owner within the calling admin's tenant scope?
+///
+/// `user_auth_credentials` carries no `tenant_id`, so the scope has to come from
+/// `user_auth_tenant_bindings` — the same join the owner-mandate path uses.
+/// `"*"` is the cross-tenant super-admin escape set by [`admin_scope`].
+///
+/// Separate from the handler so the scoping rule is testable without standing up
+/// a `ServerState`: this is the check that stops a tenant-locked admin from
+/// reaching an owner it cannot see, and it is worth a test of its own.
+fn owner_visible_in_scope(
+    conn: &mut crate::any_db::AnyConn<'_>,
+    key_image: &str,
+    scope: &str,
+) -> bool {
+    conn.scalar_or(
+        "SELECT COUNT(*) FROM user_auth_credentials c
+         JOIN user_auth_tenant_bindings b ON b.key_image_hex = c.key_image_hex
+         WHERE c.key_image_hex = ?1 AND (?2 = '*' OR b.tenant_id = ?2)",
+        sql_params![key_image, scope],
+        |r| r.get_i64(0),
+        0,
+    ) > 0
+}
+
+/// POST /admin/users/{key_image}/revoke_sessions — cut an owner off.
+///
+/// The owner session authorises `POST /agent/register` and
+/// `POST /agent/{id}/checksum/update`, so it MINTS agent authority: whoever
+/// holds one can register a sibling agent with an intent it writes itself. It
+/// is also a one-hour stateless bearer token, which used to mean a suspected
+/// leak had no response — verification consulted no server state, so there was
+/// nothing an operator could change.
+///
+/// Bumping the owner's `session_epoch` invalidates every session already issued
+/// for it, because the epoch is inside the signed payload and
+/// [`crate::user_session::key_image_from_headers`] compares it against the
+/// stored one on every request. Existing agents keep working; they authenticate
+/// with their own PoP keys, not with this. What stops is the ability to mint
+/// new agent authority with the leaked token.
+///
+/// Tenant-scoped through `user_auth_tenant_bindings`, the same join the owner
+/// mandate path uses — `user_auth_credentials` itself carries no `tenant_id`,
+/// so a tenant-locked admin must not be able to bump an owner it cannot see.
+pub async fn revoke_user_sessions(
+    State(state): State<Arc<RwLock<ServerState>>>,
+    axum::Extension(tenant): axum::Extension<crate::tenancy::TenantId>,
+    authz: Option<axum::Extension<AdminAuthz>>,
+    Path(key_image): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if key_image.len() != 64 || !key_image.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError::BadRequest(
+            "key_image must be 64 hex characters".into(),
+        ));
+    }
+    let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
+
+    let st = state.read_or_recover();
+    let epoch = {
+        let mut db = st
+            .db
+            .lock()
+            .map_err(|e| AppError::ServiceUnavailable(e.to_string()))?;
+        let mut conn = db.any_conn();
+
+        // Resolve inside the caller's scope first. Without this a tenant-locked
+        // admin could bump any owner in the deployment by guessing a key image.
+        if !owner_visible_in_scope(&mut conn, &key_image, &scope) {
+            return Err(AppError::NotFound("owner not found".into()));
+        }
+        crate::user_session::revoke_all(&mut conn, &key_image).map_err(AppError::Internal)?
+    };
+    st.log("USER_SESSIONS_REVOKE_ADMIN", "OK", &key_image);
+
+    Ok(Json(serde_json::json!({
+        "revoked": true,
+        "key_image": key_image,
+        "session_epoch": epoch,
+    })))
+}
+
 /// GET /admin/agents — list every registered agent + checksum + revocation status.
 pub async fn get_agents(
     State(state): State<Arc<RwLock<ServerState>>>,
@@ -1209,7 +1376,7 @@ pub async fn get_agents(
 ) -> Result<Json<Vec<AdminAgentRecord>>, AppError> {
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AdminAgentRecord> = db
         .any_conn()
         .query_map(
@@ -1217,7 +1384,8 @@ pub async fn get_agents(
                     a.issued_at, a.expires_at, a.revoked,
                     IFNULL(LENGTH(a.pop_public_key_b64u), 0),
                     IFNULL(ci.agent_type, ''),
-                    IFNULL(a.intent_json, '')
+                    IFNULL(a.intent_json, ''),
+                    IFNULL(a.attestation_kind, '')
              FROM agents a
              LEFT JOIN agent_checksum_inputs ci ON ci.agent_id = a.agent_id
              WHERE (?1 = '*' OR a.tenant_id = ?1)
@@ -1236,6 +1404,18 @@ pub async fn get_agents(
                     has_pop: pop_len > 0,
                     agent_type: row.get(8)?,
                     intent_json: row.get(9)?,
+                    attestation_kind: {
+                        let raw: String = row.get(10)?;
+                        let kind = crate::attestation::AttestationKind::parse(&raw)
+                            .unwrap_or(crate::attestation::AttestationKind::None);
+                        kind.as_str().to_string()
+                    },
+                    hardware_attested: {
+                        let raw: String = row.get(10)?;
+                        crate::attestation::AttestationKind::parse(&raw)
+                            .map(|k| k.is_hardware_backed())
+                            .unwrap_or(false)
+                    },
                 })
             },
         )
@@ -1263,7 +1443,7 @@ pub async fn get_recent_actions(
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AdminActionReceiptRecord> = db
         .any_conn()
         .query_map(
@@ -1355,25 +1535,35 @@ pub async fn run_demo_scenario(
         }
         // Replay — consume the SAME single-use nonce twice against the live store.
         "replay" => {
-            let st = state
-                .read()
-                .map_err(|_| AppError::Internal("state lock".into()))?;
-            let db = st
-                .db
-                .lock()
-                .map_err(|_| AppError::Internal("db lock".into()))?;
+            // Through `Repo`, which is the same primitive the call-signature
+            // middleware enforces with — `BEGIN IMMEDIATE` on SQLite,
+            // SERIALIZABLE with retry on Postgres. The demo used to call the
+            // legacy `ajwt_support::consume_call_nonce` instead: a bare INSERT
+            // on the *other* connection pool. It agreed by accident, because the
+            // uniqueness constraint does the work either way, but it meant the
+            // replay-protection table had two writers with different isolation
+            // and the console demonstrated the weaker one.
+            let repo = {
+                let st = state
+                    .read()
+                    .map_err(|_| AppError::Internal("state lock".into()))?;
+                st.repo.clone()
+            };
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let nonce = format!("demo-replay-{nanos}");
             let exp = (nanos / 1_000_000_000) as i64 + 300;
-            let first_ok =
-                crate::ajwt_support::consume_call_nonce(&db, "demo_scenario_agent", &nonce, exp)
-                    .is_ok();
-            let second_err =
-                crate::ajwt_support::consume_call_nonce(&db, "demo_scenario_agent", &nonce, exp)
-                    .err();
+            let first_ok = repo
+                .consume_call_nonce("demo_scenario_agent", &nonce, exp)
+                .await
+                .is_ok();
+            let second_err = repo
+                .consume_call_nonce("demo_scenario_agent", &nonce, exp)
+                .await
+                .err()
+                .map(|e| e.to_string());
             let stopped = first_ok && second_err.is_some();
             Ok(Json(DemoScenarioOut {
                 result: if stopped { "stopped" } else { "allowed" }.into(),
@@ -1615,7 +1805,7 @@ pub async fn get_anchor_status(
 ) -> Result<Json<AdminAnchorStatus>, AppError> {
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let mut s = AdminAnchorStatus::default();
     s.bitcoin_provider = crate::bitcoin_anchor::configured_provider_label();
     s.bitcoin_network = crate::bitcoin_anchor::configured_network_label();
@@ -1704,7 +1894,7 @@ pub async fn get_per_agent_metrics(
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AdminPerAgentMetric> = db.any_conn().query_map(
             "SELECT a.agent_id,
                     (SELECT COUNT(*) FROM agent_action_receipts r WHERE r.agent_id = a.agent_id) AS act_count,
@@ -1748,7 +1938,7 @@ pub async fn get_recent_egress(
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AdminEgressEntry> = db
         .any_conn()
         .query_map(
@@ -1792,7 +1982,7 @@ pub async fn get_checksum_audit(
 ) -> Result<Json<Vec<AdminChecksumAudit>>, AppError> {
     let scope = admin_scope(authz.as_ref().map(|axum::Extension(a)| a), &tenant);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AdminChecksumAudit> = db
         .any_conn()
         .query_map(
@@ -1861,7 +2051,7 @@ pub async fn get_clients(
 ) -> Result<Json<Vec<AdminClientRecord>>, AppError> {
     require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<AdminClientRecord> = db.any_conn().query_map(
             "SELECT name, public_key_hex, key_image_hex, tokens_b, client_type FROM clients ORDER BY id",
             sql_params![],
@@ -1937,7 +2127,7 @@ pub async fn get_site_zkp_proofs(
 ) -> Result<Json<Vec<SiteZkpProofRecord>>, AppError> {
     require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let pattern = format!("site={} %", name);
     let records: Vec<SiteZkpProofRecord> = db
         .any_conn()
@@ -2000,7 +2190,7 @@ pub async fn get_requests(
 ) -> Result<Json<Vec<RequestLogRecord>>, AppError> {
     require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
     let records: Vec<RequestLogRecord> = db.any_conn().query_map(
             "SELECT id, timestamp, action_type, status, detail FROM requests_log ORDER BY id DESC LIMIT 200",
             sql_params![],
@@ -2039,46 +2229,30 @@ pub async fn get_stats(
     authz: Option<axum::Extension<AdminAuthz>>,
 ) -> Result<Json<StatsResponse>, AppError> {
     require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
-    // `users` is read through the dual-backend repo (Postgres when enabled);
-    // `clients`/`api_usage` are SQLite-only tables, so they stay on the raw
-    // handle below — each table is read from where it is written.
+    // `users` is read through the dual-backend repo; `clients`/`api_usage` come
+    // off the raw handle, which dispatches too — so every count below reads the
+    // configured backend rather than the sidecar.
     let repo = state.read_or_recover().repo.clone();
     let total_users: i64 = repo.count_users().await.unwrap_or(0);
     let st = state.read_or_recover();
-    let db = st.db.lock().unwrap();
+    let mut db = st.db.lock().unwrap();
 
-    let total_clients: i64 = db
-        .query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0))
-        .unwrap_or(0);
-    let total_api_calls: i64 = db
-        .query_row("SELECT COUNT(*) FROM api_usage", [], |r| r.get(0))
-        .unwrap_or(0);
-    let total_kyc_retrievals: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM api_usage WHERE action = 'kyc_human'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let total_agent_calls: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM api_usage WHERE is_agent = 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let total_tokens_b_spent: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM api_usage WHERE action IN ('kyc_human','kyc_agent','zkp_login')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let current_tokens_b: i64 = db
-        .query_row("SELECT COALESCE(SUM(tokens_b), 0) FROM clients", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
+    // `scalar_or` rather than `query_row(..).unwrap_or(0)`: query_row now
+    // returns Ok(None) for "no rows" separately from Err, and a stats panel
+    // wants 0 for both. Naming the swallow keeps it greppable.
+    let mut count = |sql: &str| {
+        db.any_conn()
+            .scalar_or(sql, sql_params![], |r| r.get_i64(0), 0)
+    };
+    let total_clients: i64 = count("SELECT COUNT(*) FROM clients");
+    let total_api_calls: i64 = count("SELECT COUNT(*) FROM api_usage");
+    let total_kyc_retrievals: i64 =
+        count("SELECT COUNT(*) FROM api_usage WHERE action = 'kyc_human'");
+    let total_agent_calls: i64 = count("SELECT COUNT(*) FROM api_usage WHERE is_agent = 1");
+    let total_tokens_b_spent: i64 = count(
+        "SELECT COUNT(*) FROM api_usage WHERE action IN ('kyc_human','kyc_agent','zkp_login')",
+    );
+    let current_tokens_b: i64 = count("SELECT COALESCE(SUM(tokens_b), 0) FROM clients");
     let total_tokens_b_issued = current_tokens_b + total_tokens_b_spent;
 
     let controls = serde_json::json!({
@@ -2103,6 +2277,60 @@ pub async fn get_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialises the env mutation below — `set_var` is process-wide and cargo
+    /// runs tests in this binary on parallel threads.
+    static STATIC_KEY_TENANT_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// F3: a static admin key carries no scope and no tenant allowlist, so the
+    /// only thing choosing which tenant it reads is the caller's own
+    /// `x-sauron-tenant-id` header. In production that has to be a deliberate
+    /// declaration, not a default — otherwise handing the key to one tenant's
+    /// admin hands them every other tenant.
+    #[test]
+    fn a_static_key_may_not_roam_tenants_in_production_unless_declared() {
+        let _guard = STATIC_KEY_TENANT_ENV
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let restore = (
+            std::env::var("ENV").ok(),
+            std::env::var("SAURON_ENV").ok(),
+            std::env::var("SAURON_ADMIN_CROSS_TENANT").ok(),
+        );
+        std::env::set_var("ENV", "production");
+        std::env::remove_var("SAURON_ENV");
+        std::env::remove_var("SAURON_ADMIN_CROSS_TENANT");
+
+        // Its own tenant is always fine.
+        assert!(static_key_may_target(crate::tenancy::DEFAULT_TENANT));
+        // Someone else's is not, until the operator says the key is global.
+        assert!(
+            !static_key_may_target("acme_corp"),
+            "a static key must not silently target another tenant in production"
+        );
+        std::env::set_var("SAURON_ADMIN_CROSS_TENANT", "1");
+        assert!(
+            static_key_may_target("acme_corp"),
+            "an explicitly operator-global key may target any tenant"
+        );
+
+        // Development keeps roaming: the seeded demo drives several tenants
+        // through one key and blocking that breaks every local walkthrough.
+        std::env::remove_var("SAURON_ADMIN_CROSS_TENANT");
+        std::env::set_var("ENV", "development");
+        assert!(static_key_may_target("acme_corp"));
+
+        for (k, v) in [
+            ("ENV", restore.0),
+            ("SAURON_ENV", restore.1),
+            ("SAURON_ADMIN_CROSS_TENANT", restore.2),
+        ] {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
 
     // Locks the exact OpenTimestamps detached-file framing the `ots` tooling
     // expects: HEADER_MAGIC ‖ version(1) ‖ OpSHA256(0x08) ‖ msg(32) ‖ timestamp.
@@ -2232,5 +2460,104 @@ mod tests {
         )
         .unwrap();
         assert_eq!(high.expires_at, t0 + MAX_ISSUED_KEY_TTL_SECS);
+    }
+}
+
+#[cfg(test)]
+mod owner_session_revocation_tests {
+    use super::*;
+    use crate::any_db::AsAnyConn;
+
+    /// Two owners in two tenants, so "scoped" and "unscoped" can be told apart.
+    fn db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init_schema(&conn);
+        for (ki, tenant) in [("aa".repeat(32), "tenant-a"), ("bb".repeat(32), "tenant-b")] {
+            conn.execute(
+                "INSERT INTO user_auth_credentials (key_image_hex, ed25519_public_key_b64u, created_at)
+                 VALUES (?1, ?2, 1)",
+                rusqlite::params![&ki, format!("pk-{ki}")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO user_auth_tenant_bindings (tenant_id, key_image_hex, created_at)
+                 VALUES (?1, ?2, 1)",
+                rusqlite::params![tenant, &ki],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    /// The property the endpoint exists to not violate: a tenant-locked admin
+    /// must not be able to bump an owner belonging to another tenant, even
+    /// though `user_auth_credentials` has no `tenant_id` of its own.
+    #[test]
+    fn a_tenant_locked_admin_cannot_see_another_tenants_owner() {
+        let conn = db();
+        let mut c = conn.any_conn();
+        let (a, b) = ("aa".repeat(32), "bb".repeat(32));
+
+        assert!(owner_visible_in_scope(&mut c, &a, "tenant-a"));
+        assert!(
+            !owner_visible_in_scope(&mut c, &b, "tenant-a"),
+            "tenant-a must not reach tenant-b's owner"
+        );
+        assert!(
+            !owner_visible_in_scope(&mut c, &"cc".repeat(32), "*"),
+            "an owner that does not exist is not visible to anyone"
+        );
+    }
+
+    /// The cross-tenant super-admin escape still works — otherwise the endpoint
+    /// would be unusable in the single-tenant default deployment.
+    #[test]
+    fn a_cross_tenant_admin_sees_every_owner() {
+        let conn = db();
+        let mut c = conn.any_conn();
+        assert!(owner_visible_in_scope(&mut c, &"aa".repeat(32), "*"));
+        assert!(owner_visible_in_scope(&mut c, &"bb".repeat(32), "*"));
+    }
+
+    /// End to end at the storage level: bumping the epoch is what makes a
+    /// still-unexpired session stop authenticating.
+    #[test]
+    fn revoking_advances_the_epoch_and_kills_live_sessions() {
+        let conn = db();
+        let mut c = conn.any_conn();
+        let ki = "aa".repeat(32);
+        let secret = [5u8; 32];
+
+        let epoch = crate::user_session::current_epoch(&mut c, &ki);
+        let (token, _) = crate::user_session::issue(&secret, "tenant-a", &ki, epoch);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(crate::user_session::SESSION_HEADER, token.parse().unwrap());
+        assert_eq!(
+            crate::user_session::key_image_from_headers(&headers, &secret, "tenant-a", &mut c),
+            Some(ki.clone())
+        );
+
+        let bumped = crate::user_session::revoke_all(&mut c, &ki).unwrap();
+        assert_eq!(bumped, epoch + 1);
+        assert_eq!(
+            crate::user_session::key_image_from_headers(&headers, &secret, "tenant-a", &mut c),
+            None,
+            "the leaked session must stop working the moment the epoch moves"
+        );
+    }
+
+    /// Revoking one owner must not touch another's sessions.
+    #[test]
+    fn revocation_is_scoped_to_one_owner() {
+        let conn = db();
+        let mut c = conn.any_conn();
+        let (a, b) = ("aa".repeat(32), "bb".repeat(32));
+        crate::user_session::revoke_all(&mut c, &a).unwrap();
+        assert_eq!(crate::user_session::current_epoch(&mut c, &a), 1);
+        assert_eq!(
+            crate::user_session::current_epoch(&mut c, &b),
+            0,
+            "the other owner's sessions must survive"
+        );
     }
 }

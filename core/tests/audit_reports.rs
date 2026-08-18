@@ -40,7 +40,7 @@ async fn fresh_state(db: Arc<DbHandle>) -> Arc<RwLock<ServerState>> {
 }
 
 fn seed_receipt(db: &DbHandle, tenant: &str, agent: &str, ts: i64, idx: u32) {
-    let conn = db.lock().unwrap();
+    let conn = db.lock_sqlite().unwrap();
     conn.execute(
         "INSERT INTO agent_action_receipts
          (receipt_id, action_hash, agent_id, ring_key_image_hex,
@@ -58,7 +58,7 @@ fn seed_receipt(db: &DbHandle, tenant: &str, agent: &str, ts: i64, idx: u32) {
 }
 
 fn seed_stats(db: &DbHandle, tenant: &str, metric: &str, claimed: i64, period: (i64, i64)) {
-    let conn = db.lock().unwrap();
+    let conn = db.lock_sqlite().unwrap();
     conn.execute(
         "INSERT INTO customer_stats
          (tenant_id, agent_id, metric_id, claimed_value, n_records,

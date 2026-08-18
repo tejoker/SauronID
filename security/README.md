@@ -1,5 +1,11 @@
 # Independent release assessment
 
+For the scope to hand a prospective assessor — what the system is, what the two
+required coverage areas actually contain, and what is already known-unfinished
+so nobody spends budget rediscovering it — see
+[`assessment-brief.md`](assessment-brief.md). This file covers how a completed
+assessment is recorded and verified.
+
 Production release tags are blocked until an organization independent of the
 project has reviewed the exact release commit, covered both cryptographic
 protocols and an adversarial deployed-system penetration test, and reported no

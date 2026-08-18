@@ -29,7 +29,7 @@
 //! `ed25519-dalek` + `base64` + `serde_json` stack.
 
 use crate::agent::{call_sig_skew_ms, VerifiedCallSig};
-use crate::any_db::{AnyRowGet, AsAnyConn};
+use crate::any_db::AnyRowGet;
 use crate::error::AppError;
 use crate::sql_params;
 use crate::state::ServerState;
@@ -358,7 +358,7 @@ pub async fn verify_dpop_request(
     // config digest (see module doc for why this surface is opt-in).
     let pop_pk_b64u: String = {
         let st = state.read_or_recover();
-        let db = st.db.lock().unwrap();
+        let mut db = st.db.lock().unwrap();
         db.any_conn().require(
             "SELECT IFNULL(pop_public_key_b64u, '')
              FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2 AND expires_at > ?3",

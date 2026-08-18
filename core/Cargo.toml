@@ -31,7 +31,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"]
 prometheus = { version = "0.13", default-features = false }
 once_cell = "1.19"
 bs58 = "0.5"
-sqlx = { version = "0.8.1", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
+# `tls-rustls-ring-native-roots`, NOT the `runtime-tokio-rustls` bundle: that
+# bundle resolves to webpki-roots, i.e. Mozilla's baked-in CA list, while the
+# blocking pool in `db.rs` reads the platform trust store. Two pools to the same
+# database with two different notions of who to trust means a private or
+# enterprise CA — the normal case for managed and internal Postgres — makes one
+# pool connect and the other fail. Both now read the system store.
+sqlx = { version = "0.8.1", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
@@ -40,6 +46,10 @@ r2d2_sqlite = "0.24"
 # function and its callers as async. See core/src/any_db.rs.
 postgres = "0.19"
 r2d2_postgres = "0.18"
+# BN254 field reduction for `aggregation::verify::stats_scope_hash`, the
+# Groth16 stats-circuit public-input binding. This was also the Paillier
+# dependency; Paillier is gone, so this goes when the Groth16 stats path does.
+num-bigint = "0.4"
 rs_merkle = "1.4"
 hmac = "0.12"
 hkdf = "0.12"
@@ -54,14 +64,6 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 ring = "0.17"
 webpki = { version = "0.22", features = ["std"] }
 pem = "3"
-# Sprint 13-14: Paillier homomorphic encryption (Tier 2). Big-int arithmetic
-# for ~2048-bit modular exponentiation. `num-bigint` is NOT constant-time —
-# acceptable for a dev/demo HE module that explicitly requires cryptographer
-# review before production secret-aggregation use. See `core/src/he/` and
-# `docs/homomorphic-encryption.md` for the full NEEDS_CRYPTO_REVIEW notice.
-num-bigint = { version = "0.4", features = ["rand", "serde"] }
-num-integer = "0.1"
-num-traits = "0.2"
 # Transparent production proof verifier.  We deliberately compile the verifier
 # without prover/Bonsai features and with dev-mode disabled.  The application
 # additionally rejects Groth16 and Fake receipt variants at the wire boundary;
@@ -70,6 +72,19 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["disabl
 # The version is required: a bare path dependency reads as `version = "*"`, and
 # deny.toml sets `wildcards = "deny"`.
 sauron-transparent-types = { path = "../transparent-zk/types", version = "0.1.0" }
+# TLS for the BLOCKING Postgres pool. The pool was built with `postgres::NoTls`
+# hardcoded, so on a managed provider the link either refused to come up or ran
+# in cleartext — carrying owner mandates, receipts and session material. rustls
+# rather than native-tls: the tree is already all-rustls (sqlx, reqwest), and
+# native-tls wants a system OpenSSL in the runtime image.
+# `native-certs` reads the platform trust store; `ring` matches the provider
+# installed in `db::open_pg_pool` and keeps aws-lc-rs (and its C toolchain) out.
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring", "native-certs"] }
+# Direct dependency only to install the process-wide crypto provider that
+# `tokio-postgres-rustls` requires and does not install itself. `tls12` is kept:
+# without it this is TLS 1.3-only, and managed Postgres endpoints still
+# negotiate 1.2.
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 
 [profile.release]
 # Strip the symbol table from shipped binaries. Cargo does not do this by
