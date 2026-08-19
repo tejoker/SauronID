@@ -38,7 +38,7 @@ Attack vector if global stayed global: none beyond the existing
 | Table | Verdict | Why |
 |-------|---------|-----|
 | `policies` | SCOPED | Composite key (tenant_id, policy_id). `PolicyStore::get_by_id_tenant` (core/src/policy/store.rs:213) returns None for cross-tenant lookups. Handler maps to 404 (no existence leak) at `core/src/policy/handlers.rs:153`. |
-| `spend_ledger` | SCOPED | Composite PK (policy_id, agent_id, period_start) + tenant_id column. Concurrent cross-tenant writes for the same logical (agent, policy, period) land in distinct rows. Verified by `tenant-spend-ledger-race.ts` redteam scenario. |
+| `spend_ledger` | **NOT SCOPED — OPEN DEFECT** | `tenant_id` is a column but is NOT in the primary key, which is `(policy_id, agent_id, period_start)`. Concurrent cross-tenant writes for the same logical (agent, policy, period) therefore collapse into ONE row owned by whichever tenant wrote first. `tenant-spend-ledger-race.ts` does not verify this property — it FAILS, and nothing ran it. See the note below. |
 | `spend_log` | SCOPED | Append-only ledger. `list_spend_log_inner_tenant` filters by tenant_id. Verified by `tenant-spend-history-leak.ts`. |
 | `agent_policy_bindings` | SCOPED | Composite PK (tenant_id, agent_id). Bind handler (core/src/policy/binding_handlers.rs::bind_policy) verifies both `agent_id` and `policy_id` exist under the caller's tenant before writing — cross-tenant injection returns 400/404. Verified by `tenant-binding-injection.ts`. |
 
@@ -148,7 +148,7 @@ EXPRESSES intent / consent / registration on top of it is per-tenant.
 | agent_checksum_inputs | KEEP_GLOBAL | None (agent-scoped PK) |
 | agent_checksum_audit | KEEP_GLOBAL | None (agent-scoped PK) |
 | policies | SCOPED | Policy id enum + cross-tenant evaluate |
-| spend_ledger | SCOPED | Spend collision / cross-tenant budget exhaustion |
+| spend_ledger | **OPEN** | Spend collision / cross-tenant budget exhaustion — confirmed reproducible, see below |
 | spend_log | SCOPED | Spend history leak |
 | agent_policy_bindings | SCOPED | Binding injection / policy bypass |
 | agent_action_receipts | SCOPED | Receipt enum / content leak |
@@ -309,3 +309,43 @@ SAURON_CORE_URL=http://127.0.0.1:3001 \
 
 The runner emits one aggregated JSON envelope and exits non-zero on
 any scenario that diverges from documented threat-model behaviour.
+
+## Open defect: `spend_ledger` is not tenant-scoped
+
+Found 2026-08-18 by running `redteam/dist/scenarios/run-all-tenant-isolation.js`,
+which nothing in the Makefile or CI had ever run.
+
+`spend_ledger`'s primary key is `(policy_id, agent_id, period_start)` on both
+backends — `core/src/db.rs` and `migrations/postgres/0003_spend_ledger.sql`.
+Migration `0004_multi_tenant.sql` added `tenant_id` as a column and an index, but
+did not extend the key. `Repo::record_spend_with_period_tenant` upserts with
+`ON CONFLICT(policy_id, agent_id, period_start)`, so the conflict target is
+tenant-blind.
+
+Reproduced against a fresh SQLite core with `SAURON_ADMIN_CROSS_TENANT` unset:
+two tenants each posting ten spends for the same `(agent_id, policy_id)` produced
+
+    spend_log     20 rows, correctly split 10 / 10 per tenant
+    spend_ledger   1 row, tenant_id = <tenant A>, total_usd = 1010.0
+
+i.e. tenant B's 1000 landed in tenant A's authoritative total, and tenant B's own
+ledger read returned nothing.
+
+`get_spend_total` is what the `budget` and `daily_budget` invariants consult, so
+the consequences run both ways:
+
+- the non-owning tenant reads 0 and its spend cap never trips — a budget bypass;
+- the owning tenant absorbs the other's spend and its agents are denied for money
+  they did not spend — cross-tenant denial of service.
+
+Exploiting it requires knowing a victim's `agent_id` and `policy_id`, both
+server-minted hex, so this is not trivially reachable from outside. It is directly
+reachable for an operator who reuses stable policy or agent identifiers across
+tenants.
+
+**Not fixed here, deliberately.** The fix is to put `tenant_id` in the key —
+`PRIMARY KEY (tenant_id, policy_id, agent_id, period_start)` and the matching
+`ON CONFLICT` target. That is a schema migration on both backends, SQLite needs a
+table rebuild because it cannot alter a primary key, and any already-contaminated
+row cannot be split back into per-tenant totals. Which of those rows to keep is a
+data decision for the operator, not something a refactor should choose.

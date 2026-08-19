@@ -30,12 +30,11 @@ import {
 } from "./_s12_lib";
 
 const POLICY_YAML = `
-policy_id: pol_bind_injection
 version: "1"
-agent: "tester"
-checks:
-  - id: allow_all
-    when: action.type == "*"
+agent: tester
+description: "cross-tenant binding-injection probe"
+invariants:
+  - "spend_total <= 1000"
 `;
 
 async function uploadAsTenant(tenant: string, yaml: string): Promise<string | null> {

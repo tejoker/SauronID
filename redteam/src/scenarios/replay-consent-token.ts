@@ -1,4 +1,18 @@
 /**
+ * STALE — does not run. Kept because the threat it describes is real, but its
+ * request body predates `agent_action` becoming a required field on
+ * `AgentPaymentAuthorizeBody` (core/src/main.rs). Axum rejects the body with a
+ * plain-text extractor error, the scenario calls `.json()` on it without checking
+ * the status, and the harness dies with "Unexpected token 'F'".
+ *
+ * Fixing it means building a real ring-signed AgentActionProof, which is exactly
+ * what empirical scenario A11 already does through `agent-action-tool`. The
+ * property this file tests — authorize-then-consume replay — is therefore already
+ * covered by A11 and by `postgres-toctou-race.ts`, both of which run and pass. So
+ * this is redundant rather than a coverage gap; repair it or delete it, but do not
+ * read its failure as an unprotected replay path.
+ */
+/**
  * S12 redteam — R3: concurrent redemption of one payment authorization.
  *
  * Threat-model citation: docs/threat-model.md "In scope" -> "Concurrent
