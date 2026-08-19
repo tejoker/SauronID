@@ -84,7 +84,7 @@ record_result "4" "OID4VP selective disclosure by presentation definition" "SKIP
 record_result "5" "OID4VCI pre-authorized code replay protection" "SKIP" "zkp/issuer removed in cleanup pass; OID4VCI tied to legacy banking surface"
 run_case "6" "CAMARA strict silent-auth IP to SIM check" "cd zkp/camara && npm run build && npm test && npm run test:card-login"
 run_group_case "7,8,9" "Agent checksum integrity|Delegation chain traceability|PoP anti-replay binding" "cd agentic && npm run build && npm test"
-record_result "10" "Anomaly engine detects synthetic anomalies" "SKIP" "anomaly-engine removed from active surface; see archive/banking-2025/"
+record_result "10" "Anomaly engine detects synthetic anomalies" "SKIP" "anomaly-engine removed from active surface; see the archive/banking-2025 git tag"
 record_result "11" "Revocation smart contract ACL and privacy" "SKIP" "contracts/revocation removed in Sprint 0; Ethereum delegation registry moved out-of-scope"
 record_result "12" "Subgraph indexing latency SLA" "SKIP" "contracts/revocation removed in Sprint 0; Ethereum delegation registry moved out-of-scope"
 

@@ -1158,7 +1158,7 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
 //  Live-data admin endpoints (Analytics 5/5)
 //
 //  Every dashboard number comes from a live SQL query against the SauronID core.
-//  Replaces the pre-pivot parquet path (see archive/banking-2025/).
+//  Replaces the pre-pivot parquet path (see the archive/banking-2025 git tag).
 // ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]

@@ -73,7 +73,7 @@ log "[2/4] Seed (clients + users)..."
 cd "$ROOT/core"
 SAURON_URL=http://localhost:3001 bash seed.sh
 
-# (Optional archived Python KYC: archive/banking-2025/KYC — not started here.)
+# (The pre-pivot Python KYC service lives in the `archive/banking-2025` git tag.)
 
 # ── 3. Mandate Console Dashboard (Next.js) ──────────────────────────────────
 log "[3/4] Dashboard → :3000"
