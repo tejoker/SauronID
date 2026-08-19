@@ -6,7 +6,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=200 valid=false",
-      "latency_ms": 33,
+      "latency_ms": 32,
       "pass": true,
       "dynamic": true
     },
@@ -26,7 +26,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=422 second=409",
-      "latency_ms": 1,
+      "latency_ms": 2,
       "pass": true,
       "dynamic": true
     },
@@ -46,7 +46,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 6,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -86,7 +86,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "valid=false err=Agent requires PoP: provide pop_challenge_id and pop_jws (see POST /agent/pop/challenge)",
-      "latency_ms": 2,
+      "latency_ms": 1,
       "pass": true,
       "dynamic": true
     },
@@ -96,7 +96,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=400",
-      "latency_ms": 5,
+      "latency_ms": 6,
       "pass": true,
       "dynamic": true
     },
@@ -106,7 +106,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "N=20 winners=1 already_consumed=19",
-      "latency_ms": 865,
+      "latency_ms": 666,
       "pass": true,
       "dynamic": true,
       "evidence": "Promise.all(20) → 1 × HTTP 200 + 19 × HTTP 409 authorization_already_consumed"
@@ -117,7 +117,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "limit=60 sent=125 status_200=60 status_429=65",
-      "latency_ms": 13229,
+      "latency_ms": 13121,
       "pass": true,
       "dynamic": true,
       "evidence": "65/125 requests returned HTTP 429 (risk::check_and_increment denied)"
@@ -138,22 +138,22 @@
       "description": "Audit-log integrity: tampered receipt leaf invalidates merkle inclusion proof",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "receipt_id=ar_ab3310089… orig_match=false tampered_match=false root_diff=true",
+      "detail": "receipt_id=ar_51f7f45f3… orig_match=false tampered_match=false root_diff=true",
       "latency_ms": 5,
       "pass": true,
       "dynamic": true,
-      "evidence": "tree_size=2 leaf_index=1 batch_root=2f4d64f8a02987e4… flipped first nibble → root mismatch"
+      "evidence": "tree_size=2 leaf_index=1 batch_root=038f406cd44d76b9… flipped first nibble → root mismatch"
     },
     {
       "id": "A15",
       "description": "HMAC compare timing oracle: 2000 iters early-diff vs late-diff session sig",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "early_mean=4284.71µs σ=266.80 | late_mean=4287.85µs σ=280.67 | paired Δ=-3.03µs σ=259.95 n=1800 t=0.49 | detector_control_t=2032.59",
-      "latency_ms": 22317,
+      "detail": "early_mean=4132.09µs σ=280.42 | late_mean=4125.69µs σ=307.12 | paired Δ=10.68µs σ=280.65 n=1800 t=1.61 | detector_control_t=2032.59",
+      "latency_ms": 23888,
       "pass": true,
       "dynamic": true,
-      "evidence": "paired |t|=0.49 over 1800 back-to-back pairs, mean Δ=-3.03µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
+      "evidence": "paired |t|=1.61 over 1800 back-to-back pairs, mean Δ=10.68µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
     },
     {
       "id": "A16",
@@ -161,7 +161,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401 body={\"error\":{\"code\":\"call_sig_config_digest_mismatch\",\"fix\":\"runtime config drifted",
-      "latency_ms": 5,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true,
       "evidence": "call-sig accepted, but x-sauron-agent-config-digest mismatched registered checksum → HTTP 401 \"config drift\""
@@ -171,9 +171,9 @@
   "total": 16,
   "skipped": 0,
   "dynamic": 16,
-  "generated_at": "2026-08-19T13:13:52.296Z",
+  "generated_at": "2026-08-19T13:21:25.056Z",
   "provenance": {
-    "commit": "a7e08eb76cf720a1e1cbc4fff4c98d71337494c9-dirty",
+    "commit": "b60e4502c2c9ea57ea3412d5878b1c9620fd1620-dirty",
     "enforce_mode": true,
     "db_backend": "sqlite",
     "base_url": "http://127.0.0.1:3001"

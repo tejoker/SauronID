@@ -669,21 +669,6 @@ pub fn proof_for_receipt_for_tenant(
     })))
 }
 
-/// List the most recent anchor batches with their per-chain three-state
-/// surface (ADR-001). Used by the dashboard /anchors page to render the
-/// three distinct states:
-///   - "Pending"                              (!solana.confirmed)
-///   - "Solana-confirmed (BTC pending)"       (solana.confirmed && !bitcoin.ots_upgraded)
-///   - "Dually anchored"                      (solana.confirmed && bitcoin.ots_upgraded)
-///
-/// Returns at most `limit` rows ordered by created_at DESC.
-pub fn recent_batches(
-    state: &Arc<RwLock<ServerState>>,
-    limit: i64,
-) -> Result<Vec<serde_json::Value>, String> {
-    recent_batches_for_tenant(state, limit, "*")
-}
-
 /// Tenant-scoped batch listing used by admin routes.
 pub fn recent_batches_for_tenant(
     state: &Arc<RwLock<ServerState>>,

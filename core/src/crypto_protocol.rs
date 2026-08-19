@@ -198,16 +198,6 @@ pub fn ed25519_jwk_thumbprint(public_key_b64u: &str) -> Result<String, String> {
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(canonical.as_bytes())))
 }
 
-pub fn attestation_challenge_binding(nonce: &str, pop_public_key_b64u: &str) -> Vec<u8> {
-    canonical_fields(
-        ATTESTATION_CHALLENGE_DOMAIN,
-        &[
-            ("nonce", nonce),
-            ("pop_public_key_b64u", pop_public_key_b64u),
-        ],
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

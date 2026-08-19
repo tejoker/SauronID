@@ -68,11 +68,6 @@ fn action_allowed_in_list(action: &str, list: &[&str]) -> bool {
     list.contains(&normalized.as_str())
 }
 
-/// Whether this assurance level may call `POST /agent/kyc/consent`.
-pub fn can_agent_issue_kyc_consent(level: AssuranceLevel) -> bool {
-    !matches!(level, AssuranceLevel::DelegatedNonBank)
-}
-
 pub fn authorize_action(level: AssuranceLevel, action: &str) -> PolicyDecision {
     let normalized = action.trim().to_ascii_lowercase();
     if normalized.is_empty() {
