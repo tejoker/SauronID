@@ -29,24 +29,13 @@ use super::*;
 // demo scaffolding's own dependencies, and main.rs no longer needs any of them.
 use curve25519_dalek::{RistrettoPoint, Scalar};
 use sauron_core::ring;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 
-/// Recalcule le résultat OPRF sans le protocole blind.
-/// Équivalent à client_unblind(server_evaluate(client_blind(e,p), k), r)
-/// mais sans le masquage (k est connu, pour usage interne uniquement).
-pub(crate) fn dev_oprf_eval(
-    server_k: curve25519_dalek::scalar::Scalar,
-    email: &str,
-    password: &str,
-) -> RistrettoPoint {
-    let mut hasher = Sha512::new();
-    hasher.update(email.as_bytes());
-    hasher.update(b"|SALT|");
-    hasher.update(password.as_bytes());
-    let base = RistrettoPoint::hash_from_bytes::<Sha512>(hasher.finalize().as_ref());
-    server_k * base
-}
-
+// `dev_oprf_eval` used to live here. It is a PRODUCTION code path — the legacy
+// password login evaluates the OPRF unblinded — and it had no business sitting in
+// a module the binary compiles only for the demo lane. It is now
+// `oprf::evaluate_unblinded`, with a test proving it lands on the same point as
+// the blinded round trip.
 // ─────────────────────────────────────────────────────
 //  ZKP : construction d'anneau filtré et vérification de preuve
 // ─────────────────────────────────────────────────────
@@ -91,7 +80,8 @@ pub(crate) async fn dev_register_user(
         return Err((StatusCode::FORBIDDEN, "Dev only".into()).into());
     }
     let server_k = state.read_or_recover().k;
-    let oprf_result = dev_oprf_eval(server_k, &payload.email, &payload.password);
+    let oprf_result =
+        sauron_core::oprf::evaluate_unblinded(server_k, &payload.email, &payload.password);
     let identity = Identity::from_oprf(oprf_result);
     {
         let repo = state.read_or_recover().repo.clone();

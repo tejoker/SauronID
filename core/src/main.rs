@@ -102,8 +102,11 @@ use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, Tex
 use sauron_core::sync_recover::RwLockRecover;
 
 // Dev-only endpoints live in their own file; see its header for the gating.
+// Compiled only into the demo/test lanes — a client build has no such code.
+#[cfg(feature = "demo")]
 mod dev_endpoints;
-use dev_endpoints::{dev_buy_tokens, dev_leash_demo, dev_oprf_eval, dev_register_user};
+#[cfg(feature = "demo")]
+use dev_endpoints::{dev_buy_tokens, dev_leash_demo, dev_register_user};
 
 static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 static HTTP_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -312,12 +315,17 @@ async fn main() {
     }
 
     // Dev-only endpoints. Disabled in prod. Set SAURON_ENABLE_DEV_ENDPOINTS=1 to enable.
+    // The env var is the second layer; the first is `--features demo`, without
+    // which the handlers are not compiled and this block does not exist.
+    #[cfg(feature = "demo")]
     let enable_dev_endpoints = std::env::var("SAURON_ENABLE_DEV_ENDPOINTS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
         .unwrap_or(false);
 
+    #[allow(unused_mut)]
     let mut app = Router::new();
 
+    #[cfg(feature = "demo")]
     if enable_dev_endpoints {
         app = app
             .route("/dev/register_user", post(dev_register_user))
@@ -554,6 +562,7 @@ async fn main() {
 //  Flux 1 : /register — Dépôt KYC → Token A
 // ─────────────────────────────────────────────────────
 
+#[cfg(feature = "demo")]
 fn validate_user_auth_public_key(value: &str) -> Result<(), AppError> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -579,6 +588,7 @@ fn validate_user_auth_public_key(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(feature = "demo")]
 fn store_user_auth_credential(
     state: &Arc<RwLock<ServerState>>,
     tenant_id: &str,
@@ -1909,7 +1919,8 @@ async fn user_auth(
         let st = state.read_or_recover();
         (st.k, st.jwt_secret.clone())
     };
-    let oprf_result = dev_oprf_eval(server_k, &payload.email, &payload.password);
+    let oprf_result =
+        sauron_core::oprf::evaluate_unblinded(server_k, &payload.email, &payload.password);
     let identity = Identity::from_oprf(oprf_result);
     {
         let st = state.read_or_recover();

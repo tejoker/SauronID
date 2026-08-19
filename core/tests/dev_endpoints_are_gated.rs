@@ -28,9 +28,12 @@ fn dev_endpoints_rs() -> PathBuf {
 
 /// Body of every `pub(crate)` handler in the module, by name.
 ///
-/// Handlers are the `async` ones: `dev_oprf_eval` is a synchronous helper that
-/// computes a scalar and touches no state, and `/user/auth` calls it on the
-/// legacy password path, so it is deliberately not gated.
+/// Handlers are the `async` ones. The module used to also hold a synchronous
+/// helper, `dev_oprf_eval`, exempted here because it touched no state — but it
+/// was reached from `/user/auth` on the legacy password path, which made it a
+/// production code path living in a demo-only module. It now lives in
+/// `oprf::evaluate_unblinded`. Treat any future synchronous helper here the
+/// same way: if production reaches it, it does not belong in this file.
 fn handler_bodies(src: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = src;

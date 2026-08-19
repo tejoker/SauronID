@@ -97,3 +97,16 @@ http-body-util = "0.1"
 
 [features]
 default = []
+# Demo/dev surface. `/dev/*` mints users, hands out tokens and drives a scripted
+# leash scenario — scaffolding for evaluators, never for a client deployment.
+#
+# The runtime gate (`SAURON_ENABLE_DEV_ENDPOINTS` plus each handler's own
+# `is_development_runtime()` check) stays exactly as it was; this adds a
+# compile-time layer above it. A runtime flag is a promise an operator can
+# break with one typo in a manifest. A feature means the code is not in the
+# binary at all, so the production build cannot serve those routes however it
+# is configured.
+#
+# Build the demo and test lanes with `--features demo`; build for clients with
+# default features.
+demo = []

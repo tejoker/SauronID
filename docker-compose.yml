@@ -17,6 +17,11 @@ services:
     build:
       context: .
       dockerfile: core/Dockerfile
+      args:
+        # The evaluation image needs the /dev/* handlers compiled in: seed.sh
+        # and the invariant suite both drive /dev/register_user. A client image
+        # is built with no features, so that code is not in the binary at all.
+        CARGO_FEATURES: demo
     image: sauronid-backend:dev
     ports:
       - "3001:3001"
@@ -95,6 +100,11 @@ services:
     build:
       context: .
       dockerfile: core/Dockerfile
+      args:
+        # The evaluation image needs the /dev/* handlers compiled in: seed.sh
+        # and the invariant suite both drive /dev/register_user. A client image
+        # is built with no features, so that code is not in the binary at all.
+        CARGO_FEATURES: demo
     image: sauronid-backend:dev
     command: ["bash", "/app/seed.sh"]
     environment:
