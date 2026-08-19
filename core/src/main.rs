@@ -630,23 +630,6 @@ fn store_user_auth_credential(
     Ok(())
 }
 
-/// Resolve the authenticated human behind `x-sauron-session`.
-fn session_key_image(
-    state: &Arc<RwLock<ServerState>>,
-    headers: &HeaderMap,
-    jwt_secret: &[u8],
-    expected_tenant_id: &str,
-) -> Option<String> {
-    let st = state.read_or_recover();
-    let mut db = st.db.lock().ok()?;
-    sauron_core::user_session::key_image_from_headers(
-        headers,
-        jwt_secret,
-        expected_tenant_id,
-        &mut db.any_conn(),
-    )
-}
-
 // ─────────────────────────────────────────────────────
 //  POST /agent/vc/issue — mint a self-sovereign agent VC
 //
@@ -743,10 +726,11 @@ async fn agent_vc_issue(
     };
 
     let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let human_key_image = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
-        StatusCode::UNAUTHORIZED,
-        "Valid x-sauron-session header required".into(),
-    ))?;
+    let human_key_image = agent::session_key_image(&state, &headers, &jwt_secret, &tenant_id)
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "Valid x-sauron-session header required".into(),
+        ))?;
     if !payload.human_key_image.is_empty() && payload.human_key_image != human_key_image {
         return Err((
             StatusCode::UNAUTHORIZED,

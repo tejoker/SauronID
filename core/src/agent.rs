@@ -52,7 +52,13 @@ fn now_secs() -> i64 {
 /// call sites in this file keep their shape. The `state` argument is what the
 /// epoch read needs; before sessions were revocable this took no database at
 /// all, which is precisely why a leaked session could not be cut off.
-fn session_key_image(
+/// Resolve the authenticated human behind `x-sauron-session`.
+///
+/// `pub` because `main.rs` is a separate crate and had a byte-for-byte copy of
+/// this. Two copies of a session-authentication helper is the kind of
+/// duplication that goes wrong quietly: a fix to one leaves the other
+/// authenticating by the old rules.
+pub fn session_key_image(
     state: &Arc<RwLock<ServerState>>,
     headers: &HeaderMap,
     jwt_secret: &[u8],
