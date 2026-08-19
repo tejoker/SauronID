@@ -489,10 +489,11 @@ branding/              BRANDING.md, logo.svg, brand-book.pdf
 docs/                  threat-model, operations, production-readiness, SIEM integration,
                        docs site source (docs/site/), roadmap, competitive-benchmark
 
-archive/banking-2025/     Pre-pivot 2025 bank-KYC prototype. Do not depend on.
 archive/removed-2026-08/  The four subsystems that were not agent constraint: KYC consent,
                           hardware attestation, Groth16 ZKP, cohort stats + compliance.
                           See its README for what came out and why. Do not depend on.
+                          (The 2025 bank-KYC prototype that used to sit beside it is out of
+                          the working tree; it lives at the archive/banking-2025 git tag.)
 ```
 
 ## Critical files
@@ -539,7 +540,7 @@ Full guide: [docs/operations.md](docs/operations.md).
 
 ## Repo provenance
 
-This codebase was started during the **Solana Colosseum 2026 hackathon**, building on a prior **2025 hackathon prototype** (preserved under `archive/banking-2025/`). Active development continues post-hackathon. Reviewers and auditors should rely on the implemented/partial/cannot-do boundaries above rather than infer maturity from presentation.
+This codebase was started during the **Solana Colosseum 2026 hackathon**, building on a prior **2025 hackathon prototype** (preserved at the `archive/banking-2025` git tag, not in the working tree). Active development continues post-hackathon. Reviewers and auditors should rely on the implemented/partial/cannot-do boundaries above rather than infer maturity from presentation.
 
 ## Security and trust
 

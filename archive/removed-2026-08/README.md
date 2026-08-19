@@ -52,7 +52,8 @@ revert to be clean.
 
 ## Related
 
-`banking-2025/` alongside this directory is the pre-pivot 2025 hackathon
-prototype, archived earlier and on the same terms. Its byte-identical duplicate
-of `contracts/sauron_ledger` was deleted rather than kept — `diff -rq` against
-the live copy returned nothing.
+The pre-pivot 2025 hackathon prototype used to sit beside this directory as
+`banking-2025/`. It has since been removed from the working tree entirely and
+lives at the `archive/banking-2025` git tag. Its byte-identical duplicate of
+`contracts/sauron_ledger` went with it — `diff -rq` against the live copy had
+returned nothing.
