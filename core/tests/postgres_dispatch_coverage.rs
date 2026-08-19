@@ -49,8 +49,10 @@ use std::path::{Path, PathBuf};
 const SQLITE_ONLY: &[(&str, usize, &str)] = &[
     (
         "repository.rs",
-        8,
-        "the SQLite half of Repo's own backend match; the Postgres half is sqlx",
+        1,
+        "the last SQLite-only arm: the BEGIN IMMEDIATE writer-lock transaction \
+         helper the six SERIALIZABLE consume paths share. AnyConn has no \
+         equivalent primitive, so this is the one that cannot move yet.",
     ),
     (
         "db.rs",

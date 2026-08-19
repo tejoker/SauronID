@@ -287,3 +287,226 @@ async fn insert_user_registration_is_idempotent_through_both_layers() {
         "translated: {translated}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 2: the remaining collapsible methods.
+//
+// Same gate, same rule. Each of these is two-armed today and has no
+// backend-specific concurrency story, so each can lose an arm — but only once
+// something here proves the surviving arm returns what the pair returned.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_users_agrees_including_order_and_columns() {
+    let (db, repo, _p) = fixture();
+    for i in 0..3 {
+        seed_user(
+            &db,
+            &format!("ki_lu{i}"),
+            &format!("pk_lu{i}"),
+            "lu@example.test",
+        );
+    }
+    let via_repo = repo.list_users().await.expect("repo");
+    let via_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_map(
+                "SELECT key_image_hex, first_name, last_name, nationality FROM users",
+                sql_params![],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_string(1)?,
+                        r.get_string(2)?,
+                        r.get_string(3)?,
+                    ))
+                },
+            )
+            .expect("anyconn")
+    };
+    assert_eq!(via_repo.len(), 3);
+    assert_eq!(via_anyconn, via_repo, "same tuples in the same order");
+}
+
+#[tokio::test]
+async fn payment_authorization_agent_agrees_present_and_absent() {
+    let (db, repo, _p) = fixture();
+    repo.insert_payment_authorization(
+        "default", "auth_pa", "agt_pa", "jti_pa", 1250, "EUR", "m1", "ref1", 100, 400,
+    )
+    .await
+    .expect("repo insert");
+
+    for (auth, expect_some) in [("auth_pa", true), ("auth_missing", false)] {
+        let via_repo = repo
+            .payment_authorization_agent("default", auth)
+            .await
+            .expect("repo");
+        let via_anyconn = {
+            let mut c = db.lock().expect("conn");
+            c.any_conn()
+                .query_row(
+                    "SELECT agent_id FROM agent_payment_authorizations \
+                     WHERE tenant_id = ?1 AND auth_id = ?2",
+                    sql_params![&"default", &auth],
+                    |r| r.get_string(0),
+                )
+                .expect("anyconn")
+        };
+        assert_eq!(via_repo.is_some(), expect_some);
+        assert_eq!(via_anyconn, via_repo, "AnyConn disagrees for {auth}");
+    }
+}
+
+#[tokio::test]
+async fn insert_payment_authorization_rejects_a_duplicate_through_both_layers() {
+    // The replay property: a second insert of the same auth_id must not create a
+    // second row. Repo maps the unique violation to RepoError; the point here is
+    // that the row count is one either way.
+    let (db, repo, _p) = fixture();
+    repo.insert_payment_authorization(
+        "default", "auth_dup", "agt_d", "jti_d", 10, "EUR", "m", "r", 1, 2,
+    )
+    .await
+    .expect("first insert");
+    let second = repo
+        .insert_payment_authorization(
+            "default", "auth_dup", "agt_d", "jti_d2", 10, "EUR", "m", "r", 1, 2,
+        )
+        .await;
+    assert!(second.is_err(), "a duplicate auth_id must be refused");
+
+    let n = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_payment_authorizations WHERE auth_id = ?1",
+                sql_params![&"auth_dup"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0)
+    };
+    assert_eq!(n, 1, "exactly one row survives");
+}
+
+#[tokio::test]
+async fn spend_total_and_meta_and_log_agree_after_a_recorded_spend() {
+    let (db, repo, _p) = fixture();
+    // Seed through Repo so the ledger and the log are both populated the way
+    // production populates them.
+    let log_id = repo
+        .record_spend_tenant(
+            "default",
+            "pol_x",
+            "agt_x",
+            Some("act_1"),
+            12.5,
+            "sdk_flush",
+            1_000,
+        )
+        .await
+        .expect("record_spend_tenant");
+    assert!(log_id.starts_with("splog_"), "log id shape: {log_id}");
+
+    // period_start is derived by record_spend; read it back rather than guessing.
+    let period_start = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT period_start FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3",
+                sql_params![&"pol_x", &"agt_x", &"default"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .expect("ledger row")
+    };
+
+    // total
+    let total_repo = repo
+        .get_spend_total_tenant("default", "pol_x", "agt_x", period_start)
+        .await
+        .expect("repo total");
+    let total_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT total_usd FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
+                   AND tenant_id = ?4",
+                sql_params![&"pol_x", &"agt_x", &period_start, &"default"],
+                |r| r.get_f64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0.0)
+    };
+    assert!((total_repo - 12.5).abs() < 1e-9, "total was {total_repo}");
+    assert!(
+        (total_anyconn - total_repo).abs() < 1e-9,
+        "AnyConn {total_anyconn} vs Repo {total_repo}"
+    );
+
+    // meta = (last_updated, log count)
+    let (updated_repo, count_repo) = repo
+        .get_spend_meta_tenant("default", "pol_x", "agt_x", period_start)
+        .await
+        .expect("repo meta");
+    let (updated_anyconn, count_anyconn) = {
+        let mut c = db.lock().expect("conn");
+        let u = c
+            .any_conn()
+            .query_row(
+                "SELECT last_updated FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
+                   AND tenant_id = ?4",
+                sql_params![&"pol_x", &"agt_x", &period_start, &"default"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0);
+        let n = c
+            .any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM spend_log \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3",
+                sql_params![&"pol_x", &"agt_x", &"default"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0);
+        (u, n)
+    };
+    assert_eq!(updated_anyconn, updated_repo);
+    assert_eq!(count_anyconn, count_repo);
+    assert_eq!(count_repo, 1, "one spend recorded");
+
+    // log rows, and the ordering the caller renders
+    let log_repo = repo
+        .list_spend_log_tenant("default", "pol_x", "agt_x", 10)
+        .await
+        .expect("repo log");
+    let log_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_map(
+                "SELECT log_id, policy_id, agent_id, action_id, amount_usd, \
+                 recorded_at, source FROM spend_log \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3 \
+                 ORDER BY recorded_at DESC LIMIT ?4",
+                sql_params![&"pol_x", &"agt_x", &"default", &10i64],
+                |r| r.get_string(0),
+            )
+            .expect("anyconn")
+    };
+    assert_eq!(log_repo.len(), 1);
+    assert_eq!(
+        log_anyconn,
+        log_repo
+            .iter()
+            .map(|e| e.log_id.clone())
+            .collect::<Vec<_>>(),
+        "same log ids in the same order"
+    );
+}
