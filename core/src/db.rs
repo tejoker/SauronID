@@ -885,13 +885,23 @@ pub fn init_schema(conn: &Connection) {
         -- holds the running total per (policy_id, agent_id, period_start).
         -- POST /v1/policy/evaluate now looks up the authoritative value from
         -- this ledger when the request carries an `agent_id`.
+        -- tenant_id is part of the KEY, not just a column. It was added as a
+        -- column by the multi-tenant migration while the key stayed
+        -- (policy_id, agent_id, period_start), which made the upsert conflict
+        -- target tenant-blind: two tenants spending against the same logical
+        -- (agent, policy, period) collapsed into ONE row owned by whichever
+        -- wrote first. The non-owning tenant then read 0 and its budget cap
+        -- never tripped, while the owning tenant absorbed spend it never made.
+        -- `tenant-spend-ledger-race.ts` reproduces it; docs/multi-tenancy-audit.md
+        -- has the numbers.
         CREATE TABLE IF NOT EXISTS spend_ledger (
             policy_id    TEXT NOT NULL,
             agent_id     TEXT NOT NULL,
             period_start BIGINT NOT NULL,        -- unix epoch, 0 = lifetime
             total_usd    REAL NOT NULL DEFAULT 0,
             last_updated BIGINT NOT NULL,
-            PRIMARY KEY (policy_id, agent_id, period_start)
+            tenant_id    TEXT NOT NULL DEFAULT 'default',
+            PRIMARY KEY (tenant_id, policy_id, agent_id, period_start)
         );
         CREATE INDEX IF NOT EXISTS idx_spend_ledger_agent ON spend_ledger(agent_id);
 
@@ -1071,6 +1081,86 @@ pub fn init_schema(conn: &Connection) {
         "#,
     )
     .expect("DB schema init failed");
+
+    // ── spend_ledger: put tenant_id in the primary key on EXISTING databases ──
+    //
+    // SQLite cannot ALTER a primary key, so this is the twelve-step rebuild:
+    // create the correctly-keyed table, copy, drop, rename. Guarded on the old
+    // key still being in place so it runs once and is a no-op afterwards.
+    //
+    // NON-DESTRUCTIVE ON PURPOSE. Every existing row is copied verbatim, keeping
+    // whatever tenant_id it already carries. What the rebuild CANNOT do is
+    // un-merge a row whose total already absorbed another tenant's spend — that
+    // information was never recorded separately. Such a row stays with the
+    // tenant that owned it, i.e. over-counted rather than lost, which is the
+    // conservative direction for a budget cap. The victim tenant starts
+    // accumulating its own row correctly from here. An operator who needs the
+    // historical split can rebuild it from spend_log, which WAS tenant-correct
+    // throughout.
+    {
+        let needs_rebuild = conn
+            .prepare("SELECT 1 FROM pragma_index_list('spend_ledger') LIMIT 0")
+            .is_ok()
+            && conn
+                .prepare("PRAGMA table_info(spend_ledger)")
+                .and_then(|mut st| {
+                    let cols: Vec<(i64, String)> = st
+                        .query_map([], |r| Ok((r.get::<_, i64>(5)?, r.get::<_, String>(1)?)))?
+                        .filter_map(Result::ok)
+                        .collect();
+                    // pk column 5 is the 1-based position in the primary key.
+                    let in_pk: Vec<&str> = cols
+                        .iter()
+                        .filter(|(pk, _)| *pk > 0)
+                        .map(|(_, n)| n.as_str())
+                        .collect();
+                    Ok(!in_pk.is_empty() && !in_pk.contains(&"tenant_id"))
+                })
+                .unwrap_or(false);
+        if needs_rebuild {
+            let rebuilt = conn.execute_batch(
+                r#"
+                BEGIN IMMEDIATE;
+                CREATE TABLE spend_ledger__new (
+                    policy_id    TEXT NOT NULL,
+                    agent_id     TEXT NOT NULL,
+                    period_start BIGINT NOT NULL,
+                    total_usd    REAL NOT NULL DEFAULT 0,
+                    last_updated BIGINT NOT NULL,
+                    tenant_id    TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (tenant_id, policy_id, agent_id, period_start)
+                );
+                INSERT INTO spend_ledger__new
+                    (policy_id, agent_id, period_start, total_usd, last_updated, tenant_id)
+                SELECT policy_id, agent_id, period_start, total_usd, last_updated,
+                       COALESCE(tenant_id, 'default')
+                FROM spend_ledger;
+                DROP TABLE spend_ledger;
+                ALTER TABLE spend_ledger__new RENAME TO spend_ledger;
+                CREATE INDEX IF NOT EXISTS idx_spend_ledger_agent ON spend_ledger(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_spend_ledger_tenant
+                    ON spend_ledger(tenant_id, policy_id, agent_id);
+                COMMIT;
+                "#,
+            );
+            match rebuilt {
+                Ok(()) => tracing::warn!(
+                    target: "sauron::db",
+                    "spend_ledger rebuilt with tenant_id in the primary key; \
+                     pre-existing totals were copied as-is and may over-count the \
+                     owning tenant (see docs/multi-tenancy-audit.md)"
+                ),
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK;");
+                    panic!(
+                        "[FATAL] spend_ledger tenant-key rebuild failed: {e}. \
+                         Refusing to run with a tenant-blind spend ledger: cross-tenant \
+                         writes would collapse into one row and a budget cap would not trip."
+                    );
+                }
+            }
+        }
+    }
 
     // Migration-safe add for existing databases created before requested_claims_json existed.
     let _ = conn.execute(

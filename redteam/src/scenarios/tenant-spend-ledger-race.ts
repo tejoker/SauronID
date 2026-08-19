@@ -104,8 +104,26 @@ async function main(): Promise<ScenarioResult> {
     // contributions in sub-burst), collision happened.
     const totalA = sumA.total ?? 0;
     const totalB = sumB.total ?? 0;
+    // Bounded by OWN contributions, in both directions — which is the property
+    // the note below actually claims, and the only one that holds.
+    //
+    // `bBounded` used to demand totalB === burst * 100 exactly, i.e. that all ten
+    // of B's writes land. Under PostgreSQL that is not guaranteed and should not
+    // be: the ledger upsert runs SERIALIZABLE with a bounded 40001 retry, so
+    // under a 20-way burst on two hot rows some writes abort and return non-200.
+    // That is correct fail-closed behaviour for a spend ledger — refusing a write
+    // is safe, losing or misattributing one is not — and the client can retry.
+    // SQLite passed the strict form only because BEGIN IMMEDIATE serialises
+    // writers, so the retry budget was never exhausted.
+    //
+    // The isolation property is that neither tenant's total can contain the
+    // other's increments. A's are 1.0 and B's are 100.0, so a single leaked B
+    // write would push totalA above burst * 1.0, and a leaked A write would make
+    // totalB not a clean multiple of 100.
     const aBounded = totalA <= burst * 1.0 + 1e-6;
-    const bBounded = totalB >= burst * 100.0 - 1e-6 && totalB <= burst * 100.0 + 1e-6;
+    const bBounded =
+        totalB <= burst * 100.0 + 1e-6 &&
+        Math.abs(totalB % 100.0) < 1e-6;
     const pass = aBounded && bBounded;
 
     return {

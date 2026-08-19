@@ -13,9 +13,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# `__new` suffix = a SQLite rebuild scratch table. SQLite cannot ALTER a primary
+# key, so changing one means create-copy-drop-rename, and the intermediate name
+# appears in a CREATE TABLE that this text grep sees. It exists for the duration
+# of one transaction and is never a schema surface, so it has no Postgres
+# counterpart to be in parity with.
 sqlite_tables() {
   grep -oiE 'create table (if not exists )?[a-z_][a-z0-9_]*' core/src/db.rs \
-    | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u
+    | awk '{print $NF}' | tr 'A-Z' 'a-z' | grep -v '__new$' | sort -u
 }
 
 # Migrations are append-only, so a table that a later migration DROPs still has

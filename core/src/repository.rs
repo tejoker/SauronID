@@ -1111,7 +1111,7 @@ impl Repo {
                         "INSERT INTO spend_ledger \
                          (policy_id, agent_id, period_start, total_usd, last_updated, tenant_id) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                         ON CONFLICT(policy_id, agent_id, period_start) DO UPDATE SET \
+                         ON CONFLICT(tenant_id, policy_id, agent_id, period_start) DO UPDATE SET \
                            total_usd = total_usd + ?4, \
                            last_updated = ?5",
                         rusqlite::params![
@@ -1170,7 +1170,7 @@ impl Repo {
                             "INSERT INTO spend_ledger \
                              (policy_id, agent_id, period_start, total_usd, last_updated, tenant_id) \
                              VALUES ($1, $2, $3, $4, $5, $6) \
-                             ON CONFLICT (policy_id, agent_id, period_start) DO UPDATE SET \
+                             ON CONFLICT (tenant_id, policy_id, agent_id, period_start) DO UPDATE SET \
                                total_usd = spend_ledger.total_usd + EXCLUDED.total_usd, \
                                last_updated = EXCLUDED.last_updated",
                         )
