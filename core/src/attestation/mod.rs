@@ -1,39 +1,33 @@
-//! Vendor-neutral hardware attestation.
+//! Operator-signed runtime attestation.
 //!
-//! The general primitive is: a piece of hardware (TPM 2.0, Intel SGX, AMD
-//! SEV-SNP, ARM CCA, AWS Nitro, Apple Secure Enclave) signs a document
-//! containing a measurement of the runtime state. SauronID verifies:
+//! The primitive: something signs a document containing a measurement of the
+//! runtime state, and SauronID checks the signature, then checks the measurement
+//! against what the operator registered as expected.
 //!
-//!   1. The document signature with the hardware's exposed public key.
-//!   2. The certificate chain rooting in a known manufacturer cert (or an
-//!      operator-controlled root for self-signed deployments).
-//!   3. The measurement matches what the operator registered as expected.
+//! This build ships exactly one kind, `ed25519_self`, where the signer is an
+//! operator-held Ed25519 key. That is evidence about CONFIGURATION — which
+//! measurement an operator vouched for — and deliberately not evidence about
+//! hardware: the same key can sign any measurement.
 //!
-//! Sprint 6 module layout (this file is `attestation/mod.rs`):
+//! The TPM2 and AWS Nitro verifiers that used to live beside it, and the
+//! `AttestationVerifier` trait that existed to dispatch between all three, are
+//! archived under `archive/removed-2026-08/hardware-attestation/`. No deployment
+//! used them and neither was release-ready without real-device evidence, so
+//! `SAURON_REQUIRE_HARDWARE_ATTESTATION=1` now fails closed with that
+//! explanation rather than letting an operator signature pass as hardware trust.
 //!
-//!   - [`abstraction`] — vendor-neutral [`AttestationVerifier`] trait + the
-//!     [`AttestationKind`] / [`AttestationError`] / [`AttestationContext`]
-//!     enums and structs every backend shares.
-//!   - [`ed25519_self`] — operator-rooted Ed25519 self-attestation (M1).
-//!     walker (M2 of the TPM2 PoP roadmap).
-//!
-//! The top-level `verify_attestation()` dispatcher + the public types
-//! re-exported from this `mod.rs` are the stable API surface. Internal
-//! reshuffles inside the sub-modules MUST NOT break callers — every symbol
-//! exported by the legacy `attestation.rs` file is re-exported here under
-//! the same path (`crate::attestation::Foo`). The integration test path
-//! `crate::attestation_cbor` is also preserved through a re-export in
-//! `lib.rs`.
+//! `verify_attestation()` is the dispatcher and the stable API surface;
+//! `AttestationKind`, `AttestationError` and `AttestationContext` are the shared
+//! types. Callers use `crate::attestation::Foo` — internal reshuffles must not
+//! break that path.
 
-pub mod abstraction;
 pub mod ed25519_self;
 
 // ─── Public re-exports — these mirror the pre-refactor `attestation.rs`
 //     surface. Nothing outside this module should import from a sub-module
 //     directly; everything goes through `crate::attestation::Foo`.
 
-pub use abstraction::AttestationVerifier;
-pub use ed25519_self::{measurement_hash, verify_ed25519_self, Ed25519SelfVerifier};
+pub use ed25519_self::{measurement_hash, verify_ed25519_self};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -459,7 +453,7 @@ pub fn verify_attestation(
     match kind {
         AttestationKind::None => Err(AttestationError::Empty),
         AttestationKind::ServerDerived => check_server_derived_allowed(),
-        AttestationKind::Ed25519Self => Ed25519SelfVerifier.verify(blob, ctx),
+        AttestationKind::Ed25519Self => verify_ed25519_self(blob, ctx),
     }
 }
 
