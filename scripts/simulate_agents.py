@@ -156,19 +156,11 @@ def main() -> int:
     print(f"  agents: {len(before['agents'])} -> {len(after['agents'])}")
     print(f"  action_receipts: {len(before['actions'])} -> {len(after['actions'])}")
 
-    # Probe the dashboard's live API to make sure it returns 200 with the new state.
-    for path in (
-        "/api/live/overview",
-        "/api/live/agents",
-        "/api/live/anchor/status",
-        "/api/live/agent_actions/recent",
-    ):
-        try:
-            url = f"http://127.0.0.1:8002{path}"
-            r = requests.get(url, timeout=5)
-            print(f"  {path}: HTTP {r.status_code}  {len(r.text)} bytes")
-        except Exception as e:
-            print(f"  {path}: failed {e}")
+    # The /api/live/* probe that used to sit here talked to the banking-era
+    # analytics service on :8002. scripts/dev/launch.sh removed that service —
+    # "dashboard reads live core data directly" — so the probe could only ever
+    # print four connection refusals, which reads like a broken product to
+    # anyone following the README. The dashboard's own tests cover those routes.
 
     return 0
 

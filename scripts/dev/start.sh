@@ -94,7 +94,6 @@ PIDS+=("$DASH_PID")
 echo ""
 echo -e "  ${GRN}Partner + Bank + Dashboard (proxy) →${RST} http://localhost:3000"
 echo -e "  ${GRN}Rust Backend API                    →${RST} http://localhost:3001"
-echo -e "  ${YLW}Internal services (proxied)         →${RST} 8002 / 8003"
 echo ""
 echo -e "  ${YLW}Ctrl+C pour tout arrêter${RST}"
 echo ""

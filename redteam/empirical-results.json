@@ -6,7 +6,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=200 valid=false",
-      "latency_ms": 29,
+      "latency_ms": 31,
       "pass": true,
       "dynamic": true
     },
@@ -16,7 +16,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=true second=false err=A-JWT jti replay (token already used)",
-      "latency_ms": 5,
+      "latency_ms": 6,
       "pass": true,
       "dynamic": true
     },
@@ -26,7 +26,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "first=422 second=409",
-      "latency_ms": 2,
+      "latency_ms": 1,
       "pass": true,
       "dynamic": true
     },
@@ -46,7 +46,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 3,
+      "latency_ms": 6,
       "pass": true,
       "dynamic": true
     },
@@ -56,7 +56,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 2,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -66,7 +66,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 3,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true
     },
@@ -76,7 +76,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401",
-      "latency_ms": 2,
+      "latency_ms": 5,
       "pass": true,
       "dynamic": true
     },
@@ -86,7 +86,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "valid=false err=Agent requires PoP: provide pop_challenge_id and pop_jws (see POST /agent/pop/challenge)",
-      "latency_ms": 2,
+      "latency_ms": 1,
       "pass": true,
       "dynamic": true
     },
@@ -106,7 +106,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "N=20 winners=1 already_consumed=19",
-      "latency_ms": 38,
+      "latency_ms": 766,
       "pass": true,
       "dynamic": true,
       "evidence": "Promise.all(20) → 1 × HTTP 200 + 19 × HTTP 409 authorization_already_consumed"
@@ -117,7 +117,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "limit=60 sent=125 status_200=60 status_429=65",
-      "latency_ms": 577,
+      "latency_ms": 10784,
       "pass": true,
       "dynamic": true,
       "evidence": "65/125 requests returned HTTP 429 (risk::check_and_increment denied)"
@@ -138,22 +138,22 @@
       "description": "Audit-log integrity: tampered receipt leaf invalidates merkle inclusion proof",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "receipt_id=ar_56969b035… orig_match=false tampered_match=false root_diff=true",
+      "detail": "receipt_id=ar_9dc092910… orig_match=false tampered_match=false root_diff=true",
       "latency_ms": 5,
       "pass": true,
       "dynamic": true,
-      "evidence": "tree_size=2 leaf_index=1 batch_root=3e0045342394d7b2… flipped first nibble → root mismatch"
+      "evidence": "tree_size=1 leaf_index=0 batch_root=f6e49c71dd72cf9e… flipped first nibble → root mismatch"
     },
     {
       "id": "A15",
       "description": "HMAC compare timing oracle: 2000 iters early-diff vs late-diff session sig",
       "expected": "blocked",
       "observed": "blocked",
-      "detail": "early_mean=1707.68µs σ=243.91 | late_mean=1713.62µs σ=248.47 | paired Δ=-4.88µs σ=305.59 n=1800 t=0.68 | detector_control_t=2032.59",
-      "latency_ms": 7276,
+      "detail": "early_mean=4177.32µs σ=272.07 | late_mean=4200.17µs σ=297.92 | paired Δ=-21.35µs σ=242.15 n=1800 t=3.74 | detector_control_t=2032.59",
+      "latency_ms": 21921,
       "pass": true,
       "dynamic": true,
-      "evidence": "paired |t|=0.68 over 1800 back-to-back pairs, mean Δ=-4.88µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
+      "evidence": "paired |t|=3.74 over 1800 back-to-back pairs, mean Δ=-21.35µs; a finding needs |t|>=3 AND |Δ|>=50µs (real AND material). subtle::ConstantTimeEq walks the full signature regardless of first mismatch. Gross-oracle screen only — a sub-µs compare cannot be resolved against ms-scale request noise."
     },
     {
       "id": "A16",
@@ -161,7 +161,7 @@
       "expected": "blocked",
       "observed": "blocked",
       "detail": "status=401 body={\"error\":{\"code\":\"call_sig_config_digest_mismatch\",\"fix\":\"runtime config drifted",
-      "latency_ms": 3,
+      "latency_ms": 4,
       "pass": true,
       "dynamic": true,
       "evidence": "call-sig accepted, but x-sauron-agent-config-digest mismatched registered checksum → HTTP 401 \"config drift\""
@@ -171,9 +171,9 @@
   "total": 16,
   "skipped": 0,
   "dynamic": 16,
-  "generated_at": "2026-08-19T13:59:04.873Z",
+  "generated_at": "2026-08-19T16:21:18.415Z",
   "provenance": {
-    "commit": "558723b2f706f56fdd021810f92ef4dd220ab480-dirty",
+    "commit": "a4efdcbce5a945e1f224ec87adb07394285fb432-dirty",
     "enforce_mode": true,
     "db_backend": "sqlite",
     "base_url": "http://127.0.0.1:3001"

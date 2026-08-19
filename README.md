@@ -331,8 +331,7 @@ For a full local demo (core + analytics shim + branded Next.js dashboard) in one
 ```bash
 ./scripts/dev/launch.sh
 # core      → http://127.0.0.1:3001
-# analytics → http://127.0.0.1:8002
-# dashboard → http://127.0.0.1:3000   (Mandate Console)
+# dashboard → http://127.0.0.1:3000   (Mandate Console, reads the core directly)
 ```
 
 To deploy, pick your scenario in [`deploy/README.md`](deploy/README.md): root `docker compose up` (evaluation), [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) (production, fail-closed pins), a **Helm chart** ([`deploy/helm/sauronid/`](deploy/helm/sauronid/)) and **Terraform module** ([`deploy/terraform/`](deploy/terraform/)) for Kubernetes, or the **no-Docker native/systemd** path in [`deploy/native/`](deploy/native/) (Caddy auto-TLS + `sauronid-core` / `sauronid-dashboard` units). The [`scripts/demo/democtl.sh`](scripts/demo/) driver wraps the native path (`build-native` → `deploy-native` → `runner` → `status`) and brings up the real LLM agent behind the Console. Full guide: [docs/operations.md](docs/operations.md).
