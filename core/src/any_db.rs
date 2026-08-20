@@ -385,12 +385,28 @@ fn pg_err(e: postgres::Error) -> String {
     }
 }
 
-pub(crate) fn blocking<T>(f: impl FnOnce() -> T) -> T {
+pub(crate) fn blocking<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     match tokio::runtime::Handle::try_current() {
+        // Multi-threaded runtime: hand this worker's remaining tasks to another
+        // thread and block here.
         Ok(h) if h.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread => {
             tokio::task::block_in_place(f)
         }
-        _ => f(),
+        // Current-thread runtime. `block_in_place` is illegal here, and running
+        // `f` inline is not merely slow — it aborts the process. The blocking
+        // driver creates its own runtime internally, and doing that while this
+        // thread already has one entered panics with "Cannot start a runtime
+        // from within a runtime"; the pooled client then panics again in its
+        // destructor, which is a non-unwinding panic and therefore SIGABRT.
+        // A scoped thread has no runtime entered, so the driver is free to make
+        // its own. Scoped rather than detached so `f` can keep borrowing the
+        // connection and the bind list.
+        Ok(_) => std::thread::scope(|s| match s.spawn(f).join() {
+            Ok(v) => v,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }),
+        // No runtime at all — nothing to nest inside.
+        Err(_) => f(),
     }
 }
 

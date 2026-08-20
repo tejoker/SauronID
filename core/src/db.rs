@@ -362,6 +362,31 @@ pub fn open_db_at(path: &str, pool_size: u32) -> DbHandle {
 /// once the pool is saturated, and a test that had to wait out the production
 /// default would take 30 seconds to assert one status code.
 pub fn open_db_at_with_timeout(path: &str, pool_size: u32, timeout: Duration) -> DbHandle {
+    let mut handle = open_sqlite_only_with_timeout(path, pool_size, timeout);
+    // Fail closed. A Postgres deployment whose blocking pool did not come up is
+    // not "running on SQLite" — `Repo` builds its own sqlx pool from the same
+    // URL and would still be on Postgres, so the process would serve two
+    // databases at once and silently split the writes between them.
+    handle.pg_pool = open_pg_pool(pool_size)
+        .unwrap_or_else(|reason| panic!("[FATAL] SAURON_DB_BACKEND=postgres: {reason}"));
+    handle
+}
+
+/// As [`open_db_at`], but never attaches a Postgres pool.
+///
+/// For callers that have already decided they are SQLite — chiefly tests that
+/// build a `Repo::Sqlite` directly. `open_db_at` consults `SAURON_DB_BACKEND`
+/// from the ambient environment, so under the Postgres CI job it returns a
+/// handle whose `conn()` dispatches to Postgres. Pair that with a hard-coded
+/// `Repo::Sqlite` and the halves disagree: methods that match on the enum arm
+/// write through rusqlite while methods that go through `conn()` read from
+/// Postgres. Writes land in one backend, reads come from the other — the same
+/// split the FATAL above exists to prevent, reached from the other direction.
+pub fn open_sqlite_only(path: &str, pool_size: u32) -> DbHandle {
+    open_sqlite_only_with_timeout(path, pool_size, pool_timeout())
+}
+
+fn open_sqlite_only_with_timeout(path: &str, pool_size: u32, timeout: Duration) -> DbHandle {
     let manager = SqliteConnectionManager::file(path).with_init(|conn| {
         conn.execute_batch(
             "
@@ -404,13 +429,7 @@ pub fn open_db_at_with_timeout(path: &str, pool_size: u32, timeout: Duration) ->
 
     tracing::info!(target: "sauron::db", %path, pool_size, "SQLite opened");
 
-    // Fail closed. A Postgres deployment whose blocking pool did not come up is
-    // not "running on SQLite" — `Repo` builds its own sqlx pool from the same
-    // URL and would still be on Postgres, so the process would serve two
-    // databases at once and silently split the writes between them.
-    let pg_pool = open_pg_pool(pool_size)
-        .unwrap_or_else(|reason| panic!("[FATAL] SAURON_DB_BACKEND=postgres: {reason}"));
-    DbHandle { pool, pg_pool }
+    DbHandle { pool, pg_pool: None }
 }
 
 pub fn init_schema(conn: &Connection) {

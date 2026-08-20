@@ -44,7 +44,7 @@ fn fixture() -> (Arc<sauron_core::db::DbHandle>, Repo, std::path::PathBuf) {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_file(&path);
-    let db = Arc::new(sauron_core::db::open_db_at(
+    let db = Arc::new(sauron_core::db::open_sqlite_only(
         path.to_str().expect("utf-8 path"),
         4,
     ));
