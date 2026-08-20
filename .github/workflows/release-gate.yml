@@ -150,7 +150,11 @@ jobs:
           # compile. Nothing else in this job builds the release profile, so the
           # cache is cold whenever a dependency changed. Compiling here leaves
           # the wait to measure what it is named for.
-          ( cd ../core && cargo build --locked --release --bin sauron-core )
+          # --features demo: the empirical suite goes through core-api.ts, which
+          # calls /dev/register_user. Those handlers are behind that feature, so a
+          # default build answers 404 at setup no matter what
+          # SAURON_ENABLE_DEV_ENDPOINTS is set to below.
+          ( cd ../core && cargo build --locked --release --features demo --bin sauron-core )
           # Boot core: fresh DB, call-sig enforced. Raise the GLOBAL (coarse,
           # per-IP) rate limiter so the harness's setup burst isn't throttled —
           # the suite exercises the specific PER-ENDPOINT risk limits via its own
@@ -165,7 +169,7 @@ jobs:
             SAURON_GLOBAL_RATE_LIMIT_BURST=100000 \
             DATABASE_PATH="${RUNNER_TEMP:-/tmp}/empirical.db" \
             PORT=3001 \
-            cargo run --locked --release --bin sauron-core ) &
+            cargo run --locked --release --features demo --bin sauron-core ) &
           CORE_PID=$!
           for i in $(seq 1 90); do
             curl -sf http://127.0.0.1:3001/health >/dev/null 2>&1 && break

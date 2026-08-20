@@ -209,7 +209,9 @@ jobs:
           ENV: development
           SAURON_ENABLE_DEV_ENDPOINTS: "1"
         run: |
-          cargo build --locked --bin sauron-core
+          # --features demo: the race scenario goes through core-api.ts, which
+          # calls /dev/register_user. Those handlers are feature gated.
+          cargo build --locked --features demo --bin sauron-core
           nohup ./target/debug/sauron-core > /tmp/sauron-core.log 2>&1 &
           echo $! > /tmp/sauron-core.pid
 
