@@ -739,34 +739,6 @@ paths:
 
 
 
-  /zkp/proof_material:
-    post:
-      tags: [public]
-      summary: Fetch ZKP proof material from the issuer
-      description: >-
-        Proxies the issuer's /proof-material endpoint verbatim. Disabled by
-        SAURON_DISABLE_ZKP=1.
-      operationId: zkpProofMaterial
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                credential_hash: { type: [string, "null"] }
-                leaf_index: { type: [integer, "null"], minimum: 0 }
-      responses:
-        '200':
-          description: Issuer proof-material JSON (passthrough).
-          content:
-            application/json:
-              schema: { type: object, additionalProperties: true }
-        '502': { $ref: '#/components/responses/BadGateway' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-
-  # ── Dev-only endpoints (mounted only when SAURON_ENABLE_DEV_ENDPOINTS=1) ──
-
   /dev/register_user:
     post:
       tags: [dev]
@@ -862,50 +834,6 @@ paths:
                   receipt_verification: { type: object, additionalProperties: true }
         '403': { $ref: '#/components/responses/Forbidden' }
 
-  /dev/consent_profile:
-    post:
-      tags: [dev]
-      x-dev-only: true
-      summary: Dev-only consent-token profile disclosure
-      description: Mounted only when SAURON_ENABLE_DEV_ENDPOINTS=1; dev-runtime gated.
-      operationId: devConsentProfile
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [consent_token, site_name]
-              properties:
-                consent_token: { type: string }
-                site_name: { type: string }
-                min_age: { type: [integer, "null"], description: Defaults to 18 when omitted. }
-                required_fields: { type: array, items: { type: string }, default: [] }
-      responses:
-        '200':
-          description: Full profile disclosure (dev only).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [first_name, last_name, email, date_of_birth, nationality, min_age, is_over_threshold, profile_complete, missing_fields, dev_only]
-                properties:
-                  first_name: { type: string }
-                  last_name: { type: string }
-                  email: { type: string }
-                  date_of_birth: { type: string }
-                  nationality: { type: string }
-                  min_age: { type: integer, format: int64 }
-                  is_over_threshold: { type: boolean }
-                  profile_complete: { type: boolean }
-                  missing_fields: { type: array, items: { type: string } }
-                  dev_only: { type: boolean, const: true }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  # ── Agent lifecycle ──
-
   /agent/register:
     post:
       tags: [agent]
@@ -937,6 +865,74 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /agent/vc/issue:
+    post:
+      tags: [agent]
+      summary: Issue a self-sovereign agent VC (call-signed)
+      description: >-
+        Issues a W3C Verifiable Credential for an autonomous agent, rooted in
+        either the bank-linked human trust root or a non-bank
+        CredentialVerification ZK proof. Requires x-sauron-session. Disabled
+        by SAURON_DISABLE_ZKP=1. Max 10 active agent VCs per human.
+      operationId: agentVcIssue
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/CallSigAgentId'
+        - $ref: '#/components/parameters/CallSigTs'
+        - $ref: '#/components/parameters/CallSigNonce'
+        - $ref: '#/components/parameters/CallSigSig'
+        - $ref: '#/components/parameters/CallSigAudience'
+        - $ref: '#/components/parameters/CallSigProtocolVersion'
+        - $ref: '#/components/parameters/CallSigConfigDigest'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_checksum, description, scope, public_key_hex, ring_key_image_hex, pop_jkt, pop_public_key_b64u]
+              properties:
+                human_key_image: { type: string, default: "", description: Optional hint; must match the authenticated session when present. }
+                agent_checksum: { type: string }
+                description: { type: string }
+                scope: { type: array, items: { type: string } }
+                public_key_hex: { type: string }
+                ring_key_image_hex: { type: string }
+                pop_jkt: { type: string }
+                pop_public_key_b64u: { type: string }
+                ttl_hours: { type: integer, format: int64, default: 24, minimum: 1, maximum: 720 } { description: Groth16 proof JSON (non-bank path). } { type: [string, "null"], description: Defaults to CredentialVerification. }
+      responses:
+        '200':
+          description: Agent VC issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent_id, assurance_level, vc, vc_hash, ajwt, agent_public_key_hex, ring_key_image_hex, expires_at, trust_chain]
+                properties:
+                  agent_id: { type: string, description: Prefix agt_. }
+                  assurance_level: { type: string, const: autonomous_web3 }
+                  vc:
+                    type: object
+                    additionalProperties: true
+                    description: Full W3C VC (contexts, type, issuer did:sauron:idp, credentialSubject with agentId, agentChecksum, humanOwner, scope, popThumbprint, rootOfTrust, kyaEvidence).
+                  vc_hash: { type: string, description: hex HMAC. }
+                  ajwt: { type: string }
+                  agent_public_key_hex: { type: string }
+                  ring_key_image_hex: { type: string }
+                  expires_at: { type: integer, format: int64 }
+                  trust_chain: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '426': { $ref: '#/components/responses/UpgradeRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /agent/token:
     post:
@@ -1719,89 +1715,6 @@ paths:
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
 
-  /agent/vc/issue:
-    post:
-      tags: [agent]
-      summary: Issue a self-sovereign agent VC (call-signed)
-      description: >-
-        Issues a W3C Verifiable Credential for an autonomous agent, rooted in
-        either the bank-linked human trust root or a non-bank
-        CredentialVerification ZK proof. Requires x-sauron-session. Disabled
-        by SAURON_DISABLE_ZKP=1. Max 10 active agent VCs per human.
-      operationId: agentVcIssue
-      security:
-        - session: []
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - $ref: '#/components/parameters/CallSigAgentId'
-        - $ref: '#/components/parameters/CallSigTs'
-        - $ref: '#/components/parameters/CallSigNonce'
-        - $ref: '#/components/parameters/CallSigSig'
-        - $ref: '#/components/parameters/CallSigAudience'
-        - $ref: '#/components/parameters/CallSigProtocolVersion'
-        - $ref: '#/components/parameters/CallSigConfigDigest'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [agent_checksum, description, scope, public_key_hex, ring_key_image_hex, pop_jkt, pop_public_key_b64u]
-              properties:
-                human_key_image: { type: string, default: "", description: Optional hint; must match the authenticated session when present. }
-                agent_checksum: { type: string }
-                description: { type: string }
-                scope: { type: array, items: { type: string } }
-                public_key_hex: { type: string }
-                ring_key_image_hex: { type: string }
-                pop_jkt: { type: string }
-                pop_public_key_b64u: { type: string }
-                ttl_hours: { type: integer, format: int64, default: 24, minimum: 1, maximum: 720 }
-                zkp_proof: { description: Groth16 proof JSON (non-bank path). }
-                zkp_circuit: { type: [string, "null"], description: Defaults to CredentialVerification. }
-                zkp_public_signals:
-                  oneOf:
-                    - type: array
-                      items: { type: string }
-                    - type: "null"
-      responses:
-        '200':
-          description: Agent VC issued.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [agent_id, assurance_level, vc, vc_hash, ajwt, agent_public_key_hex, ring_key_image_hex, expires_at, trust_chain]
-                properties:
-                  agent_id: { type: string, description: Prefix agt_. }
-                  assurance_level: { type: string, const: autonomous_web3 }
-                  vc:
-                    type: object
-                    additionalProperties: true
-                    description: Full W3C VC (contexts, type, issuer did:sauron:idp, credentialSubject with agentId, agentChecksum, humanOwner, scope, popThumbprint, rootOfTrust, kyaEvidence).
-                  vc_hash: { type: string, description: hex HMAC. }
-                  ajwt: { type: string }
-                  agent_public_key_hex: { type: string }
-                  ring_key_image_hex: { type: string }
-                  expires_at: { type: integer, format: int64 }
-                  trust_chain: { type: string }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '426': { $ref: '#/components/responses/UpgradeRequired' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-
-  # ── End-user KYC consent flow ──
-
-
-
-
-
-  # ── User self-service ──
-
   /user/auth:
     post:
       tags: [user]
@@ -1908,94 +1821,6 @@ paths:
                   expires_at: { type: integer, format: int64 }
                   authentication: { type: string, const: ed25519_challenge_v1 }
         '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /user/consents:
-    get:
-      tags: [user]
-      summary: List the authenticated user's consents
-      operationId: userConsents
-      security:
-        - session: []
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      responses:
-        '200':
-          description: Consents.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [consents]
-                properties:
-                  consents:
-                    type: array
-                    items:
-                      type: object
-                      required: [request_id, site_name, granted_at, used, revoked]
-                      properties:
-                        request_id: { type: string }
-                        site_name: { type: string }
-                        granted_at: { type: integer, format: int64 }
-                        used: { type: boolean }
-                        revoked: { type: boolean }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /user/credential:
-    get:
-      tags: [user]
-      summary: Fetch (or claim) the user's verifiable credential
-      description: >-
-        Returns the cached VC or claims it from the issuer
-        (pre-authorized-code grant). Disabled by SAURON_DISABLE_ZKP=1.
-      operationId: userGetCredential
-      security:
-        - session: []
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-      responses:
-        '200':
-          description: Credential (issuer VC JSON).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [credential, cached]
-                properties:
-                  credential: { type: object, additionalProperties: true }
-                  cached: { type: boolean }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '502': { $ref: '#/components/responses/BadGateway' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-
-  /user/consent/{request_id}:
-    delete:
-      tags: [user]
-      summary: Revoke one of the user's consents
-      operationId: userRevokeConsent
-      security:
-        - session: []
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - name: request_id
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Revoked.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [revoked]
-                properties:
-                  revoked: { type: boolean, const: true }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  # ── Admin (x-admin-key or admin JWT on every route) ──
 
   /admin/keys/issue:
     post:
@@ -2140,61 +1965,6 @@ paths:
                     nationality: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-
-  /admin/site/{name}/users:
-    get:
-      tags: [admin]
-      summary: List users seen by a site (cross-tenant super-admin)
-      operationId: adminGetSiteUsers
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: name, in: path, required: true, schema: { type: string } }
-      responses:
-        '200':
-          description: Site users.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  required: [first_name, last_name, email, nationality, source, timestamp]
-                  properties:
-                    first_name: { type: string }
-                    last_name: { type: string }
-                    email: { type: string }
-                    nationality: { type: string }
-                    source: { type: string }
-                    timestamp: { type: integer, format: int64 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /admin/site/{name}/zkp_proofs:
-    get:
-      tags: [admin]
-      summary: ZKP verification log for a site (cross-tenant super-admin)
-      operationId: adminGetSiteZkpProofs
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: name, in: path, required: true, schema: { type: string } }
-      responses:
-        '200':
-          description: Proof log.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  required: [id, timestamp, ring_size, proved_claims, raw_detail]
-                  properties:
-                    id: { type: integer, format: int64 }
-                    timestamp: { type: integer, format: int64 }
-                    ring_size: { type: integer, minimum: 0 }
-                    proved_claims: { type: array, items: { type: string } }
-                    raw_detail: { type: string }
-        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /admin/requests:
     get:
@@ -2465,30 +2235,6 @@ paths:
                     status: { type: string }
                     policy_version: { type: string }
                     created_at: { type: integer, format: int64 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /admin/demo/scenario/{scenario}:
-    post:
-      tags: [admin]
-      summary: Run a governance demo scenario
-      operationId: adminRunDemoScenario
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: scenario, in: path, required: true, schema: { type: string, enum: [normal, scope, replay] } }
-      responses:
-        '200':
-          description: Scenario result.
-          content:
-            application/json:
-              # TODO-refine: detail payload varies per scenario
-              schema:
-                type: object
-                required: [result, status_code, detail]
-                properties:
-                  result: { type: string }
-                  status_code: { type: integer }
-                  detail: { type: object, additionalProperties: true }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /admin/per_agent_metrics:
@@ -3119,37 +2865,6 @@ paths:
 
   # ── /v1/proofs (admin-gated) ──
 
-  /v1/proofs/action-log/verify:
-    post:
-      tags: [v1-proofs]
-      summary: Verify a Groth16 action-log proof against a checkpoint
-      description: >-
-        The server resolves the merkle root/size/anchor from checkpoint_id;
-        caller-supplied roots are ignored. Returns a bare status code (200 on
-        accept) with no body.
-      operationId: actionLogVerify
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              description: ActionLogProofPayload flattened plus checkpoint_id.
-              required: [circuit, public_inputs, proof_b64, vk_id, checkpoint_id]
-              properties:
-                circuit: { type: string }
-                public_inputs: { type: array, items: { type: string }, description: "snarkjs public signals, base-10 strings." }
-                proof_b64: { type: string, description: base64 Groth16 proof JSON. }
-                vk_id: { type: string }
-                checkpoint_id: { type: string }
-      responses:
-        '200': { description: Proof accepted (empty body). }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
   /v1/proofs/transparent/verify:
     post:
       tags: [v1-proofs]
@@ -3226,27 +2941,6 @@ paths:
 
   # ── /v1/stats (admin-gated) ──
 
-  /v1/stats/submit:
-    post:
-      tags: [v1-stats]
-      summary: Submit a claimed metric value with a Groth16 integrity proof
-      operationId: statsSubmit
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/StatsSubmission' }
-      responses:
-        '200':
-          description: Stored after proof verification.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/StatsSubmitResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
   /v1/stats/submit-transparent:
     post:
       tags: [v1-stats]
@@ -3282,208 +2976,6 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
-  /v1/stats/cohort:
-    get:
-      tags: [v1-stats]
-      summary: Query raw verified stats rows for a metric and period
-      operationId: statsCohortQuery
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: metric_id, in: query, required: true, schema: { type: string } }
-        - { name: period_start, in: query, required: true, schema: { type: integer, format: int64 } }
-        - { name: period_end, in: query, required: true, schema: { type: integer, format: int64 } }
-      responses:
-        '200':
-          description: Matching rows.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [rows, n]
-                properties:
-                  rows:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: false
-                      required: [tenant_id, metric_id, claimed_value, n_records, period_start, period_end, merkle_root, submitted_at]
-                      properties:
-                        tenant_id: { type: string }
-                        agent_id_or_none: { type: [string, "null"] }
-                        metric_id: { type: string }
-                        claimed_value: { type: integer, format: int64 }
-                        n_records: { type: integer, format: int64 }
-                        period_start: { type: integer, format: int64 }
-                        period_end: { type: integer, format: int64 }
-                        merkle_root: { type: string }
-                        submitted_at: { type: integer, format: int64 }
-                  n: { type: integer, minimum: 0 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  # ── /v1/cohort (admin-gated, DP-published surface) ──
-
-  /v1/cohort:
-    post:
-      tags: [v1-cohort]
-      summary: Create or update a cohort definition
-      operationId: cohortUpsert
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CohortDefinition' }
-      responses:
-        '200':
-          description: Stored definition.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CohortDefinition' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-    get:
-      tags: [v1-cohort]
-      summary: List cohort definitions
-      operationId: cohortList
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      responses:
-        '200':
-          description: Definitions.
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/CohortDefinition' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /v1/cohort/published:
-    get:
-      tags: [v1-cohort]
-      summary: Fetch the DP-published cohort for a period
-      description: Laplace noise per quartile under the cohort's epsilon budget; metrics below the k-anonymity threshold are suppressed.
-      operationId: cohortPublished
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: cohort_id, in: query, required: true, schema: { type: string } }
-        - { name: period_start, in: query, required: true, schema: { type: integer, format: int64 } }
-        - { name: period_end, in: query, required: true, schema: { type: integer, format: int64 } }
-      responses:
-        '200':
-          description: Published cohort.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PublishedCohort' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  /v1/cohort/{id}/budget:
-    get:
-      tags: [v1-cohort]
-      summary: DP budget ledger for a cohort
-      operationId: cohortBudgetGet
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        '200':
-          description: Ledger entries.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: false
-                  required: [cohort_id, metric_id, cycle_start, epsilon_spent, delta_spent, epsilon_cap, delta_cap, last_published]
-                  properties:
-                    cohort_id: { type: string }
-                    metric_id: { type: string }
-                    cycle_start: { type: integer, format: int64 }
-                    epsilon_spent: { type: number }
-                    delta_spent: { type: number }
-                    epsilon_cap: { type: number }
-                    delta_cap: { type: number }
-                    last_published: { type: integer, format: int64 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  /v1/cohort/{id}/budget/rotate:
-    post:
-      tags: [v1-cohort]
-      summary: Rotate the DP budget cycle for a cohort
-      operationId: cohortBudgetRotate
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: id, in: path, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [new_cycle_start, new_epsilon_cap, new_delta_cap]
-              properties:
-                new_cycle_start: { type: integer, format: int64 }
-                new_epsilon_cap: { type: number }
-                new_delta_cap: { type: number }
-                metric_ids:
-                  oneOf:
-                    - type: array
-                      items: { type: string }
-                    - type: "null"
-      responses:
-        '200':
-          description: Rotation result.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [cohort_id, new_cycle_start, rotated]
-                properties:
-                  cohort_id: { type: string }
-                  new_cycle_start: { type: integer, format: int64 }
-                  rotated: { type: integer, minimum: 0 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  /v1/cohort/{id}:
-    parameters:
-      - $ref: '#/components/parameters/TenantId'
-      - { name: id, in: path, required: true, schema: { type: string } }
-    get:
-      tags: [v1-cohort]
-      summary: Fetch a cohort definition
-      operationId: cohortGet
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      responses:
-        '200':
-          description: Definition.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CohortDefinition' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-    delete:
-      tags: [v1-cohort]
-      summary: Delete a cohort definition
-      operationId: cohortDelete
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      responses:
-        '204': { description: Deleted. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  # ── /v1/admin/audit (admin-gated, tenant-scoped security events) ──
 
   /v1/admin/audit:
     get:
@@ -3602,48 +3094,3 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ── /v1/attestation (admin-gated) ──
-
-  /v1/attestation/nitro/verify:
-    post:
-      tags: [v1-attestation]
-      summary: Verify an AWS Nitro attestation document
-      description: >-
-        Validates a raw COSE_Sign1 blob, surfaces the parsed module_id and
-        PCRs, and checks the measurement against the operator-registered
-        expected hash. Verification failures return 200 with valid=false and
-        an error string; only malformed base64 returns 400.
-      operationId: nitroVerify
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/TenantId' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [attestation_blob_b64, expected_measurement_hash]
-              properties:
-                attestation_blob_b64: { type: string, description: base64 AWS Nitro COSE_Sign1 blob. }
-                expected_measurement_hash: { type: string, description: Operator-registered measurement (hex). }
-                agent_id: { type: [string, "null"], description: Optional; echoed back. }
-      responses:
-        '200':
-          description: Verification result (also used for verification failures, with valid=false).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [valid, module_id, pcrs, timestamp, error, agent_id]
-                properties:
-                  valid: { type: boolean }
-                  module_id: { type: string }
-                  pcrs:
-                    type: object
-                    additionalProperties: { type: string }
-                    description: PCR index (stringified integer key) to hex SHA-384.
-                  timestamp: { type: integer, minimum: 0 }
-                  error: { type: [string, "null"], description: Set when valid is false. }
-                  agent_id: { type: [string, "null"] }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }

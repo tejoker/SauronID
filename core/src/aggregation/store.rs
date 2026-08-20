@@ -6,11 +6,11 @@
 //! producing a duplicate. This mirrors how the spend ledger handles its
 //! `(policy_id, agent_id, period_start)` key.
 
-use crate::any_db::{AnyConn, AnyRowGet, SqlValue};
+use crate::any_db::{AnyConn, AnyRowGet};
 use crate::sql_params;
 
+use crate::aggregation::submission::AggError;
 use crate::aggregation::submission::{CohortRow, StatsSubmission};
-use crate::aggregation::verify::AggError;
 use crate::db::DbHandle;
 
 /// Insert-or-update a single stats submission. Returns the now-current row.
@@ -72,109 +72,6 @@ fn upsert_submission_conn(
         merkle_root: sub.merkle_root.clone(),
         submitted_at,
     })
-}
-
-/// List submissions for one `(metric_id, period)` window. Used by the
-/// operator-facing `/v1/stats/cohort` endpoint. NOT the DP-published view.
-pub fn list_cohort(
-    db: &DbHandle,
-    metric_id: &str,
-    period_start: i64,
-    period_end: i64,
-) -> Result<Vec<CohortRow>, AggError> {
-    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
-    let rows = conn
-        .any_conn()
-        .query_map(
-            r#"SELECT tenant_id, agent_id, metric_id, claimed_value, n_records,
-                      period_start, period_end, merkle_root, submitted_at
-               FROM customer_stats
-               WHERE metric_id = ?1
-                 AND period_start = ?2
-                 AND period_end   = ?3
-               ORDER BY tenant_id ASC, agent_id ASC"#,
-            sql_params![&metric_id, &period_start, &period_end],
-            |r| {
-                let agent_id: String = r.get(1)?;
-                Ok(CohortRow {
-                    tenant_id: r.get(0)?,
-                    agent_id_or_none: if agent_id.is_empty() {
-                        None
-                    } else {
-                        Some(agent_id)
-                    },
-                    metric_id: r.get(2)?,
-                    claimed_value: r.get(3)?,
-                    n_records: r.get(4)?,
-                    period_start: r.get(5)?,
-                    period_end: r.get(6)?,
-                    merkle_root: r.get(7)?,
-                    submitted_at: r.get(8)?,
-                })
-            },
-        )
-        .map_err(|e| AggError::Storage(e.to_string()))?;
-    Ok(rows)
-}
-
-/// List every submission whose tenant is in `tenant_ids` and whose period
-/// is contained in `[period_start, period_end]`. Used by the Sprint 8
-/// DP-publish pipeline — see `aggregation::publish::publish_cohort`.
-///
-/// Empty `tenant_ids` returns an empty Vec (no SQL roundtrip).
-pub fn list_for_cohort(
-    db: &DbHandle,
-    tenant_ids: &[String],
-    period_start: i64,
-    period_end: i64,
-) -> Result<Vec<CohortRow>, AggError> {
-    if tenant_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut conn = db.lock().map_err(|e| AggError::Storage(e.to_string()))?;
-    // Build a parameterised `IN (...)` clause. SQLite has a 999-param
-    // ceiling by default — cap defensively and rely on the operator to
-    // size cohorts within it (S8 ships ≤ a few hundred tenants).
-    let placeholders: Vec<String> = (1..=tenant_ids.len()).map(|i| format!("?{i}")).collect();
-    let sql = format!(
-        "SELECT tenant_id, agent_id, metric_id, claimed_value, n_records,
-                period_start, period_end, merkle_root, submitted_at
-         FROM customer_stats
-         WHERE tenant_id IN ({})
-           AND period_start >= ?{}
-           AND period_end   <= ?{}
-         ORDER BY tenant_id ASC, metric_id ASC, submitted_at ASC",
-        placeholders.join(","),
-        tenant_ids.len() + 1,
-        tenant_ids.len() + 2,
-    );
-    // Variable-length IN list: the arguments are built alongside the placeholders
-    // above, so the count is whatever tenant_ids had plus the two period bounds.
-    let mut bound: Vec<SqlValue> = tenant_ids.iter().map(SqlValue::from).collect();
-    bound.push(period_start.into());
-    bound.push(period_end.into());
-    let rows = conn
-        .any_conn()
-        .query_map(&sql, &bound, |r| {
-            let agent_id: String = r.get(1)?;
-            Ok(CohortRow {
-                tenant_id: r.get(0)?,
-                agent_id_or_none: if agent_id.is_empty() {
-                    None
-                } else {
-                    Some(agent_id)
-                },
-                metric_id: r.get(2)?,
-                claimed_value: r.get(3)?,
-                n_records: r.get(4)?,
-                period_start: r.get(5)?,
-                period_end: r.get(6)?,
-                merkle_root: r.get(7)?,
-                submitted_at: r.get(8)?,
-            })
-        })
-        .map_err(|e| AggError::Storage(e.to_string()))?;
-    Ok(rows)
 }
 
 /// Fetch a single submission by primary key. Returns `None` when not present.
@@ -369,17 +266,6 @@ mod tests {
             .unwrap();
         assert_eq!(got.claimed_value, 800);
         assert_eq!(got.submitted_at, 200);
-    }
-
-    #[test]
-    fn list_cohort_returns_per_tenant_rows() {
-        let db = temp_db("cohort");
-        upsert_submission(&db, &sample("t1", None), 100).unwrap();
-        upsert_submission(&db, &sample("t2", None), 110).unwrap();
-        let rows = list_cohort(&db, "success_rate", 0, 60).unwrap();
-        assert_eq!(rows.len(), 2);
-        let tenants: Vec<_> = rows.iter().map(|r| r.tenant_id.as_str()).collect();
-        assert!(tenants.contains(&"t1") && tenants.contains(&"t2"));
     }
 
     #[test]

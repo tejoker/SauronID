@@ -120,13 +120,3 @@ export function _legacyClearAgentPolicyBinding(agentId: string): void {
   delete map[agentId];
   write(map);
 }
-
-/* ── Back-compat shims for legacy callers ─────────────────────────── */
-//
-// Existing tests and any straggling caller imports the un-prefixed
-// names. Keep them as aliases for the legacy helpers so dropping them
-// can happen in a separate compatibility-cleanup PR.
-
-export const getAgentPolicyBinding = _legacyGetAgentPolicyBinding;
-export const setAgentPolicyBinding = _legacySetAgentPolicyBinding;
-export const clearAgentPolicyBinding = _legacyClearAgentPolicyBinding;

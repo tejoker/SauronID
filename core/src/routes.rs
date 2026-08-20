@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    admin, aggregation::handlers as agg_handlers, attestation::handlers as attestation_handlers,
-    audit::handlers as audit_report_handlers, middleware::audit_log, policy::binding_handlers,
-    policy::handlers as policy_handlers, rings, state::ServerState, tenancy, usage, zk_verifier,
+    admin, aggregation::handlers as agg_handlers, audit::handlers as audit_report_handlers,
+    middleware::audit_log, policy::binding_handlers, policy::handlers as policy_handlers, rings,
+    state::ServerState, tenancy, usage,
 };
 
 fn transparent_body_limit() -> DefaultBodyLimit {
@@ -76,13 +76,11 @@ pub fn agent_spend_router() -> Router<Arc<RwLock<ServerState>>> {
 
 /// Router for `/v1/proofs/*` — Sprint 4 action-log proof verification.
 ///
-/// `POST /v1/proofs/action-log/verify` consumes an `ActionLogProofPayload`
 /// plus a finalized checkpoint id and replies 200 on accept, 400 on reject.
 /// Admin-gated; the proof verification is computationally cheap relative to
 /// proving but still gated to avoid being an oracle for arbitrary callers.
 pub fn proofs_router() -> Router<Arc<RwLock<ServerState>>> {
     Router::new()
-        .route("/action-log/verify", post(action_log_verify_handler))
         .route(
             "/transparent/verify",
             post(transparent_verify_handler).route_layer(transparent_body_limit()),
@@ -495,137 +493,19 @@ async fn transparent_verify_handler(
     }))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ActionLogVerifyRequest {
-    #[serde(flatten)]
-    pub payload: zk_verifier::ActionLogProofPayload,
-    /// Server-issued finalized checkpoint. The verifier resolves root, tree
-    /// size and anchor server-side; callers cannot choose the trusted root.
-    pub checkpoint_id: String,
-    // `vkey_dir` was request-controlled — a caller could point verification at an
-    // attacker-supplied verification key (or traverse the filesystem). REMOVED:
-    // the verification-key directory is now server-controlled only (ZKP_VKEY_DIR
-    // env, else the built-in default). Any `vkey_dir` field in the body is
-    // ignored by serde (no field), so old clients simply lose the override.
-}
-
-async fn action_log_verify_handler(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    tenant: Option<Extension<tenancy::TenantId>>,
-    AxumJson(body): AxumJson<ActionLogVerifyRequest>,
-) -> Result<StatusCode, AppError> {
-    let tenant_id = tenant.map(|Extension(t)| t).unwrap_or_default().0;
-    let (expected_root, tree_size): (String, i64) = {
-        let st = state.read_or_recover();
-        let mut db = st.db.lock().unwrap();
-        db.any_conn().query_row(
-            "SELECT merkle_root, tree_size FROM zk_proof_checkpoints WHERE checkpoint_id = ?1 AND tenant_id = ?2 AND circuit = ?3 AND finalized_at > 0",
-            sql_params![&body.checkpoint_id, &tenant_id, &body.payload.circuit],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                "finalized proof checkpoint not found for tenant/circuit".to_string(),
-            )
-        })?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            "finalized proof checkpoint not found for tenant/circuit".to_string(),
-        ))?
-    };
-    // Circuits with an explicit tree-size public input must bind it to this
-    // server checkpoint. StatsHonestComputation places it at index 7.
-    let expected_tree_size = tree_size.to_string();
-    if body.payload.circuit == "StatsHonestComputation"
-        && body.payload.public_inputs.get(7).map(String::as_str)
-            != Some(expected_tree_size.as_str())
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "proof tree_size does not match authoritative checkpoint".into(),
-        )
-            .into());
-    }
-    // Server-controlled ONLY — never from the request.
-    let dir =
-        std::env::var("ZKP_VKEY_DIR").unwrap_or_else(|_| "zkp/circuits/build/keys".to_string());
-    let loader = zk_verifier::FsVKeyLoader::new(dir);
-
-    match zk_verifier::verify_action_log_proof(&body.payload, &expected_root, &loader).await {
-        Ok(()) => Ok(StatusCode::OK),
-        Err(zk_verifier::ZkVerifyError::Malformed(m)) => {
-            Err((StatusCode::BAD_REQUEST, format!("malformed: {m}")).into())
-        }
-        Err(zk_verifier::ZkVerifyError::KeyNotFound(m)) => {
-            Err((StatusCode::NOT_FOUND, format!("vkey missing: {m}")).into())
-        }
-        Err(zk_verifier::ZkVerifyError::Invalid(m)) => {
-            Err((StatusCode::BAD_REQUEST, format!("invalid proof: {m}")).into())
-        }
-        Err(zk_verifier::ZkVerifyError::VerifierFailed(m)) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("verifier process failed: {m}"),
-        )
-            .into()),
-    }
-}
-
-/// Router for `/v1/stats/*` — Sprint 7 customer stat aggregation + ZK integrity.
+/// Router for `/v1/stats/*` — customer stat submission with a STARK proof.
 ///
-/// `POST /v1/stats/submit`  — body = [`crate::aggregation::StatsSubmission`].
-///                            Verifies the proof, upserts the row, anchors it.
-/// `GET  /v1/stats/cohort`  — operator-facing cross-tenant view. Not the DP
-///                            publish path (that's Sprint 8 + Sprint 9).
+/// `POST /v1/stats/submit-transparent` is the one route the Python, TypeScript
+/// and Go SDKs call. Its Groth16 sibling and the DP cohort surface are archived
+/// under `archive/removed-2026-08/`; the body limit is raised because a native
+/// RISC Zero receipt does not fit in the global 64 KB cap.
 ///
-/// Both admin-gated through the same middleware stack as `/v1/policy/*`.
+/// Admin-gated through the same middleware stack as `/v1/policy/*`.
 pub fn stats_router() -> Router<Arc<RwLock<ServerState>>> {
-    let router = Router::new()
-        .route("/submit", post(agg_handlers::submit_handler))
+    Router::new()
         .route(
             "/submit-transparent",
             post(agg_handlers::submit_transparent_handler).route_layer(transparent_body_limit()),
-        )
-        .route("/cohort", get(agg_handlers::cohort_handler));
-
-    router
-        .route_layer(middleware::from_fn(admin::auth_middleware))
-        .route_layer(middleware::from_fn(tenancy::extract_tenant))
-}
-
-/// Router for `/v1/cohort/*` — Sprint 8 DP-published cohort surface.
-///
-/// All routes are admin-gated (operator-level — global, not tenant-scoped):
-///
-/// - `POST   /v1/cohort`            — upsert a cohort definition.
-/// - `GET    /v1/cohort`            — list all cohort definitions.
-/// - `GET    /v1/cohort/published`  — DP-published cohort aggregate
-///                                    (cohort_id, period_start, period_end).
-/// - `GET    /v1/cohort/{id}`       — fetch one cohort definition.
-/// - `DELETE /v1/cohort/{id}`       — delete a cohort definition.
-///
-/// IMPORTANT route ordering: `/published` is declared before `/{id}` so axum
-/// matches the literal segment first instead of treating "published" as an
-/// id capture.
-pub fn cohort_router() -> Router<Arc<RwLock<ServerState>>> {
-    Router::new()
-        .route(
-            "/",
-            post(agg_handlers::cohort_upsert_handler).get(agg_handlers::cohort_list_handler),
-        )
-        .route("/published", get(agg_handlers::cohort_published_handler))
-        // S8 ext: per-cohort ε ledger surface. Both routes admin-gated;
-        // the rotate route is operator-only (regulatory quarterly reset).
-        // Declared BEFORE the catch-all `/{id}` so axum prefers the
-        // literal segments.
-        .route("/{id}/budget", get(agg_handlers::cohort_budget_get_handler))
-        .route(
-            "/{id}/budget/rotate",
-            post(agg_handlers::cohort_budget_rotate_handler),
-        )
-        .route(
-            "/{id}",
-            get(agg_handlers::cohort_get_handler).delete(agg_handlers::cohort_delete_handler),
         )
         .route_layer(middleware::from_fn(admin::auth_middleware))
         .route_layer(middleware::from_fn(tenancy::extract_tenant))
@@ -664,32 +544,10 @@ pub fn audit_reports_router() -> Router<Arc<RwLock<ServerState>>> {
         .route_layer(middleware::from_fn(tenancy::extract_tenant))
 }
 
-/// Router for `/v1/attestation/*` — Sprint 6 dedicated attestation surface.
-///
-/// Today this nests a single route — `POST /v1/attestation/nitro/verify` —
-/// that runs the full AWS Nitro COSE_Sign1 + CBOR verification flow and
-/// returns the parsed `module_id`, PCR set, and a structured `valid` /
-/// `error` envelope. Admin-gated + tenant-scoped (same middleware stack as
-/// `/v1/policy/*`).
-///
-/// Future hardware kinds (TPM2 quote upload, SGX quote, SEV-SNP report)
-/// slot into sibling routes under the same router.
-pub fn attestation_router() -> Router<Arc<RwLock<ServerState>>> {
-    Router::new()
-        .route(
-            "/nitro/verify",
-            post(attestation_handlers::nitro_verify_handler),
-        )
-        .route_layer(middleware::from_fn(admin::auth_middleware))
-        .route_layer(middleware::from_fn(tenancy::extract_tenant))
-}
-
 pub fn admin_router() -> Router<Arc<RwLock<ServerState>>> {
     Router::new()
         .route("/clients", post(admin::add_client).get(admin::get_clients))
         .route("/users", get(admin::get_users))
-        .route("/site/{name}/users", get(admin::get_site_users))
-        .route("/site/{name}/zkp_proofs", get(admin::get_site_zkp_proofs))
         .route("/requests", get(admin::get_requests))
         .route("/stats", get(admin::get_stats))
         .route(
@@ -716,7 +574,6 @@ pub fn admin_router() -> Router<Arc<RwLock<ServerState>>> {
         )
         .route("/agent_actions/recent", get(admin::get_recent_actions))
         // Dashboard "Try" page — runs real governance scenarios (replay/scope/normal).
-        .route("/demo/scenario/{scenario}", post(admin::run_demo_scenario))
         .route("/anchor/status", get(admin::get_anchor_status))
         .route("/per_agent_metrics", get(admin::get_per_agent_metrics))
         .route("/egress/recent", get(admin::get_recent_egress))

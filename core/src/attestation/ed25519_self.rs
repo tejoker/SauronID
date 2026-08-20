@@ -18,20 +18,15 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
-use super::abstraction::AttestationVerifier;
 use super::{AttestationContext, AttestationError};
 
-/// Zero-sized marker; trait impl is the entry point.
-pub struct Ed25519SelfVerifier;
-
-impl AttestationVerifier for Ed25519SelfVerifier {
-    fn verify(&self, blob: &[u8], ctx: &AttestationContext) -> Result<(), AttestationError> {
-        verify_ed25519_self(blob, ctx)
-    }
-}
-
-/// Free-function entry point preserved for back-compat with code that called
-/// `crate::attestation::verify_ed25519_self` directly before the refactor.
+/// Verify an operator-signed `<payload_b64u>.<sig_b64u>` runtime measurement.
+///
+/// This used to sit behind an `AttestationVerifier` trait on a zero-sized
+/// `Ed25519SelfVerifier`, so that the TPM2 and Nitro verifiers could be
+/// dispatched through the same interface. Those are archived, the trait had one
+/// implementation, and nothing ever held it as `dyn` — the impl body was a bare
+/// call to this function. One kind needs no interface.
 pub fn verify_ed25519_self(blob: &[u8], ctx: &AttestationContext) -> Result<(), AttestationError> {
     let blob_str = std::str::from_utf8(blob)
         .map_err(|e| AttestationError::Decode(format!("blob is not utf-8: {e}")))?;

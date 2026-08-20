@@ -1,0 +1,512 @@
+//! Does the `AnyConn` idiom return exactly what `Repo` returns?
+//!
+//! `Repo` and `AnyConn` are the two database layers this codebase carries. The
+//! plan is to retire `Repo`'s non-transactional half by moving those call sites
+//! onto `AnyConn`, which already speaks both dialects through `sql_translate`.
+//! That plan is only safe if the two layers agree on every row, and "they look
+//! like the same query" is not evidence.
+//!
+//! So this runs both against the SAME database and asserts equality. It is the
+//! gate on the port, not a description of it: while it passes, moving a call
+//! site is a mechanical change with a proof behind it; if it ever fails, the
+//! method it names is not portable and belongs with the six transactional ones.
+//!
+//! Deliberately NOT covered here: `consume_call_nonce`, `consume_ajwt_jti`,
+//! `consume_payment_authorization`, `take_pop_challenge`,
+//! `insert_pop_challenge` and `record_spend_with_period`. Those do not differ
+//! by dialect — they differ by CONCURRENCY STRATEGY. Postgres uses
+//! `SERIALIZABLE` plus `SELECT … FOR UPDATE` row locks with a 40001 retry;
+//! SQLite uses a coarse `BEGIN IMMEDIATE` writer lock. `AnyConn::transaction()`
+//! issues a plain `BEGIN`, which is READ COMMITTED on Postgres with no retry
+//! and no row locking, and `sql_translate` cannot emit `FOR UPDATE` at all.
+//! Porting them onto `AnyConn` as it stands would silently downgrade the
+//! atomic single-use guarantee behind attacks A2, A3 and A11 — it would
+//! compile, and most tests would still pass. They stay in `Repo` until
+//! `AnyConn` grows an equivalent primitive.
+
+use sauron_core::repository::Repo;
+use sauron_core::sql_params;
+use std::sync::Arc;
+
+/// A fresh SQLite-backed handle plus a `Repo` sharing it, so both layers read
+/// and write one database and any disagreement is theirs, not the fixture's.
+fn fixture() -> (Arc<sauron_core::db::DbHandle>, Repo, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join("sauron_repo_equiv");
+    let _ = std::fs::create_dir_all(&dir);
+    // A per-test file passed DIRECTLY to `open_db_at`, not through
+    // `DATABASE_PATH`. `#[tokio::test]` runs these in parallel threads of one
+    // process, and an env var is process-global: setting it per test let one
+    // test's rows show up in another's COUNT(*) and made the count assertions
+    // fail in whichever order the scheduler picked.
+    let path = dir.join(format!(
+        "equiv-{}-{:?}.db",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let db = Arc::new(sauron_core::db::open_db_at(
+        path.to_str().expect("utf-8 path"),
+        4,
+    ));
+    let repo = Repo::Sqlite(Arc::clone(&db));
+    (db, repo, path)
+}
+
+fn seed_user(db: &Arc<sauron_core::db::DbHandle>, ki: &str, pk: &str, email: &str) {
+    let mut c = db.lock().expect("conn");
+    c.any_conn()
+        .execute(
+            "INSERT OR REPLACE INTO users \
+             (key_image_hex, public_key_hex, first_name, last_name, email, date_of_birth, nationality) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            sql_params![&ki, &pk, &"Ada", &"Lovelace", &email, &"1815-12-10", &"GBR"],
+        )
+        .expect("seed user");
+}
+
+#[tokio::test]
+async fn get_user_agrees() {
+    let (db, repo, _p) = fixture();
+    seed_user(&db, "ki_get", "pk_get", "ada@example.test");
+
+    let via_repo = repo.get_user("ki_get").await.expect("repo").expect("row");
+
+    let via_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT public_key_hex, first_name, last_name, email, date_of_birth, nationality \
+                 FROM users WHERE key_image_hex = ?1",
+                sql_params![&"ki_get"],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_string(1)?,
+                        r.get_string(2)?,
+                        r.get_string(3)?,
+                        r.get_string(4)?,
+                        r.get_string(5)?,
+                    ))
+                },
+            )
+            .expect("anyconn")
+            .expect("row")
+    };
+
+    assert_eq!(via_repo.public_key_hex, via_anyconn.0);
+    assert_eq!(via_repo.first_name, via_anyconn.1);
+    assert_eq!(via_repo.last_name, via_anyconn.2);
+    assert_eq!(via_repo.email, via_anyconn.3);
+    assert_eq!(via_repo.date_of_birth, via_anyconn.4);
+    assert_eq!(via_repo.nationality, via_anyconn.5);
+}
+
+#[tokio::test]
+async fn get_user_agrees_on_the_missing_row() {
+    // The interesting half: `Ok(None)` and not an error, from both layers.
+    let (db, repo, _p) = fixture();
+    assert!(repo.get_user("absent").await.expect("repo").is_none());
+    let mut c = db.lock().expect("conn");
+    let row = c
+        .any_conn()
+        .query_row(
+            "SELECT public_key_hex FROM users WHERE key_image_hex = ?1",
+            sql_params![&"absent"],
+            |r| r.get_string(0),
+        )
+        .expect("anyconn");
+    assert!(row.is_none(), "both layers report absence as Ok(None)");
+}
+
+#[tokio::test]
+async fn user_exists_agrees() {
+    let (db, repo, _p) = fixture();
+    seed_user(&db, "ki_ex", "pk_ex", "ex@example.test");
+
+    for (ki, expected) in [("ki_ex", true), ("nope", false)] {
+        let via_repo = repo.user_exists(ki).await.expect("repo");
+        let via_anyconn = {
+            let mut c = db.lock().expect("conn");
+            c.any_conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM users WHERE key_image_hex = ?1",
+                    sql_params![&ki],
+                    |r| r.get_i64(0),
+                )
+                .expect("anyconn")
+                .unwrap_or(0)
+                > 0
+        };
+        assert_eq!(via_repo, expected, "repo disagrees with the fixture");
+        assert_eq!(
+            via_anyconn, via_repo,
+            "AnyConn disagrees with Repo for {ki}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn count_users_agrees() {
+    let (db, repo, _p) = fixture();
+    for i in 0..3 {
+        seed_user(
+            &db,
+            &format!("ki_c{i}"),
+            &format!("pk_c{i}"),
+            "c@example.test",
+        );
+    }
+    let via_repo = repo.count_users().await.expect("repo");
+    let via_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row("SELECT COUNT(*) FROM users", sql_params![], |r| {
+                r.get_i64(0)
+            })
+            .expect("anyconn")
+            .unwrap_or(0)
+    };
+    assert_eq!(via_repo, 3, "fixture seeded three users");
+    assert_eq!(via_anyconn, via_repo);
+}
+
+#[tokio::test]
+async fn all_user_pubkeys_agrees_including_order() {
+    // Order matters: the caller feeds these into a ring group, and a different
+    // order is a different ring.
+    let (db, repo, _p) = fixture();
+    for i in 0..4 {
+        seed_user(
+            &db,
+            &format!("ki_p{i}"),
+            &format!("pk_p{i}"),
+            "p@example.test",
+        );
+    }
+    let via_repo = repo.all_user_pubkeys().await.expect("repo");
+    let via_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_map("SELECT public_key_hex FROM users", sql_params![], |r| {
+                r.get_string(0)
+            })
+            .expect("anyconn")
+    };
+    assert_eq!(via_repo.len(), 4);
+    assert_eq!(via_anyconn, via_repo, "same rows in the same order");
+}
+
+#[tokio::test]
+async fn upsert_user_then_both_layers_read_it_back_identically() {
+    // Write through Repo, read through both. Catches a write that lands in a
+    // shape only its own reader understands.
+    let (db, repo, _p) = fixture();
+    repo.upsert_user(
+        "ki_up",
+        "pk_up",
+        "Grace",
+        "Hopper",
+        "grace@example.test",
+        "1906-12-09",
+        "USA",
+    )
+    .await
+    .expect("repo upsert");
+
+    let via_repo = repo.get_user("ki_up").await.expect("repo").expect("row");
+    let via_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT public_key_hex, first_name, nationality FROM users \
+                 WHERE key_image_hex = ?1",
+                sql_params![&"ki_up"],
+                |r| Ok((r.get_string(0)?, r.get_string(1)?, r.get_string(2)?)),
+            )
+            .expect("anyconn")
+            .expect("row")
+    };
+    assert_eq!(via_anyconn.0, via_repo.public_key_hex);
+    assert_eq!(via_anyconn.1, via_repo.first_name);
+    assert_eq!(via_anyconn.2, via_repo.nationality);
+
+    // And upsert is idempotent through both readers.
+    repo.upsert_user(
+        "ki_up",
+        "pk_up2",
+        "Grace",
+        "Hopper",
+        "grace@example.test",
+        "1906-12-09",
+        "USA",
+    )
+    .await
+    .expect("repo re-upsert");
+    assert_eq!(
+        repo.count_users().await.expect("repo"),
+        1,
+        "upsert, not insert"
+    );
+}
+
+#[tokio::test]
+async fn insert_user_registration_is_idempotent_through_both_layers() {
+    // The dialect case: Repo's SQLite arm writes `INSERT OR IGNORE`, its
+    // Postgres arm writes `ON CONFLICT DO NOTHING` by hand, and
+    // `sql_translate::rewrite_insert_or` turns the former into the latter. So a
+    // ported call site can write the SQLite form and get identical behaviour.
+    let (db, repo, _p) = fixture();
+    for _ in 0..2 {
+        repo.insert_user_registration("default", "client_a", "ki_reg", "test", 1_700_000_000)
+            .await
+            .expect("repo insert_user_registration");
+    }
+    let rows = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM user_registrations WHERE user_key_image_hex = ?1",
+                sql_params![&"ki_reg"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0)
+    };
+    assert_eq!(rows, 1, "second insert ignored, not duplicated");
+
+    // Pin the rewrite itself, so this stays true if someone edits the translator.
+    let translated = sauron_core::sql_translate::to_postgres(
+        "INSERT OR IGNORE INTO user_registrations (a) VALUES (?1)",
+    );
+    assert!(
+        translated.contains("ON CONFLICT DO NOTHING"),
+        "the SQLite form a ported site writes must still translate: {translated}"
+    );
+    assert!(
+        !translated.contains("OR IGNORE"),
+        "translated: {translated}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 2: the remaining collapsible methods.
+//
+// Same gate, same rule. Each of these is two-armed today and has no
+// backend-specific concurrency story, so each can lose an arm — but only once
+// something here proves the surviving arm returns what the pair returned.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_users_agrees_including_order_and_columns() {
+    let (db, repo, _p) = fixture();
+    for i in 0..3 {
+        seed_user(
+            &db,
+            &format!("ki_lu{i}"),
+            &format!("pk_lu{i}"),
+            "lu@example.test",
+        );
+    }
+    let via_repo = repo.list_users().await.expect("repo");
+    let via_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_map(
+                "SELECT key_image_hex, first_name, last_name, nationality FROM users",
+                sql_params![],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_string(1)?,
+                        r.get_string(2)?,
+                        r.get_string(3)?,
+                    ))
+                },
+            )
+            .expect("anyconn")
+    };
+    assert_eq!(via_repo.len(), 3);
+    assert_eq!(via_anyconn, via_repo, "same tuples in the same order");
+}
+
+#[tokio::test]
+async fn payment_authorization_agent_agrees_present_and_absent() {
+    let (db, repo, _p) = fixture();
+    repo.insert_payment_authorization(
+        "default", "auth_pa", "agt_pa", "jti_pa", 1250, "EUR", "m1", "ref1", 100, 400,
+    )
+    .await
+    .expect("repo insert");
+
+    for (auth, expect_some) in [("auth_pa", true), ("auth_missing", false)] {
+        let via_repo = repo
+            .payment_authorization_agent("default", auth)
+            .await
+            .expect("repo");
+        let via_anyconn = {
+            let mut c = db.lock().expect("conn");
+            c.any_conn()
+                .query_row(
+                    "SELECT agent_id FROM agent_payment_authorizations \
+                     WHERE tenant_id = ?1 AND auth_id = ?2",
+                    sql_params![&"default", &auth],
+                    |r| r.get_string(0),
+                )
+                .expect("anyconn")
+        };
+        assert_eq!(via_repo.is_some(), expect_some);
+        assert_eq!(via_anyconn, via_repo, "AnyConn disagrees for {auth}");
+    }
+}
+
+#[tokio::test]
+async fn insert_payment_authorization_rejects_a_duplicate_through_both_layers() {
+    // The replay property: a second insert of the same auth_id must not create a
+    // second row. Repo maps the unique violation to RepoError; the point here is
+    // that the row count is one either way.
+    let (db, repo, _p) = fixture();
+    repo.insert_payment_authorization(
+        "default", "auth_dup", "agt_d", "jti_d", 10, "EUR", "m", "r", 1, 2,
+    )
+    .await
+    .expect("first insert");
+    let second = repo
+        .insert_payment_authorization(
+            "default", "auth_dup", "agt_d", "jti_d2", 10, "EUR", "m", "r", 1, 2,
+        )
+        .await;
+    assert!(second.is_err(), "a duplicate auth_id must be refused");
+
+    let n = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_payment_authorizations WHERE auth_id = ?1",
+                sql_params![&"auth_dup"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0)
+    };
+    assert_eq!(n, 1, "exactly one row survives");
+}
+
+#[tokio::test]
+async fn spend_total_and_meta_and_log_agree_after_a_recorded_spend() {
+    let (db, repo, _p) = fixture();
+    // Seed through Repo so the ledger and the log are both populated the way
+    // production populates them.
+    let log_id = repo
+        .record_spend_tenant(
+            "default",
+            "pol_x",
+            "agt_x",
+            Some("act_1"),
+            12.5,
+            "sdk_flush",
+            1_000,
+        )
+        .await
+        .expect("record_spend_tenant");
+    assert!(log_id.starts_with("splog_"), "log id shape: {log_id}");
+
+    // period_start is derived by record_spend; read it back rather than guessing.
+    let period_start = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT period_start FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3",
+                sql_params![&"pol_x", &"agt_x", &"default"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .expect("ledger row")
+    };
+
+    // total
+    let total_repo = repo
+        .get_spend_total_tenant("default", "pol_x", "agt_x", period_start)
+        .await
+        .expect("repo total");
+    let total_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_row(
+                "SELECT total_usd FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
+                   AND tenant_id = ?4",
+                sql_params![&"pol_x", &"agt_x", &period_start, &"default"],
+                |r| r.get_f64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0.0)
+    };
+    assert!((total_repo - 12.5).abs() < 1e-9, "total was {total_repo}");
+    assert!(
+        (total_anyconn - total_repo).abs() < 1e-9,
+        "AnyConn {total_anyconn} vs Repo {total_repo}"
+    );
+
+    // meta = (last_updated, log count)
+    let (updated_repo, count_repo) = repo
+        .get_spend_meta_tenant("default", "pol_x", "agt_x", period_start)
+        .await
+        .expect("repo meta");
+    let (updated_anyconn, count_anyconn) = {
+        let mut c = db.lock().expect("conn");
+        let u = c
+            .any_conn()
+            .query_row(
+                "SELECT last_updated FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
+                   AND tenant_id = ?4",
+                sql_params![&"pol_x", &"agt_x", &period_start, &"default"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0);
+        let n = c
+            .any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM spend_log \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3",
+                sql_params![&"pol_x", &"agt_x", &"default"],
+                |r| r.get_i64(0),
+            )
+            .expect("anyconn")
+            .unwrap_or(0);
+        (u, n)
+    };
+    assert_eq!(updated_anyconn, updated_repo);
+    assert_eq!(count_anyconn, count_repo);
+    assert_eq!(count_repo, 1, "one spend recorded");
+
+    // log rows, and the ordering the caller renders
+    let log_repo = repo
+        .list_spend_log_tenant("default", "pol_x", "agt_x", 10)
+        .await
+        .expect("repo log");
+    let log_anyconn = {
+        let mut c = db.lock().expect("conn");
+        c.any_conn()
+            .query_map(
+                "SELECT log_id, policy_id, agent_id, action_id, amount_usd, \
+                 recorded_at, source FROM spend_log \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3 \
+                 ORDER BY recorded_at DESC LIMIT ?4",
+                sql_params![&"pol_x", &"agt_x", &"default", &10i64],
+                |r| r.get_string(0),
+            )
+            .expect("anyconn")
+    };
+    assert_eq!(log_repo.len(), 1);
+    assert_eq!(
+        log_anyconn,
+        log_repo
+            .iter()
+            .map(|e| e.log_id.clone())
+            .collect::<Vec<_>>(),
+        "same log ids in the same order"
+    );
+}

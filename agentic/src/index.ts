@@ -137,3 +137,27 @@ export {
     type TransparentStatsClientOptions,
 } from "./stats/transparent";
 
+// The anonymous ring-policy path. `POST /agent/action/anon` is a live core route
+// (core/src/main.rs) and it is deliberately in `CALL_SIG_EXEMPT_PATHS`, because a
+// per-call signature would carry the very agent id the ring signature exists to
+// withhold. `signAnonAction` is its only client-side implementation — and until
+// now it was not reachable from this package's entry point, so a consumer of
+// @sauronid/agentic had no way to use a route the server serves.
+//
+// `derivePseudonym` comes with it: the secret `signAnonAction` needs is derived
+// from the agent's master secret, the operator's trapdoor public key and the ring
+// id, and without it a caller cannot produce a signable input.
+export {
+    signAnonAction,
+    derivePseudonym,
+    canonicalAnonEnvelopeJson,
+    canonicalAnonEnvelopeBytes,
+    type AnonActionEnvelope,
+    type RingSignatureWire,
+} from "./ring";
+
+// Derive the PoP public key (the JWK `x` parameter) from a private key you
+// already hold. `generatePopKeyPair` covers keys this SDK creates; this covers
+// keys the caller brought, which registration needs as
+// `pop_public_key_b64u`.
+export { popPublicKeyB64Url } from "./call-sig";

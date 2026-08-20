@@ -23,7 +23,6 @@ bad() {
 # negative test against the pre-fix Dockerfile).
 PAIRS="${*:-"
 .|core/Dockerfile
-.|deploy/nitro/Dockerfile.enclave
 dashboard|dashboard/Dockerfile
 "}"
 

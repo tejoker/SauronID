@@ -1,6 +1,6 @@
 // Sprint 19-20: dashboard proxy → core /v1/audit/reports.
 //
-// Mirrors the existing /api/cohorts proxy style — forwards GET +
+// Same proxy style as the other /api/* routes — forwards GET +
 // POST to `${CORE_INTERNAL_URL}/v1/audit/reports` with x-admin-key.
 
 import { NextRequest } from "next/server";

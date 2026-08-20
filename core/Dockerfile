@@ -30,9 +30,19 @@ RUN mkdir -p core/src && \
 
 WORKDIR /app/core
 
+# Which cargo features this image is built with.
+#
+# Empty by default, which is the CLIENT image: with no `demo` feature the
+# `/dev/*` handlers are not compiled in at all, so no runtime misconfiguration
+# can serve them. The evaluation stack passes `demo` because core/seed.sh and
+# the invariant suite both drive /dev/register_user, and would otherwise 404.
+#
+# Keep this empty for anything a customer runs. See core/Cargo.toml [features].
+ARG CARGO_FEATURES=""
+
 # --locked: build exactly the dependency graph committed for this release. A
 # missing or stale lockfile is a hard build failure.
-RUN cargo build --locked --release
+RUN cargo build --locked --release ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
 
 # ── Source layer ──
 #
@@ -47,8 +57,9 @@ WORKDIR /app/core
 # fresh and skips it, so without this touch the image would ship the stub
 # `fn main() {}` and start a server that does nothing. Making every source
 # newer than the dependency layer is what forces the real compile.
+ARG CARGO_FEATURES=""
 RUN find src -name '*.rs' -exec touch {} + && \
-    cargo build --locked --release && \
+    cargo build --locked --release ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} && \
     test -x target/release/sauron-core
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
@@ -61,7 +72,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/core/target/release/sauron-core .
-COPY --from=builder /app/core/target/release/client ./client
 # The receipt/audit chain verifier ships with the runtime image: it is meant to
 # be run by whoever holds the database, including a customer checking the
 # operator, and `verify-receipts` needs no key at all.

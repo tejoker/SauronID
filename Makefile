@@ -1,5 +1,5 @@
 # SauronID Makefile — minimal, opinionated.
-.PHONY: help build clean test verify empirical demo demo-strict demo-real demo-real-attacks bench docs python-setup python-test dashboard-test sdk-test
+.PHONY: help build clean test verify empirical redteam redteam-suites demo demo-strict demo-real demo-real-attacks docs python-setup python-test dashboard-test sdk-test
 
 help:  ## Show this help
 	@echo "SauronID — agent-binding stack"
@@ -33,9 +33,8 @@ python-test:  ## Run the Python SDK and adapter tests
 dashboard-test:  ## Run dashboard unit tests
 	cd dashboard && npm ci --ignore-scripts --silent && npm test -- --run
 
-sdk-test:  ## Run the ZKP and agentic SDK test suites
+sdk-test:  ## Run the agentic SDK test suites
 	cd agentic && npm ci --ignore-scripts --silent && npm test --silent && npm run test:enforcement --silent && npm run test:stats --silent
-	cd zkp/sdk && npm ci --ignore-scripts --silent && npm run build --silent && npm test --silent
 
 demo:  ## Quickstart: build + start + invariants (advisory mode)
 	./scripts/dev/quickstart.sh
@@ -57,6 +56,18 @@ empirical:  ## Run 16-attack empirical suite against an already-running server
 	  SAURON_ADMIN_KEY=$${SAURON_ADMIN_KEY:-super_secret_hackathon_key} \
 	  node redteam/dist/scenarios/empirical-suite.js
 
+redteam-suites:  ## Run the six run-all-* scenario aggregators (needs a running server)
+	@# These 54 scenarios existed and NOTHING ran them, so they rotted quietly:
+	@# three carried a policy YAML the parser had stopped accepting, and one hid a
+	@# real cross-tenant spend_ledger collision for as long as it went unrun.
+	@# Wiring them is the fix that keeps them honest.
+	@for f in redteam/dist/scenarios/run-all-*.js; do \
+	  echo "── $$f"; \
+	  SAURON_CORE_URL=$${SAURON_CORE_URL:-http://127.0.0.1:3001} \
+	  SAURON_ADMIN_KEY=$${SAURON_ADMIN_KEY:-super_secret_hackathon_key} \
+	  node $$f || echo "  ^ FAILURES above"; \
+	done
+
 redteam:  ## Run Tavily-driven autonomous red-team agent (15 attacks; needs running server)
 	SAURON_CORE_URL=http://127.0.0.1:3001 \
 	  SAURON_ADMIN_KEY=$${SAURON_ADMIN_KEY:-super_secret_hackathon_key} \
@@ -69,10 +80,6 @@ verify: build  ## cargo test + invariants + empirical (full release gate)
 	$(MAKE) python-test
 	./scripts/dev/quickstart.sh
 	SAURON_REQUIRE_CALL_SIG=1 ./scripts/dev/quickstart.sh
-
-bench:  ## Latency benchmark on /agent/payment/authorize with full call-sig stack
-	@./scripts/dev/quickstart.sh > /dev/null 2>&1 && \
-	  node redteam/dist/bench/call-sig.js 2>/dev/null || node /tmp/bench-callsig.mjs
 
 docs:  ## Open the empirical comparison doc
 	@cat docs/empirical-comparison.md | less

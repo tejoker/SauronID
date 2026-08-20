@@ -1,6 +1,6 @@
 # SauronID local stack: core + ZKP issuer + dashboard + EVM node.
 # Archived banking services (partner-portal, anomaly-engine, analytics) removed —
-# see archive/banking-2025/ for the pre-pivot product surface.
+# see the `archive/banking-2025` git tag for the pre-pivot product surface.
 services:
   # ── Rust backend (Sauron Core) ──────────────────────────────────────────────
   backend:

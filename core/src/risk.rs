@@ -6,14 +6,6 @@ use crate::any_db::{AnyConn, AnyRowGet};
 use crate::runtime_mode::is_development_runtime;
 use crate::sql_params;
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-pub fn now_epoch_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
 
 fn hash_bucket(prefix: &[u8], parts: &[&[u8]]) -> String {
     let mut h = Sha256::new();
@@ -34,17 +26,6 @@ fn hash_bucket(prefix: &[u8], parts: &[&[u8]]) -> String {
 pub fn bucket_kyc_retrieve(tenant_id: &str, site: &str, user_key_image: &str) -> String {
     hash_bucket(
         b"kyc_retrieve",
-        &[
-            tenant_id.as_bytes(),
-            site.as_bytes(),
-            user_key_image.as_bytes(),
-        ],
-    )
-}
-
-pub fn bucket_agent_kyc_consent(tenant_id: &str, site: &str, user_key_image: &str) -> String {
-    hash_bucket(
-        b"agent_kyc_consent",
         &[
             tenant_id.as_bytes(),
             site.as_bytes(),
@@ -171,14 +152,6 @@ pub fn check_and_increment(
     );
 
     Ok(())
-}
-
-pub fn limit_kyc_retrieve() -> i64 {
-    parse_limit("SAURON_RISK_KYC_RETRIEVE_PER_WINDOW", 120)
-}
-
-pub fn limit_agent_kyc_consent() -> i64 {
-    parse_limit("SAURON_RISK_AGENT_KYC_CONSENT_PER_WINDOW", 60)
 }
 
 pub fn limit_payment_authorize() -> i64 {

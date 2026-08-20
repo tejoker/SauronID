@@ -953,10 +953,7 @@ pub struct HealthComponent {
 }
 
 #[derive(Serialize)]
-pub struct HealthFlags {
-    pub zkp_issuer_enabled: bool,
-    pub compliance_enabled: bool,
-}
+pub struct HealthFlags {}
 
 pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<HealthResponse> {
     let runtime = if crate::runtime_mode::is_development_runtime() {
@@ -1044,8 +1041,21 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
     };
 
     // DB roundtrip
+    //
+    // The label used to be the literal "sqlite" regardless of backend, so a
+    // PostgreSQL deployment reported `"database": {"detail": "sqlite"}` while
+    // `db.lock()` was correctly dispatching to Postgres — the check was right and
+    // only its name was wrong. That matters twice over: an operator reads this to
+    // confirm which tier they are on, and the benchmark harness reads it to record
+    // which backend a result was measured against, where the two differ by more
+    // than 10x on throughput.
     let database = {
         let st = state.read_or_recover();
+        let backend = if st.db.is_postgres() {
+            "postgres"
+        } else {
+            "sqlite"
+        };
         match st.db.lock() {
             Ok(mut conn) => match conn
                 .any_conn()
@@ -1053,11 +1063,11 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
             {
                 Ok(_) => HealthComponent {
                     ok: true,
-                    detail: "sqlite".into(),
+                    detail: backend.into(),
                 },
                 Err(e) => HealthComponent {
                     ok: false,
-                    detail: format!("sqlite query failed: {e}"),
+                    detail: format!("{backend} query failed: {e}"),
                 },
             },
             Err(e) => HealthComponent {
@@ -1067,10 +1077,7 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
         }
     };
 
-    let feature_flags = HealthFlags {
-        zkp_issuer_enabled: crate::feature_flags::zkp_issuer_enabled(),
-        compliance_enabled: crate::feature_flags::compliance_enabled(),
-    };
+    let feature_flags = HealthFlags {};
 
     if runtime == "production" && !call_sig_enforce {
         warnings.push("Production runtime but SAURON_REQUIRE_CALL_SIG is not enforced — per-call signature is advisory only".into());
@@ -1158,7 +1165,7 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
 //  Live-data admin endpoints (Analytics 5/5)
 //
 //  Every dashboard number comes from a live SQL query against the SauronID core.
-//  Replaces the pre-pivot parquet path (see archive/banking-2025/).
+//  Replaces the pre-pivot parquet path (see the archive/banking-2025 git tag).
 // ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -1476,110 +1483,6 @@ pub struct DemoScenarioOut {
     pub result: String, // "allowed" | "stopped"
     pub status_code: u16,
     pub detail: serde_json::Value,
-}
-
-/// POST /admin/demo/scenario/{scenario} — run a governance scenario for real
-/// and report whether the action was allowed or stopped. Admin-gated.
-pub async fn run_demo_scenario(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    Path(scenario): Path<String>,
-) -> Result<Json<DemoScenarioOut>, AppError> {
-    use crate::policy::invariants::{
-        Action, AllowlistCheck, EvaluationContext, RuntimeCheck, Verdict,
-    };
-    let allowed_tools = vec!["web_fetch".to_string(), "search".to_string()];
-
-    match scenario.as_str() {
-        // Valid, in-scope action — the real allowlist invariant permits it.
-        "normal" => {
-            let check = AllowlistCheck::tools(allowed_tools.clone());
-            let action = Action {
-                tool: "web_fetch".into(),
-                ..Default::default()
-            };
-            let ctx = EvaluationContext::with_defaults(&action);
-            let allowed = matches!(check.evaluate(&ctx), Verdict::Allow);
-            Ok(Json(DemoScenarioOut {
-                result: if allowed { "allowed" } else { "stopped" }.into(),
-                status_code: if allowed { 200 } else { 403 },
-                detail: serde_json::json!({
-                    "scenario": "happy_path",
-                    "tool": "web_fetch",
-                    "allowed_tools": allowed_tools,
-                    "note": "valid in-scope action accepted by the live policy evaluator"
-                }),
-            }))
-        }
-        // Out-of-scope tool — the real allowlist invariant denies it.
-        "scope" => {
-            let check = AllowlistCheck::tools(allowed_tools.clone());
-            let action = Action {
-                tool: "transfer_funds".into(),
-                ..Default::default()
-            };
-            let ctx = EvaluationContext::with_defaults(&action);
-            let reason = match check.evaluate(&ctx) {
-                Verdict::Deny { check, reason } => format!("{check}: {reason}"),
-                Verdict::Allow => "unexpectedly allowed".into(),
-            };
-            Ok(Json(DemoScenarioOut {
-                result: "stopped".into(),
-                status_code: 403,
-                detail: serde_json::json!({
-                    "scenario": "scope_escalation",
-                    "attempted_tool": "transfer_funds",
-                    "allowed_tools": allowed_tools,
-                    "reason": reason
-                }),
-            }))
-        }
-        // Replay — consume the SAME single-use nonce twice against the live store.
-        "replay" => {
-            // Through `Repo`, which is the same primitive the call-signature
-            // middleware enforces with — `BEGIN IMMEDIATE` on SQLite,
-            // SERIALIZABLE with retry on Postgres. The demo used to call the
-            // legacy `ajwt_support::consume_call_nonce` instead: a bare INSERT
-            // on the *other* connection pool. It agreed by accident, because the
-            // uniqueness constraint does the work either way, but it meant the
-            // replay-protection table had two writers with different isolation
-            // and the console demonstrated the weaker one.
-            let repo = {
-                let st = state
-                    .read()
-                    .map_err(|_| AppError::Internal("state lock".into()))?;
-                st.repo.clone()
-            };
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            let nonce = format!("demo-replay-{nanos}");
-            let exp = (nanos / 1_000_000_000) as i64 + 300;
-            let first_ok = repo
-                .consume_call_nonce("demo_scenario_agent", &nonce, exp)
-                .await
-                .is_ok();
-            let second_err = repo
-                .consume_call_nonce("demo_scenario_agent", &nonce, exp)
-                .await
-                .err()
-                .map(|e| e.to_string());
-            let stopped = first_ok && second_err.is_some();
-            Ok(Json(DemoScenarioOut {
-                result: if stopped { "stopped" } else { "allowed" }.into(),
-                status_code: if stopped { 409 } else { 200 },
-                detail: serde_json::json!({
-                    "scenario": "replay_attack",
-                    "first_call": if first_ok { "accepted" } else { "rejected" },
-                    "replayed_call": second_err.clone().unwrap_or_else(|| "accepted".into()),
-                    "reason": "single-use nonce — the duplicate was rejected by the live replay-protection store"
-                }),
-            }))
-        }
-        other => Err(AppError::BadRequest(format!(
-            "unknown demo scenario: {other}"
-        ))),
-    }
 }
 
 #[derive(Deserialize)]
@@ -2081,32 +1984,6 @@ pub struct SiteUserRecord {
     pub timestamp: i64,
 }
 
-pub async fn get_site_users(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    authz: Option<axum::Extension<AdminAuthz>>,
-    Path(name): Path<String>,
-) -> Result<Json<Vec<SiteUserRecord>>, AppError> {
-    require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
-    let repo = state.read_or_recover().repo.clone();
-    let records: Vec<SiteUserRecord> = repo
-        .list_site_users(&name)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .into_iter()
-        .map(
-            |(first_name, last_name, email, nationality, source, timestamp)| SiteUserRecord {
-                first_name,
-                last_name,
-                email,
-                nationality,
-                source,
-                timestamp,
-            },
-        )
-        .collect();
-    Ok(Json(records))
-}
-
 // ─────────────────────────────────────────────────────
 //  GET /admin/site/:name/zkp_proofs
 // ─────────────────────────────────────────────────────
@@ -2118,57 +1995,6 @@ pub struct SiteZkpProofRecord {
     pub ring_size: u64,
     pub proved_claims: Vec<String>,
     pub raw_detail: String,
-}
-
-pub async fn get_site_zkp_proofs(
-    State(state): State<Arc<RwLock<ServerState>>>,
-    authz: Option<axum::Extension<AdminAuthz>>,
-    Path(name): Path<String>,
-) -> Result<Json<Vec<SiteZkpProofRecord>>, AppError> {
-    require_cross_tenant_admin(authz.as_ref().map(|axum::Extension(a)| a))?;
-    let st = state.read_or_recover();
-    let mut db = st.db.lock().unwrap();
-    let pattern = format!("site={} %", name);
-    let records: Vec<SiteZkpProofRecord> = db
-        .any_conn()
-        .query_map(
-            "SELECT id, timestamp, detail FROM requests_log \
-         WHERE action_type = 'ZKP_VERIFY' AND status = 'OK' AND detail LIKE ?1 \
-         ORDER BY id DESC LIMIT 200",
-            sql_params![pattern],
-            |row| {
-                let id: i64 = row.get(0)?;
-                let ts: i64 = row.get(1)?;
-                let detail: String = row.get(2)?;
-                Ok((id, ts, detail))
-            },
-        )
-        .map_err(AppError::internal)?
-        .into_iter()
-        .map(|(id, timestamp, detail)| {
-            // detail = "site=Discord ring=5 claims=age≥18,nationality:FRA"
-            let mut ring_size: u64 = 0;
-            let mut proved_claims: Vec<String> = vec![];
-            for part in detail.split_whitespace() {
-                if let Some(v) = part.strip_prefix("ring=") {
-                    ring_size = v.parse().unwrap_or(0);
-                } else if let Some(v) = part.strip_prefix("claims=") {
-                    proved_claims = v.split(',').map(|s| s.to_string()).collect();
-                }
-            }
-            if proved_claims.is_empty() {
-                proved_claims.push("registered_user".to_string());
-            }
-            SiteZkpProofRecord {
-                id,
-                timestamp,
-                ring_size,
-                proved_claims,
-                raw_detail: detail,
-            }
-        })
-        .collect();
-    Ok(Json(records))
 }
 
 // ─────────────────────────────────────────────────────
@@ -2256,8 +2082,6 @@ pub async fn get_stats(
     let total_tokens_b_issued = current_tokens_b + total_tokens_b_spent;
 
     let controls = serde_json::json!({
-        "compliance": st.compliance.admin_snapshot(),
-        "issuer": st.issuer_runtime.circuit_snapshots_json(&st.issuer_urls),
         "risk": { "window_secs": risk::window_secs() },
     });
 

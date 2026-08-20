@@ -38,7 +38,7 @@ Attack vector if global stayed global: none beyond the existing
 | Table | Verdict | Why |
 |-------|---------|-----|
 | `policies` | SCOPED | Composite key (tenant_id, policy_id). `PolicyStore::get_by_id_tenant` (core/src/policy/store.rs:213) returns None for cross-tenant lookups. Handler maps to 404 (no existence leak) at `core/src/policy/handlers.rs:153`. |
-| `spend_ledger` | SCOPED | Composite PK (policy_id, agent_id, period_start) + tenant_id column. Concurrent cross-tenant writes for the same logical (agent, policy, period) land in distinct rows. Verified by `tenant-spend-ledger-race.ts` redteam scenario. |
+| `spend_ledger` | SCOPED | Primary key is `(tenant_id, policy_id, agent_id, period_start)` on both backends, and the upsert conflict target matches it. Verified by `tenant-spend-ledger-race.ts`, which now runs via `make redteam-suites` and passes on SQLite and PostgreSQL. Fixed 2026-08-19; see the note below for what the fix could and could not repair. |
 | `spend_log` | SCOPED | Append-only ledger. `list_spend_log_inner_tenant` filters by tenant_id. Verified by `tenant-spend-history-leak.ts`. |
 | `agent_policy_bindings` | SCOPED | Composite PK (tenant_id, agent_id). Bind handler (core/src/policy/binding_handlers.rs::bind_policy) verifies both `agent_id` and `policy_id` exist under the caller's tenant before writing — cross-tenant injection returns 400/404. Verified by `tenant-binding-injection.ts`. |
 
@@ -148,7 +148,7 @@ EXPRESSES intent / consent / registration on top of it is per-tenant.
 | agent_checksum_inputs | KEEP_GLOBAL | None (agent-scoped PK) |
 | agent_checksum_audit | KEEP_GLOBAL | None (agent-scoped PK) |
 | policies | SCOPED | Policy id enum + cross-tenant evaluate |
-| spend_ledger | SCOPED | Spend collision / cross-tenant budget exhaustion |
+| spend_ledger | CLOSED | Spend collision / cross-tenant budget exhaustion — fixed, see below |
 | spend_log | SCOPED | Spend history leak |
 | agent_policy_bindings | SCOPED | Binding injection / policy bypass |
 | agent_action_receipts | SCOPED | Receipt enum / content leak |
@@ -309,3 +309,79 @@ SAURON_CORE_URL=http://127.0.0.1:3001 \
 
 The runner emits one aggregated JSON envelope and exits non-zero on
 any scenario that diverges from documented threat-model behaviour.
+
+## Fixed 2026-08-19: `spend_ledger` was not tenant-scoped
+
+Found 2026-08-18 by running `redteam/dist/scenarios/run-all-tenant-isolation.js`,
+which nothing in the Makefile or CI had ever run.
+
+`spend_ledger`'s primary key is `(policy_id, agent_id, period_start)` on both
+backends — `core/src/db.rs` and `migrations/postgres/0003_spend_ledger.sql`.
+Migration `0004_multi_tenant.sql` added `tenant_id` as a column and an index, but
+did not extend the key. `Repo::record_spend_with_period_tenant` upserts with
+`ON CONFLICT(policy_id, agent_id, period_start)`, so the conflict target is
+tenant-blind.
+
+Reproduced against a fresh SQLite core with `SAURON_ADMIN_CROSS_TENANT` unset:
+two tenants each posting ten spends for the same `(agent_id, policy_id)` produced
+
+    spend_log     20 rows, correctly split 10 / 10 per tenant
+    spend_ledger   1 row, tenant_id = <tenant A>, total_usd = 1010.0
+
+i.e. tenant B's 1000 landed in tenant A's authoritative total, and tenant B's own
+ledger read returned nothing.
+
+`get_spend_total` is what the `budget` and `daily_budget` invariants consult, so
+the consequences run both ways:
+
+- the non-owning tenant reads 0 and its spend cap never trips — a budget bypass;
+- the owning tenant absorbs the other's spend and its agents are denied for money
+  they did not spend — cross-tenant denial of service.
+
+Exploiting it requires knowing a victim's `agent_id` and `policy_id`, both
+server-minted hex, so this is not trivially reachable from outside. It is directly
+reachable for an operator who reuses stable policy or agent identifiers across
+tenants.
+
+### The fix
+
+`PRIMARY KEY (tenant_id, policy_id, agent_id, period_start)` on both backends,
+with the upsert conflict target changed to match:
+
+- `migrations/postgres/0023_spend_ledger_tenant_key.sql` drops and re-adds the
+  constraint. Idempotent.
+- `core/src/db.rs` declares the new key for fresh databases and rebuilds existing
+  ones. SQLite cannot alter a primary key, so it is create-copy-drop-rename inside
+  `BEGIN IMMEDIATE`, guarded on the old key still being present so it runs once.
+  If the rebuild fails the process panics rather than serving a tenant-blind
+  ledger.
+- `Repo::record_spend_with_period_tenant` upserts on the four-column target in
+  both arms.
+
+Verified: the reproducing scenario now passes on both backends, and a legacy
+database booted against the new binary migrated in place — key changed, both rows
+preserved with their own totals, indexes intact, no scratch table left behind, and
+a second boot did not re-run the rebuild.
+
+### What the fix could not repair
+
+No row was deleted or merged. A total that had already absorbed another tenant's
+spend stays with the tenant that owned it — over-counted rather than lost, which is
+the conservative direction for a cap. The victim tenant begins accumulating its own
+row correctly from the migration onward.
+
+`spend_log` was tenant-correct throughout, so an operator who needs the historical
+split can rebuild it:
+
+    SELECT tenant_id, policy_id, agent_id, SUM(amount_usd)
+    FROM spend_log GROUP BY tenant_id, policy_id, agent_id;
+
+### One thing the fix exposed
+
+With two hot rows instead of one, a 20-way concurrent burst on PostgreSQL now
+loses some writes to SERIALIZABLE retry exhaustion — they return non-200 and the
+client can retry. That is correct fail-closed behaviour, and the ledger stays
+exactly consistent with `spend_log`. The scenario's assertion had demanded that all
+ten of one tenant's writes land, which was only ever true on SQLite because
+`BEGIN IMMEDIATE` serialises writers. It now asserts the property it actually
+describes: neither tenant's total may contain the other's increments.

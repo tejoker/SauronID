@@ -102,7 +102,38 @@ use crate::tenancy::DEFAULT_TENANT;
 #[derive(Clone)]
 pub enum Repo {
     Sqlite(Arc<DbHandle>),
-    Postgres(sqlx::PgPool),
+    /// The sqlx pool, plus the same dispatching `DbHandle` the SQLite variant
+    /// holds.
+    ///
+    /// The handle is what lets a method with no backend-specific concurrency
+    /// story have ONE body instead of two: `DbHandle::lock()` already returns a
+    /// Postgres connection when `SAURON_DB_BACKEND=postgres`, and `AnyConn` plus
+    /// `sql_translate` already cover the dialect. Only the methods that need
+    /// `SERIALIZABLE` + `FOR UPDATE` + a 40001 retry — which `AnyConn` cannot
+    /// express — still reach for the pool.
+    Postgres(sqlx::PgPool, Arc<DbHandle>),
+}
+
+impl Repo {
+    /// The dispatching handle, whichever variant this is.
+    ///
+    /// Every method that reads or writes without a transaction goes through
+    /// here. `tests/repo_anyconn_equivalence.rs` is the proof that doing so
+    /// returns exactly what the hand-written two-armed version returned.
+    fn handle(&self) -> &Arc<DbHandle> {
+        match self {
+            Repo::Sqlite(db) => db,
+            Repo::Postgres(_, db) => db,
+        }
+    }
+
+    /// A guard on the dispatching handle, with pool timeouts mapped to
+    /// `RepoError::Backend` so callers keep the error type they already handle.
+    fn conn(&self) -> Result<crate::db::DbConn, RepoError> {
+        self.handle()
+            .lock()
+            .map_err(|e| RepoError::Backend(e.to_string()))
+    }
 }
 
 /// A registered user row, for the read paths that previously did ad-hoc
@@ -169,7 +200,7 @@ impl Repo {
                 //
                 // The claim is held by `core/tests/postgres_backend_drift.sh`,
                 // which fails if a registration lands in the sidecar.
-                Ok(Repo::Postgres(pool))
+                Ok(Repo::Postgres(pool, sqlite))
             }
             _ => {
                 tracing::info!(target: "sauron::repo", backend = "sqlite", "repository on legacy rusqlite path");
@@ -179,7 +210,7 @@ impl Repo {
     }
 
     pub fn is_postgres(&self) -> bool {
-        matches!(self, Repo::Postgres(_))
+        matches!(self, Repo::Postgres(..))
     }
 
     // ─── txn_serializable ──────────────────────────────────────────────────
@@ -216,7 +247,7 @@ impl Repo {
                     }
                 }
             }
-            Repo::Postgres(_) => Err(RepoError::Backend(
+            Repo::Postgres(_, _) => Err(RepoError::Backend(
                 "txn_immediate_sqlite called on Postgres backend".into(),
             )),
         }
@@ -240,7 +271,7 @@ impl Repo {
         >,
     {
         let pool = match self {
-            Repo::Postgres(p) => p.clone(),
+            Repo::Postgres(p, _) => p.clone(),
             Repo::Sqlite(_) => {
                 return Err(RepoError::Backend(
                     "txn_serializable_pg called on SQLite backend".into(),
@@ -338,7 +369,7 @@ impl Repo {
                     Ok(())
                 })
             }
-            Repo::Postgres(_) => {
+            Repo::Postgres(_, _) => {
                 let agent_id = agent_id.to_string();
                 let nonce = nonce.to_string();
                 self.txn_serializable_pg(move |tx| {
@@ -409,7 +440,7 @@ impl Repo {
                     Ok(())
                 })
             }
-            Repo::Postgres(_) => {
+            Repo::Postgres(_, _) => {
                 let jti = jti.to_string();
                 self.txn_serializable_pg(move |tx| {
                     let jti = jti.clone();
@@ -479,7 +510,7 @@ impl Repo {
                     Ok(exp)
                 })
             }
-            Repo::Postgres(_) => {
+            Repo::Postgres(_, _) => {
                 let id = id.to_string();
                 let agent_id = agent_id.to_string();
                 let challenge = challenge.to_string();
@@ -562,7 +593,7 @@ impl Repo {
                     Ok(challenge)
                 })
             }
-            Repo::Postgres(_) => {
+            Repo::Postgres(_, _) => {
                 let challenge_id = challenge_id.to_string();
                 let expected_agent_id = expected_agent_id.to_string();
                 self.txn_serializable_pg(move |tx| {
@@ -641,129 +672,6 @@ impl Repo {
     // consume_consent_token above. These cover the remaining handler paths so
     // the whole consent_log lifecycle is on one backend.
 
-    /// user_key_image for a live, unused consent token scoped to a site.
-    pub async fn resolve_consent_user(
-        &self,
-        tenant_id: &str,
-        consent_token: &str,
-        site_name: &str,
-        now: i64,
-    ) -> Result<Option<String>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(conn
-                    .query_row(
-                        "SELECT user_key_image FROM consent_log \
-                         WHERE tenant_id = ?1 AND consent_token = ?2 AND site_name = ?3 AND token_used = 0 AND revoked = 0 \
-                         AND (consent_expires_at = 0 OR consent_expires_at > ?4)",
-                        rusqlite::params![tenant_id, consent_token, site_name, now],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .ok())
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT user_key_image FROM consent_log \
-                     WHERE tenant_id = $1 AND consent_token = $2 AND site_name = $3 AND token_used = 0 AND revoked = 0 \
-                     AND (consent_expires_at = 0 OR consent_expires_at > $4)",
-                )
-                .bind(tenant_id)
-                .bind(consent_token)
-                .bind(site_name)
-                .bind(now)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg resolve_consent_user: {e}")))?;
-                Ok(row.map(|t| t.0))
-            }
-        }
-    }
-
-    /// A user's consent history: (request_id, site_name, granted_at, token_used, revoked).
-    pub async fn list_user_consents(
-        &self,
-        tenant_id: &str,
-        user_key_image: &str,
-    ) -> Result<Vec<(String, String, i64, i64, i64)>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT request_id, site_name, granted_at, token_used, revoked \
-                         FROM consent_log WHERE tenant_id = ?1 AND user_key_image = ?2 \
-                         ORDER BY granted_at DESC LIMIT 100",
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let rows = stmt
-                    .query_map(rusqlite::params![tenant_id, user_key_image], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-                    })
-                    .map_err(|e| RepoError::Backend(e.to_string()))?
-                    .flatten()
-                    .collect();
-                Ok(rows)
-            }
-            Repo::Postgres(pool) => {
-                // token_used/revoked are int4; cast for the same reason as in
-                // consume_consent_token above.
-                let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
-                    "SELECT request_id, site_name, granted_at, token_used::BIGINT, revoked::BIGINT \
-                     FROM consent_log WHERE tenant_id = $1 AND user_key_image = $2 \
-                     ORDER BY granted_at DESC LIMIT 100",
-                )
-                .bind(tenant_id)
-                .bind(user_key_image)
-                .fetch_all(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg list_user_consents: {e}")))?;
-                Ok(rows)
-            }
-        }
-    }
-
-    /// Revoke a user's consent by request id. Returns rows affected.
-    pub async fn revoke_consent(
-        &self,
-        tenant_id: &str,
-        request_id: &str,
-        user_key_image: &str,
-    ) -> Result<u64, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n = conn
-                    .execute(
-                        "UPDATE consent_log SET revoked = 1 \
-                         WHERE tenant_id = ?1 AND request_id = ?2 AND user_key_image = ?3",
-                        rusqlite::params![tenant_id, request_id, user_key_image],
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(n as u64)
-            }
-            Repo::Postgres(pool) => {
-                let res = sqlx::query(
-                    "UPDATE consent_log SET revoked = 1 \
-                     WHERE tenant_id = $1 AND request_id = $2 AND user_key_image = $3",
-                )
-                .bind(tenant_id)
-                .bind(request_id)
-                .bind(user_key_image)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg revoke_consent: {e}")))?;
-                Ok(res.rows_affected())
-            }
-        }
-    }
-
     // ─── M2: agent_payment_authorizations ──────────────────────────────────
     //
     // Same TOCTOU pattern as consent_log: flip `consumed=0 → 1` only once.
@@ -782,39 +690,15 @@ impl Repo {
         tenant_id: &str,
         auth_id: &str,
     ) -> Result<Option<String>, RepoError> {
-        if auth_id.is_empty() {
-            return Err(RepoError::Backend("missing auth_id".into()));
-        }
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.query_row(
-                    "SELECT agent_id FROM agent_payment_authorizations \
-                     WHERE tenant_id = ?1 AND auth_id = ?2",
-                    rusqlite::params![tenant_id, auth_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .map(Some)
-                .or_else(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                    other => Err(RepoError::Backend(other.to_string())),
-                })
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT agent_id FROM agent_payment_authorizations \
-                     WHERE tenant_id = $1 AND auth_id = $2",
-                )
-                .bind(tenant_id)
-                .bind(auth_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg payment_authorization_agent: {e}")))?;
-                Ok(row.map(|r| r.0))
-            }
-        }
+        let mut c = self.conn()?;
+        c.any_conn()
+            .query_row(
+                "SELECT agent_id FROM agent_payment_authorizations \
+                 WHERE tenant_id = ?1 AND auth_id = ?2",
+                crate::sql_params![&tenant_id, &auth_id],
+                |r| r.get_string(0),
+            )
+            .map_err(RepoError::Backend)
     }
 
     pub async fn consume_payment_authorization(
@@ -846,7 +730,7 @@ impl Repo {
                     Ok(())
                 })
             }
-            Repo::Postgres(_) => {
+            Repo::Postgres(_, _) => {
                 let auth_id = auth_id.to_string();
                 let tenant_id = tenant_id.to_string();
                 self.txn_serializable_pg(move |tx| {
@@ -900,234 +784,61 @@ impl Repo {
         created_at: i64,
         expires_at: i64,
     ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT INTO agent_payment_authorizations (auth_id, agent_id, jti, \
-                     amount_minor, currency, merchant_id, payment_ref, created_at, \
-                     expires_at, consumed, tenant_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
-                    rusqlite::params![
-                        auth_id,
-                        agent_id,
-                        jti,
-                        amount_minor,
-                        currency,
-                        merchant_id,
-                        payment_ref,
-                        created_at,
-                        expires_at,
-                        tenant_id,
-                    ],
-                )
-                .map_err(|e| {
-                    let s = e.to_string();
-                    if s.contains("UNIQUE") || s.contains("PRIMARY KEY") {
-                        RepoError::Replay("payment authorization already exists".into())
-                    } else {
-                        RepoError::Backend(s)
-                    }
-                })?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                let res = sqlx::query(
-                    "INSERT INTO agent_payment_authorizations (auth_id, agent_id, jti, \
-                     amount_minor, currency, merchant_id, payment_ref, created_at, \
-                     expires_at, consumed, tenant_id) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10)",
-                )
-                .bind(auth_id)
-                .bind(agent_id)
-                .bind(jti)
-                .bind(amount_minor)
-                .bind(currency)
-                .bind(merchant_id)
-                .bind(payment_ref)
-                .bind(created_at)
-                .bind(expires_at)
-                .bind(tenant_id)
-                .execute(pool)
-                .await;
-                match res {
-                    Ok(_) => Ok(()),
-                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => Err(
-                        RepoError::Replay("payment authorization already exists".into()),
-                    ),
-                    Err(e) => Err(RepoError::Backend(format!("pg insert payment auth: {e}"))),
+        let mut c = self.conn()?;
+        c.any_conn()
+            .execute(
+                "INSERT INTO agent_payment_authorizations (auth_id, agent_id, jti, \
+                 amount_minor, currency, merchant_id, payment_ref, created_at, \
+                 expires_at, consumed, tenant_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
+                crate::sql_params![
+                    &auth_id,
+                    &agent_id,
+                    &jti,
+                    &amount_minor,
+                    &currency,
+                    &merchant_id,
+                    &payment_ref,
+                    &created_at,
+                    &expires_at,
+                    &tenant_id
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                // A duplicate auth_id is a replay, not a failure, and the caller
+                // turns Replay into 401 rather than 500. SQLite says "UNIQUE";
+                // Postgres says "duplicate key", and `any_db::pg_err` puts that
+                // detail in the string — see its note on this exact pattern.
+                let low = e.to_ascii_lowercase();
+                if low.contains("unique") || low.contains("duplicate key") {
+                    RepoError::Replay("payment authorization already exists".into())
+                } else {
+                    RepoError::Backend(e)
                 }
-            }
-        }
+            })
     }
 
     // ─── M3: credential_codes ─────────────────────────────────────────────
     //
     // Single-use `claimed` flag flip — exact mirror of M2 payment_auth pattern.
 
-    /// Attempt to flip credential_codes.claimed 0→1 for the given key image.
-    /// Returns Ok(true) if this caller won the race, Ok(false) if the row
-    /// was already claimed (caller should re-check `user_credentials`).
-    pub async fn claim_credential_code(
-        &self,
-        tenant_id: &str,
-        key_image_hex: &str,
-    ) -> Result<bool, RepoError> {
-        if key_image_hex.is_empty() {
-            return Err(RepoError::Backend("missing key_image_hex".into()));
-        }
-        match self {
-            Repo::Sqlite(_) => {
-                let key = key_image_hex.to_string();
-                let tenant_id = tenant_id.to_string();
-                self.txn_immediate_sqlite(move |conn| {
-                    let rows = conn
-                        .execute(
-                            "UPDATE credential_codes SET claimed = 1 \
-                             WHERE tenant_id = ?1 AND key_image_hex = ?2 AND claimed = 0",
-                            rusqlite::params![tenant_id, key],
-                        )
-                        .map_err(|e| RepoError::Backend(e.to_string()))?;
-                    Ok(rows == 1)
-                })
-            }
-            Repo::Postgres(_) => {
-                let key = key_image_hex.to_string();
-                let tenant_id = tenant_id.to_string();
-                self.txn_serializable_pg(move |tx| {
-                    let key = key.clone();
-                    let tenant_id = tenant_id.clone();
-                    Box::pin(async move {
-                        let claimed: Option<(String,)> = sqlx::query_as(
-                            "UPDATE credential_codes SET claimed = 1 \
-                             WHERE tenant_id = $1 AND key_image_hex = $2 AND claimed = 0 \
-                             RETURNING key_image_hex",
-                        )
-                        .bind(&tenant_id)
-                        .bind(&key)
-                        .fetch_optional(&mut **tx)
-                        .await
-                        .map_err(|e| match e {
-                            sqlx::Error::Database(ref db_err)
-                                if db_err.code().as_deref() == Some("40001") =>
-                            {
-                                RepoError::Backend("40001 serialization_failure".into())
-                            }
-                            _ => RepoError::Backend(format!("pg credential claim: {e}")),
-                        })?;
-                        Ok(claimed.is_some())
-                    })
-                })
-                .await
-            }
-        }
-    }
-
-    /// Release a previously claimed credential code so the user can retry.
-    /// Used on the failure paths in the /credential/claim flow.
-    pub async fn release_credential_code(
-        &self,
-        tenant_id: &str,
-        key_image_hex: &str,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "UPDATE credential_codes SET claimed = 0 \
-                     WHERE tenant_id = ?1 AND key_image_hex = ?2 AND claimed = 1",
-                    rusqlite::params![tenant_id, key_image_hex],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "UPDATE credential_codes SET claimed = 0 \
-                     WHERE tenant_id = $1 AND key_image_hex = $2 AND claimed = 1",
-                )
-                .bind(tenant_id)
-                .bind(key_image_hex)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg release credential: {e}")))?;
-                Ok(())
-            }
-        }
-    }
-
-    /// Look up the pre-auth code + subject DID for a credential request.
-    pub async fn select_credential_code(
-        &self,
-        tenant_id: &str,
-        key_image_hex: &str,
-    ) -> Result<Option<(String, String)>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let row = conn
-                    .query_row(
-                        "SELECT pre_auth_code, subject_did FROM credential_codes \
-                         WHERE tenant_id = ?1 AND key_image_hex = ?2",
-                        rusqlite::params![tenant_id, key_image_hex],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                    )
-                    .ok();
-                Ok(row)
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String, String)> = sqlx::query_as(
-                    "SELECT pre_auth_code, subject_did FROM credential_codes \
-                     WHERE tenant_id = $1 AND key_image_hex = $2",
-                )
-                .bind(tenant_id)
-                .bind(key_image_hex)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg sel credential code: {e}")))?;
-                Ok(row)
-            }
-        }
-    }
-
     // ─── M3: users + user_credentials + user_registrations ────────────────
 
     /// Returns true if a user row exists for the key image.
     pub async fn user_exists(&self, key_image_hex: &str) -> Result<bool, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM users WHERE key_image_hex = ?1",
-                        rusqlite::params![key_image_hex],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                Ok(n > 0)
-            }
-            Repo::Postgres(pool) => {
-                let row: (i64,) =
-                    sqlx::query_as("SELECT COUNT(*)::BIGINT FROM users WHERE key_image_hex = $1")
-                        .bind(key_image_hex)
-                        .fetch_one(pool)
-                        .await
-                        .map_err(|e| RepoError::Backend(format!("pg user_exists: {e}")))?;
-                Ok(row.0 > 0)
-            }
-        }
+        let mut c = self.conn()?;
+        Ok(c.any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE key_image_hex = ?1",
+                crate::sql_params![&key_image_hex],
+                |r| r.get_i64(0),
+            )
+            .map_err(RepoError::Backend)?
+            .unwrap_or(0)
+            > 0)
     }
 
-    /// Upsert a user row (idempotent — re-registration overrides metadata).
-    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_user(
         &self,
         key_image_hex: &str,
@@ -1138,362 +849,106 @@ impl Repo {
         date_of_birth: &str,
         nationality: &str,
     ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT INTO users (key_image_hex, public_key_hex, first_name, last_name, \
-                     email, date_of_birth, nationality) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-                     ON CONFLICT(key_image_hex) DO UPDATE SET \
-                       public_key_hex = excluded.public_key_hex, \
-                       first_name = excluded.first_name, \
-                       last_name = excluded.last_name, \
-                       email = excluded.email, \
-                       date_of_birth = excluded.date_of_birth, \
-                       nationality = excluded.nationality",
-                    rusqlite::params![
-                        key_image_hex,
-                        public_key_hex,
-                        first_name,
-                        last_name,
-                        email,
-                        date_of_birth,
-                        nationality
-                    ],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO users (key_image_hex, public_key_hex, first_name, last_name, \
-                     email, date_of_birth, nationality) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7) \
-                     ON CONFLICT (key_image_hex) DO UPDATE SET \
-                       public_key_hex = EXCLUDED.public_key_hex, \
-                       first_name = EXCLUDED.first_name, \
-                       last_name = EXCLUDED.last_name, \
-                       email = EXCLUDED.email, \
-                       date_of_birth = EXCLUDED.date_of_birth, \
-                       nationality = EXCLUDED.nationality",
-                )
-                .bind(key_image_hex)
-                .bind(public_key_hex)
-                .bind(first_name)
-                .bind(last_name)
-                .bind(email)
-                .bind(date_of_birth)
-                .bind(nationality)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg upsert user: {e}")))?;
-                Ok(())
-            }
-        }
+        // `ON CONFLICT … DO UPDATE SET … excluded.` is valid in both engines, so
+        // this needs no dialect rewrite — the two arms were the same statement.
+        let mut c = self.conn()?;
+        c.any_conn()
+            .execute(
+                "INSERT INTO users (key_image_hex, public_key_hex, first_name, last_name, \
+                 email, date_of_birth, nationality) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(key_image_hex) DO UPDATE SET \
+                   public_key_hex = excluded.public_key_hex, \
+                   first_name = excluded.first_name, \
+                   last_name = excluded.last_name, \
+                   email = excluded.email, \
+                   date_of_birth = excluded.date_of_birth, \
+                   nationality = excluded.nationality",
+                crate::sql_params![
+                    &key_image_hex,
+                    &public_key_hex,
+                    &first_name,
+                    &last_name,
+                    &email,
+                    &date_of_birth,
+                    &nationality
+                ],
+            )
+            .map(|_| ())
+            .map_err(RepoError::Backend)
     }
 
     /// Full user row by key image, or `None` if absent. Covers the scattered
     /// per-key reads (nationality / public_key / names).
     pub async fn get_user(&self, key_image_hex: &str) -> Result<Option<UserRow>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let row = conn
-                    .query_row(
-                        "SELECT public_key_hex, first_name, last_name, email, date_of_birth, nationality \
-                         FROM users WHERE key_image_hex = ?1",
-                        rusqlite::params![key_image_hex],
-                        |r| {
-                            Ok(UserRow {
-                                public_key_hex: r.get(0)?,
-                                first_name: r.get(1)?,
-                                last_name: r.get(2)?,
-                                email: r.get(3)?,
-                                date_of_birth: r.get(4)?,
-                                nationality: r.get(5)?,
-                            })
-                        },
-                    )
-                    .ok();
-                Ok(row)
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
-                    "SELECT public_key_hex, first_name, last_name, email, date_of_birth, nationality \
-                     FROM users WHERE key_image_hex = $1",
-                )
-                .bind(key_image_hex)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg get_user: {e}")))?;
-                Ok(row.map(
-                    |(public_key_hex, first_name, last_name, email, date_of_birth, nationality)| {
-                        UserRow {
-                            public_key_hex,
-                            first_name,
-                            last_name,
-                            email,
-                            date_of_birth,
-                            nationality,
-                        }
-                    },
-                ))
-            }
-        }
-    }
-
-    /// All user public keys, for startup ring-group reconstruction.
-    pub async fn all_user_pubkeys(&self) -> Result<Vec<String>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut stmt = conn
-                    .prepare("SELECT public_key_hex FROM users")
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let rows = stmt
-                    .query_map([], |r| r.get::<_, String>(0))
-                    .map_err(|e| RepoError::Backend(e.to_string()))?
-                    .flatten()
-                    .collect();
-                Ok(rows)
-            }
-            Repo::Postgres(pool) => {
-                let rows: Vec<(String,)> = sqlx::query_as("SELECT public_key_hex FROM users")
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| RepoError::Backend(format!("pg all_user_pubkeys: {e}")))?;
-                Ok(rows.into_iter().map(|t| t.0).collect())
-            }
-        }
-    }
-
-    /// All merkle commitments in insertion order, for startup ledger reconstruction.
-    pub async fn all_merkle_commitments(&self) -> Result<Vec<String>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut stmt = conn
-                    .prepare("SELECT commitment_hex FROM merkle_leaves ORDER BY seq ASC")
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let rows = stmt
-                    .query_map([], |r| r.get::<_, String>(0))
-                    .map_err(|e| RepoError::Backend(e.to_string()))?
-                    .flatten()
-                    .collect();
-                Ok(rows)
-            }
-            Repo::Postgres(pool) => {
-                let rows: Vec<(String,)> =
-                    sqlx::query_as("SELECT commitment_hex FROM merkle_leaves ORDER BY seq ASC")
-                        .fetch_all(pool)
-                        .await
-                        .map_err(|e| {
-                            RepoError::Backend(format!("pg all_merkle_commitments: {e}"))
-                        })?;
-                Ok(rows.into_iter().map(|t| t.0).collect())
-            }
-        }
-    }
-
-    /// Total registered users (admin metric).
-    pub async fn count_users(&self) -> Result<i64, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let n: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
-                    .unwrap_or(0);
-                Ok(n)
-            }
-            Repo::Postgres(pool) => {
-                let row: (i64,) = sqlx::query_as("SELECT COUNT(*)::BIGINT FROM users")
-                    .fetch_one(pool)
-                    .await
-                    .map_err(|e| RepoError::Backend(format!("pg count_users: {e}")))?;
-                Ok(row.0)
-            }
-        }
-    }
-
-    /// All users for the admin listing: (key_image_hex, first, last, nationality).
-    pub async fn list_users(&self) -> Result<Vec<(String, String, String, String)>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut stmt = conn
-                    .prepare("SELECT key_image_hex, first_name, last_name, nationality FROM users")
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let rows = stmt
-                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-                    .map_err(|e| RepoError::Backend(e.to_string()))?
-                    .flatten()
-                    .collect();
-                Ok(rows)
-            }
-            Repo::Postgres(pool) => {
-                let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-                    "SELECT key_image_hex, first_name, last_name, nationality FROM users",
-                )
-                .fetch_all(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg list_users: {e}")))?;
-                Ok(rows)
-            }
-        }
-    }
-
-    /// Users registered against one site (admin per-site view). Returns
-    /// (first, last, email, nationality, source, timestamp), newest first.
-    pub async fn list_site_users(
-        &self,
-        client_name: &str,
-    ) -> Result<Vec<(String, String, String, String, String, i64)>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT u.first_name, u.last_name, u.email, u.nationality, r.source, r.timestamp \
-                         FROM user_registrations r \
-                         JOIN users u ON u.key_image_hex = r.user_key_image_hex \
-                         WHERE r.client_name = ?1 \
-                         ORDER BY r.timestamp DESC LIMIT 500",
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let rows = stmt
-                    .query_map(rusqlite::params![client_name], |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                        ))
+        let mut c = self.conn()?;
+        c.any_conn()
+            .query_row(
+                "SELECT public_key_hex, first_name, last_name, email, date_of_birth, nationality \
+                 FROM users WHERE key_image_hex = ?1",
+                crate::sql_params![&key_image_hex],
+                |r| {
+                    Ok(UserRow {
+                        public_key_hex: r.get_string(0)?,
+                        first_name: r.get_string(1)?,
+                        last_name: r.get_string(2)?,
+                        email: r.get_string(3)?,
+                        date_of_birth: r.get_string(4)?,
+                        nationality: r.get_string(5)?,
                     })
-                    .map_err(|e| RepoError::Backend(e.to_string()))?
-                    .flatten()
-                    .collect();
-                Ok(rows)
-            }
-            Repo::Postgres(pool) => {
-                let rows: Vec<(String, String, String, String, String, i64)> = sqlx::query_as(
-                    "SELECT u.first_name, u.last_name, u.email, u.nationality, r.source, r.timestamp \
-                     FROM user_registrations r \
-                     JOIN users u ON u.key_image_hex = r.user_key_image_hex \
-                     WHERE r.client_name = $1 \
-                     ORDER BY r.timestamp DESC LIMIT 500",
-                )
-                .bind(client_name)
-                .fetch_all(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg list_site_users: {e}")))?;
-                Ok(rows)
-            }
-        }
+                },
+            )
+            .map_err(RepoError::Backend)
     }
 
-    /// Cache the issuer-minted VC for a user (idempotent upsert by key image).
-    pub async fn upsert_user_credential(
-        &self,
-        tenant_id: &str,
-        key_image_hex: &str,
-        credential_json: &str,
-        issued_at: i64,
-    ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let changed = conn.execute(
-                    "INSERT INTO user_credentials (key_image_hex, credential_json, issued_at, tenant_id) \
-                     VALUES (?1, ?2, ?3, ?4) \
-                     ON CONFLICT(key_image_hex) DO UPDATE SET credential_json=excluded.credential_json, issued_at=excluded.issued_at \
-                     WHERE user_credentials.tenant_id=excluded.tenant_id",
-                    rusqlite::params![key_image_hex, credential_json, issued_at, tenant_id],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                if changed == 0 {
-                    return Err(RepoError::Backend(
-                        "credential key image already belongs to another tenant".into(),
-                    ));
-                }
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                let result = sqlx::query(
-                    "INSERT INTO user_credentials (key_image_hex, credential_json, issued_at, tenant_id) \
-                     VALUES ($1, $2, $3, $4) \
-                     ON CONFLICT (key_image_hex) DO UPDATE SET \
-                       credential_json = EXCLUDED.credential_json, \
-                       issued_at = EXCLUDED.issued_at \
-                     WHERE user_credentials.tenant_id = EXCLUDED.tenant_id",
-                )
-                .bind(key_image_hex)
-                .bind(credential_json)
-                .bind(issued_at)
-                .bind(tenant_id)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg upsert user cred: {e}")))?;
-                if result.rows_affected() == 0 {
-                    return Err(RepoError::Backend(
-                        "credential key image already belongs to another tenant".into(),
-                    ));
-                }
-                Ok(())
-            }
-        }
+    pub async fn all_user_pubkeys(&self) -> Result<Vec<String>, RepoError> {
+        let mut c = self.conn()?;
+        c.any_conn()
+            .query_map(
+                "SELECT public_key_hex FROM users",
+                crate::sql_params![],
+                |r| r.get_string(0),
+            )
+            .map_err(RepoError::Backend)
     }
 
-    /// Fetch the cached VC, if any.
-    pub async fn select_user_credential(
-        &self,
-        tenant_id: &str,
-        key_image_hex: &str,
-    ) -> Result<Option<String>, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let row = conn
-                    .query_row(
-                        "SELECT credential_json FROM user_credentials WHERE tenant_id = ?1 AND key_image_hex = ?2",
-                        rusqlite::params![tenant_id, key_image_hex],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .ok();
-                Ok(row)
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT credential_json FROM user_credentials WHERE tenant_id = $1 AND key_image_hex = $2",
-                )
-                .bind(tenant_id)
-                .bind(key_image_hex)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg sel user cred: {e}")))?;
-                Ok(row.map(|t| t.0))
-            }
-        }
+    pub async fn all_merkle_commitments(&self) -> Result<Vec<String>, RepoError> {
+        let mut c = self.conn()?;
+        c.any_conn()
+            .query_map(
+                "SELECT commitment_hex FROM merkle_leaves ORDER BY seq ASC",
+                crate::sql_params![],
+                |r| r.get_string(0),
+            )
+            .map_err(RepoError::Backend)
+    }
+
+    pub async fn count_users(&self) -> Result<i64, RepoError> {
+        let mut c = self.conn()?;
+        Ok(c.any_conn()
+            .query_row("SELECT COUNT(*) FROM users", crate::sql_params![], |r| {
+                r.get_i64(0)
+            })
+            .map_err(RepoError::Backend)?
+            .unwrap_or(0))
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<(String, String, String, String)>, RepoError> {
+        let mut c = self.conn()?;
+        c.any_conn()
+            .query_map(
+                "SELECT key_image_hex, first_name, last_name, nationality FROM users",
+                crate::sql_params![],
+                |r| {
+                    Ok((
+                        r.get_string(0)?,
+                        r.get_string(1)?,
+                        r.get_string(2)?,
+                        r.get_string(3)?,
+                    ))
+                },
+            )
+            .map_err(RepoError::Backend)
     }
 
     /// Append a user_registration row (idempotent — `INSERT OR IGNORE`).
@@ -1505,73 +960,27 @@ impl Repo {
         source: &str,
         timestamp: i64,
     ) -> Result<(), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                conn.execute(
-                    "INSERT OR IGNORE INTO user_registrations (client_name, user_key_image_hex, source, timestamp, tenant_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![client_name, user_key_image_hex, source, timestamp, tenant_id],
-                )
-                .map_err(|e| RepoError::Backend(e.to_string()))?;
-                Ok(())
-            }
-            Repo::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO user_registrations (client_name, user_key_image_hex, source, timestamp, tenant_id) \
-                     VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                )
-                .bind(client_name)
-                .bind(user_key_image_hex)
-                .bind(source)
-                .bind(timestamp)
-                .bind(tenant_id)
-                .execute(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg insert registration: {e}")))?;
-                Ok(())
-            }
-        }
+        // `INSERT OR IGNORE` is the SQLite spelling; `sql_translate` rewrites it
+        // to `INSERT … ON CONFLICT DO NOTHING`, which is exactly what the
+        // hand-written Postgres arm used to say.
+        let mut c = self.conn()?;
+        c.any_conn()
+            .execute(
+                "INSERT OR IGNORE INTO user_registrations \
+                 (client_name, user_key_image_hex, source, timestamp, tenant_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                crate::sql_params![
+                    &client_name,
+                    &user_key_image_hex,
+                    &source,
+                    &timestamp,
+                    &tenant_id
+                ],
+            )
+            .map(|_| ())
+            .map_err(RepoError::Backend)
     }
 
-    // ─── M3: merkle_leaves ────────────────────────────────────────────────
-
-    // ─── M4: anchor tables (bitcoin / solana) ──────────────────────────────
-    //
-    // NOTE on autoincrement parity: SQLite's `INTEGER PRIMARY KEY AUTOINCREMENT`
-    // produces a strictly monotonic gap-free sequence per table. Postgres's
-    // `BIGSERIAL` (the canonical port) is *not* gap-free — the sequence
-    // advances on rollback as well as commit. Callers must not assume the
-    // primary-key id is a contiguous count of historical rows. Both anchor
-    // tables here use TEXT `anchor_id` as the public reference, so this is
-    // an internal-only concern.
-
-    // ─── M4: agent_action_receipts ─────────────────────────────────────────
-
-    // ─── Sprint 3+: spend ledger ───────────────────────────────────────────
-    //
-    // Server-authoritative spend total per (policy_id, agent_id, period_start).
-    // Closes redteam A3 ("Local budget can be tampered"): the SDK keeps an
-    // in-memory `BudgetTracker` for local pre-checks, but every recorded spend
-    // is flushed to `spend_log` and atomically aggregated into `spend_ledger`.
-    // POST /v1/policy/evaluate looks up the authoritative total here when
-    // the caller supplies an `agent_id`.
-    //
-    // Both backends run the INSERT + UPSERT under a serializable wrapper so a
-    // concurrent flush from a parallel SDK instance cannot tear the running
-    // total.
-
-    /// Record a single spend event: append to `spend_log` and atomically add
-    /// `amount_usd` to the matching `spend_ledger` row (lifetime period =
-    /// `period_start = 0` by default — pass an explicit value to track a
-    /// daily/weekly/etc. window).
-    ///
-    /// Returns the freshly assigned `log_id`. `source` is one of
-    /// `"sdk_flush"` (default for client-driven flushes) or
-    /// `"server_recompute"` (reserved for future reconciliation jobs).
-    #[allow(clippy::too_many_arguments)]
     pub async fn record_spend(
         &self,
         policy_id: &str,
@@ -1702,7 +1111,7 @@ impl Repo {
                         "INSERT INTO spend_ledger \
                          (policy_id, agent_id, period_start, total_usd, last_updated, tenant_id) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                         ON CONFLICT(policy_id, agent_id, period_start) DO UPDATE SET \
+                         ON CONFLICT(tenant_id, policy_id, agent_id, period_start) DO UPDATE SET \
                            total_usd = total_usd + ?4, \
                            last_updated = ?5",
                         rusqlite::params![
@@ -1719,7 +1128,7 @@ impl Repo {
                 })?;
                 Ok(log_id)
             }
-            Repo::Postgres(_) => {
+            Repo::Postgres(_, _) => {
                 let policy_id = policy_id.to_string();
                 let agent_id = agent_id.to_string();
                 let action_id = action_id_opt.map(|s| s.to_string());
@@ -1761,7 +1170,7 @@ impl Repo {
                             "INSERT INTO spend_ledger \
                              (policy_id, agent_id, period_start, total_usd, last_updated, tenant_id) \
                              VALUES ($1, $2, $3, $4, $5, $6) \
-                             ON CONFLICT (policy_id, agent_id, period_start) DO UPDATE SET \
+                             ON CONFLICT (tenant_id, policy_id, agent_id, period_start) DO UPDATE SET \
                                total_usd = spend_ledger.total_usd + EXCLUDED.total_usd, \
                                last_updated = EXCLUDED.last_updated",
                         )
@@ -1813,38 +1222,17 @@ impl Repo {
         agent_id: &str,
         period_start: i64,
     ) -> Result<f64, RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let row: Option<f64> = conn
-                    .query_row(
-                        "SELECT total_usd FROM spend_ledger \
-                         WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
-                           AND tenant_id = ?4",
-                        rusqlite::params![policy_id, agent_id, period_start, tenant_id],
-                        |r| r.get::<_, f64>(0),
-                    )
-                    .ok();
-                Ok(row.unwrap_or(0.0))
-            }
-            Repo::Postgres(pool) => {
-                let row: Option<(f64,)> = sqlx::query_as(
-                    "SELECT total_usd FROM spend_ledger \
-                     WHERE policy_id = $1 AND agent_id = $2 AND period_start = $3 \
-                       AND tenant_id = $4",
-                )
-                .bind(policy_id)
-                .bind(agent_id)
-                .bind(period_start)
-                .bind(tenant_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg spend total: {e}")))?;
-                Ok(row.map(|t| t.0).unwrap_or(0.0))
-            }
-        }
+        let mut c = self.conn()?;
+        Ok(c.any_conn()
+            .query_row(
+                "SELECT total_usd FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
+                   AND tenant_id = ?4",
+                crate::sql_params![&policy_id, &agent_id, &period_start, &tenant_id],
+                |r| r.get_f64(0),
+            )
+            .map_err(RepoError::Backend)?
+            .unwrap_or(0.0))
     }
 
     /// Return the (last_updated, log_count) sidecar pair for a ledger row.
@@ -1868,56 +1256,31 @@ impl Repo {
         agent_id: &str,
         period_start: i64,
     ) -> Result<(i64, i64), RepoError> {
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let last_updated: i64 = conn
-                    .query_row(
-                        "SELECT last_updated FROM spend_ledger \
-                         WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
-                           AND tenant_id = ?4",
-                        rusqlite::params![policy_id, agent_id, period_start, tenant_id],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0);
-                let log_count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM spend_log \
-                         WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3",
-                        rusqlite::params![policy_id, agent_id, tenant_id],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0);
-                Ok((last_updated, log_count))
-            }
-            Repo::Postgres(pool) => {
-                let lu: Option<(i64,)> = sqlx::query_as(
-                    "SELECT last_updated FROM spend_ledger \
-                     WHERE policy_id = $1 AND agent_id = $2 AND period_start = $3 \
-                       AND tenant_id = $4",
-                )
-                .bind(policy_id)
-                .bind(agent_id)
-                .bind(period_start)
-                .bind(tenant_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg ledger meta: {e}")))?;
-                let cnt: (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*)::BIGINT FROM spend_log \
-                     WHERE policy_id = $1 AND agent_id = $2 AND tenant_id = $3",
-                )
-                .bind(policy_id)
-                .bind(agent_id)
-                .bind(tenant_id)
-                .fetch_one(pool)
-                .await
-                .map_err(|e| RepoError::Backend(format!("pg log count: {e}")))?;
-                Ok((lu.map(|t| t.0).unwrap_or(0), cnt.0))
-            }
-        }
+        // Both reads default to 0 when absent, exactly as the two arms did: a
+        // policy with no ledger row has spent nothing and logged nothing.
+        let mut c = self.conn()?;
+        let last_updated = c
+            .any_conn()
+            .query_row(
+                "SELECT last_updated FROM spend_ledger \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND period_start = ?3 \
+                   AND tenant_id = ?4",
+                crate::sql_params![&policy_id, &agent_id, &period_start, &tenant_id],
+                |r| r.get_i64(0),
+            )
+            .map_err(RepoError::Backend)?
+            .unwrap_or(0);
+        let log_count = c
+            .any_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM spend_log \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3",
+                crate::sql_params![&policy_id, &agent_id, &tenant_id],
+                |r| r.get_i64(0),
+            )
+            .map_err(RepoError::Backend)?
+            .unwrap_or(0);
+        Ok((last_updated, log_count))
     }
 
     /// Recent rows of `spend_log` for the given (policy_id, agent_id), newest
@@ -1941,83 +1304,27 @@ impl Repo {
         agent_id: &str,
         limit: i64,
     ) -> Result<Vec<SpendLogEntry>, RepoError> {
-        let limit = limit.clamp(1, 1000);
-        match self {
-            Repo::Sqlite(db) => {
-                let conn = db
-                    .lock_sqlite()
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT log_id, policy_id, agent_id, action_id, amount_usd, \
-                         recorded_at, source FROM spend_log \
-                         WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3 \
-                         ORDER BY recorded_at DESC LIMIT ?4",
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let rows = stmt
-                    .query_map(
-                        rusqlite::params![policy_id, agent_id, tenant_id, limit],
-                        |r| {
-                            Ok(SpendLogEntry {
-                                log_id: r.get(0)?,
-                                policy_id: r.get(1)?,
-                                agent_id: r.get(2)?,
-                                action_id: r.get(3)?,
-                                amount_usd: r.get(4)?,
-                                recorded_at: r.get(5)?,
-                                source: r.get(6)?,
-                            })
-                        },
-                    )
-                    .map_err(|e| RepoError::Backend(e.to_string()))?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row.map_err(|e| RepoError::Backend(e.to_string()))?);
-                }
-                Ok(out)
-            }
-            Repo::Postgres(pool) => {
-                let rows: Vec<(String, String, String, Option<String>, f64, i64, String)> =
-                    sqlx::query_as(
-                        "SELECT log_id, policy_id, agent_id, action_id, amount_usd, \
-                         recorded_at, source FROM spend_log \
-                         WHERE policy_id = $1 AND agent_id = $2 AND tenant_id = $3 \
-                         ORDER BY recorded_at DESC LIMIT $4",
-                    )
-                    .bind(policy_id)
-                    .bind(agent_id)
-                    .bind(tenant_id)
-                    .bind(limit)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| RepoError::Backend(format!("pg spend log list: {e}")))?;
-                Ok(rows
-                    .into_iter()
-                    .map(
-                        |(
-                            log_id,
-                            policy_id,
-                            agent_id,
-                            action_id,
-                            amount_usd,
-                            recorded_at,
-                            source,
-                        )| {
-                            SpendLogEntry {
-                                log_id,
-                                policy_id,
-                                agent_id,
-                                action_id,
-                                amount_usd,
-                                recorded_at,
-                                source,
-                            }
-                        },
-                    )
-                    .collect())
-            }
-        }
+        let mut c = self.conn()?;
+        c.any_conn()
+            .query_map(
+                "SELECT log_id, policy_id, agent_id, action_id, amount_usd, \
+                 recorded_at, source FROM spend_log \
+                 WHERE policy_id = ?1 AND agent_id = ?2 AND tenant_id = ?3 \
+                 ORDER BY recorded_at DESC LIMIT ?4",
+                crate::sql_params![&policy_id, &agent_id, &tenant_id, &limit],
+                |r| {
+                    Ok(SpendLogEntry {
+                        log_id: r.get_string(0)?,
+                        policy_id: r.get_string(1)?,
+                        agent_id: r.get_string(2)?,
+                        action_id: r.get_opt_string(3)?,
+                        amount_usd: r.get_f64(4)?,
+                        recorded_at: r.get_i64(5)?,
+                        source: r.get_string(6)?,
+                    })
+                },
+            )
+            .map_err(RepoError::Backend)
     }
 }
 
@@ -2414,67 +1721,6 @@ mod tests {
 
     // ─── M3: credential_codes ─────────────────────────────────────────────
 
-    fn seed_credential_code(repo: &Repo, key_image: &str) {
-        if let Repo::Sqlite(db) = repo {
-            let conn = db.lock_sqlite().unwrap();
-            conn.execute(
-                "INSERT INTO credential_codes (key_image_hex, pre_auth_code, subject_did, issued_at, claimed) \
-                 VALUES (?1, 'pac_1', 'did:test:1', 1000, 0)",
-                rusqlite::params![key_image],
-            )
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn test_repo_credential_code_first_claim_wins() {
-        let repo = build_test_repo("cred_first_claim");
-        rt().block_on(async {
-            seed_credential_code(&repo, "ki-A");
-            assert!(repo.claim_credential_code("default", "ki-A").await.unwrap());
-            assert!(
-                !repo.claim_credential_code("default", "ki-A").await.unwrap(),
-                "second claim must lose the race"
-            );
-        });
-    }
-
-    #[test]
-    fn test_repo_credential_code_release_allows_retry() {
-        let repo = build_test_repo("cred_release_retry");
-        rt().block_on(async {
-            seed_credential_code(&repo, "ki-B");
-            assert!(repo.claim_credential_code("default", "ki-B").await.unwrap());
-            repo.release_credential_code("default", "ki-B")
-                .await
-                .unwrap();
-            assert!(
-                repo.claim_credential_code("default", "ki-B").await.unwrap(),
-                "after release, claim should succeed again"
-            );
-        });
-    }
-
-    #[test]
-    fn test_repo_select_credential_code_returns_pair() {
-        let repo = build_test_repo("cred_select_pair");
-        rt().block_on(async {
-            seed_credential_code(&repo, "ki-C");
-            let row = repo
-                .select_credential_code("default", "ki-C")
-                .await
-                .unwrap();
-            let (pac, did) = row.expect("row present");
-            assert_eq!(pac, "pac_1");
-            assert_eq!(did, "did:test:1");
-            assert!(repo
-                .select_credential_code("default", "ki-missing")
-                .await
-                .unwrap()
-                .is_none());
-        });
-    }
-
     // ─── M3: users + user_credentials + user_registrations ────────────────
 
     #[test]
@@ -2491,52 +1737,6 @@ mod tests {
                 .await
                 .unwrap();
             assert!(repo.user_exists("ki-1").await.unwrap());
-        });
-    }
-
-    #[test]
-    fn test_repo_user_credential_upsert_and_select() {
-        let repo = build_test_repo("ucred_upsert_sel");
-        rt().block_on(async {
-            assert!(repo
-                .select_user_credential("default", "ki-2")
-                .await
-                .unwrap()
-                .is_none());
-            repo.upsert_user_credential("default", "ki-2", "{\"v\":1}", 1_000)
-                .await
-                .unwrap();
-            assert_eq!(
-                repo.select_user_credential("default", "ki-2")
-                    .await
-                    .unwrap(),
-                Some("{\"v\":1}".to_string())
-            );
-        });
-    }
-
-    #[test]
-    fn test_repo_user_credential_is_tenant_bound() {
-        let repo = build_test_repo("user_cred_tenant");
-        rt().block_on(async {
-            repo.upsert_user_credential("victim", "ki-shared", "{\"v\":1}", 1_000)
-                .await
-                .unwrap();
-            assert!(repo
-                .select_user_credential("attacker", "ki-shared")
-                .await
-                .unwrap()
-                .is_none());
-            assert!(repo
-                .upsert_user_credential("attacker", "ki-shared", "{\"v\":2}", 2_000)
-                .await
-                .is_err());
-            assert_eq!(
-                repo.select_user_credential("victim", "ki-shared")
-                    .await
-                    .unwrap(),
-                Some("{\"v\":1}".into())
-            );
         });
     }
 

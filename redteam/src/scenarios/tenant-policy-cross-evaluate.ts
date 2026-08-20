@@ -27,13 +27,11 @@ import {
 } from "./_s12_lib";
 
 const POLICY_YAML = `
-policy_id: pol_isolation_test
 version: "1"
-agent: "tester"
-checks:
-  - id: allow_search
-    when: action.type == "search"
-    deny_if: action.tool == "rm"
+agent: tester
+description: "cross-tenant policy evaluation probe"
+invariants:
+  - "spend_total <= 1000"
 `;
 
 async function uploadAsTenant(tenant: string, yaml: string): Promise<string | null> {
@@ -80,7 +78,7 @@ async function main(): Promise<ScenarioResult> {
         },
         body: JSON.stringify({
             policy_id: policyId,
-            action: { type: "search" },
+            action: { action_id: "act_probe", tool: "search", timestamp: Math.floor(Date.now() / 1000) },
         }),
     });
     const status = r.status;

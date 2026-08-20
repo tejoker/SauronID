@@ -43,7 +43,7 @@ grep -Fq "## [${expected_tag#v}]" CHANGELOG.md || { echo "CHANGELOG has no ${exp
   exit 1
 }
 
-for dockerfile in core/Dockerfile dashboard/Dockerfile deploy/nitro/Dockerfile.enclave; do
+for dockerfile in core/Dockerfile dashboard/Dockerfile; do
   if grep -E '^FROM [^[:space:]]+($|[[:space:]])' "$dockerfile" | grep -vq '@sha256:[0-9a-f]\{64\}'; then
     echo "$dockerfile contains a mutable base-image reference" >&2
     exit 1

@@ -28,9 +28,12 @@ fn dev_endpoints_rs() -> PathBuf {
 
 /// Body of every `pub(crate)` handler in the module, by name.
 ///
-/// Handlers are the `async` ones: `dev_oprf_eval` is a synchronous helper that
-/// computes a scalar and touches no state, and `/user/auth` calls it on the
-/// legacy password path, so it is deliberately not gated.
+/// Handlers are the `async` ones. The module used to also hold a synchronous
+/// helper, `dev_oprf_eval`, exempted here because it touched no state — but it
+/// was reached from `/user/auth` on the legacy password path, which made it a
+/// production code path living in a demo-only module. It now lives in
+/// `oprf::evaluate_unblinded`. Treat any future synchronous helper here the
+/// same way: if production reaches it, it does not belong in this file.
 fn handler_bodies(src: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = src;
@@ -68,8 +71,8 @@ fn every_dev_handler_refuses_outside_a_development_runtime() {
     let handlers = handler_bodies(&src);
 
     assert!(
-        handlers.len() >= 4,
-        "expected at least the four /dev/* handlers, found {}: {:?}",
+        handlers.len() >= 3,
+        "expected at least the three /dev/* handlers, found {}: {:?}",
         handlers.len(),
         handlers.iter().map(|(n, _)| n).collect::<Vec<_>>()
     );
@@ -103,12 +106,7 @@ fn the_dev_routes_are_mounted_only_behind_the_env_flag() {
     let end = block.find("\n    }").expect("unterminated dev-route block");
     let block = &block[..end];
 
-    for route in [
-        "/dev/register_user",
-        "/dev/buy_tokens",
-        "/dev/leash/demo",
-        "/dev/consent_profile",
-    ] {
+    for route in ["/dev/register_user", "/dev/buy_tokens", "/dev/leash/demo"] {
         assert!(
             block.contains(route),
             "{route} is not mounted inside the `if enable_dev_endpoints` block"

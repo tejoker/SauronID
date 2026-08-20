@@ -1,6 +1,36 @@
 # SauronID competitive benchmark plan
 
-Status: **plan + scaffold**. Numbers in this document are TODO until the harness in `redteam/benchmarks/competitive.ts` is run end-to-end on a fixed hardware target. Read the methodology, run the harness, paste the rows.
+Status: **load numbers measured; attack matrix still TODO.**
+
+The load harness in `redteam/benchmarks/competitive.ts` runs, and its results live in
+[`redteam/benchmarks/results-summary.md`](../redteam/benchmarks/results-summary.md).
+The per-competitor attack columns below are still unmeasured and marked TODO — that
+is the honest state, not an omission.
+
+**Read the `db` column before quoting any SauronID row.** The harness now records
+which backend the core under test reported through `/admin/health/detailed`, because
+that single variable moves the SauronID number by roughly an order of magnitude and
+the earlier run did not capture it:
+
+| run | backend | conc | p99 | RPS |
+|---|---|---:|---:|---:|
+| 2026-05-15 | unrecorded | 100 | 2100 ms | 306.7 |
+| 2026-08-20 | postgres | 100 | 64 ms | 2197.8 |
+
+Same harness, same operation. The 2026-05-15 rows are almost certainly SQLite — the
+default, and the tier `docs/load-test.md` measures at 636 rps with a monotonically
+drifting tail — so quoting them as "SauronID throughput" understates the product by
+about 7x and imports a 2.1-second p99 that the PostgreSQL tier does not have. Those
+rows are labelled `unrecorded` rather than deleted: they are real measurements of
+something, just not of a configuration anyone should deploy.
+
+At concurrency 100 on PostgreSQL the gateway is no longer the slow one — 2197.8 rps
+against 1913.9 for the DPoP reference and 2061.9 for HTTP Message Signatures. At
+concurrency 1 it still loses badly, 277.0 against ~2300, and that is the honest
+shape of the trade: every SauronID request does a database round trip, writes a
+hash-chained receipt and evaluates policy, while both reference servers are
+in-process Node handlers that verify a signature and return. The comparison is
+useful for the cost of the guarantees, not as a like-for-like.
 
 This file exists because the qualitative table in `docs/empirical-comparison.md` (Yes / No / Partial) is not defensible at a YC technical-partner level. They will ask for numbers and a re-runnable harness. This document defines exactly what we measure, against whom, how, and how we report losses without hiding them.
 

@@ -39,7 +39,6 @@ const ENDPOINTS: Endpoint[] = [
   { key: "tenants", method: "GET", proxyPath: "/api/tenants", corePath: null },
   { key: "users", method: "GET", proxyPath: "/api/users", corePath: "/admin/users" },
   { key: "clients", method: "GET", proxyPath: "/api/clients", corePath: "/admin/clients" },
-  { key: "cohorts", method: "GET", proxyPath: "/api/cohorts?mode=published", corePath: "/v1/cohort" },
 ];
 
 function proxyCurl(ep: Endpoint): string {

@@ -1,19 +1,16 @@
 use axum::{
-    extract::{DefaultBodyLimit, Json, Path, Request, State},
+    extract::{DefaultBodyLimit, Json, Request, State},
     http::{
         header::AUTHORIZATION, header::CONTENT_TYPE, HeaderMap, HeaderName, Method, StatusCode,
     },
     middleware,
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use curve25519_dalek::ristretto::CompressedRistretto;
-use curve25519_dalek::{RistrettoPoint, Scalar};
 use hmac::{Hmac, Mac};
 use sauron_core::any_db::AnyRowGet;
-use sauron_core::compliance;
 use sauron_core::error::AppError;
-use sauron_core::issuer_runtime::IssuerVerifyError;
 use sauron_core::middleware::{
     audit_log_middleware, global_rate_limit_middleware, handle_request_panic, init_audit_sink,
     security_headers_middleware, GlobalRateLimitConfig, GlobalRateLimiter,
@@ -21,24 +18,24 @@ use sauron_core::middleware::{
 use sauron_core::policy::{self, AssuranceLevel};
 use sauron_core::risk;
 use sauron_core::routes::{
-    admin_router, agent_spend_router, attestation_router, audit_reports_router, audit_router,
-    cohort_router, policy_router, proofs_router, stats_router,
+    admin_router, agent_spend_router, audit_reports_router, audit_router, policy_router,
+    proofs_router, stats_router,
 };
 use sauron_core::sql_params;
 use sauron_core::tenancy as sauron_tenancy;
 use sauron_core::{agent, db, identity::Identity};
-use sauron_core::{agent_action, ring, state::ServerState, usage};
+use sauron_core::{agent_action, state::ServerState, usage};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::Level;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 type HmacSha256 = Hmac<Sha256>;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Refuse to boot a production deployment that is silently single-node.
 ///
@@ -105,10 +102,11 @@ use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, Tex
 use sauron_core::sync_recover::RwLockRecover;
 
 // Dev-only endpoints live in their own file; see its header for the gating.
+// Compiled only into the demo/test lanes — a client build has no such code.
+#[cfg(feature = "demo")]
 mod dev_endpoints;
-use dev_endpoints::{
-    dev_buy_tokens, dev_consent_profile, dev_leash_demo, dev_oprf_eval, dev_register_user,
-};
+#[cfg(feature = "demo")]
+use dev_endpoints::{dev_buy_tokens, dev_leash_demo, dev_register_user};
 
 static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 static HTTP_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -233,7 +231,22 @@ async fn metrics_handler() -> (StatusCode, [(&'static str, &'static str); 1], St
 
 async fn http_metrics_middleware(req: Request, next: middleware::Next) -> axum::response::Response {
     let method = req.method().to_string();
-    let path = req.uri().path().to_string();
+    // The ROUTE TEMPLATE, never the concrete path. Labelling with
+    // `req.uri().path()` put one Prometheus time series per agent id, key image,
+    // anchor id, ring id and consent request id — 13 of this router's paths carry
+    // a parameter — and the prometheus crate keeps every label combination for
+    // the life of the process. That is unbounded memory growth in the gateway and
+    // a cardinality explosion in whatever scrapes it. `MatchedPath` collapses it
+    // to the number of routes.
+    //
+    // A request that matched no route has no template; it is bucketed under a
+    // single literal rather than leaking the attacker-controlled path it asked
+    // for, which is the same reasoning in reverse.
+    let path = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "unmatched".to_string());
     let started = std::time::Instant::now();
     let resp = next.run(req).await;
     let status = resp.status().as_u16().to_string();
@@ -302,23 +315,26 @@ async fn main() {
     }
 
     // Dev-only endpoints. Disabled in prod. Set SAURON_ENABLE_DEV_ENDPOINTS=1 to enable.
+    // The env var is the second layer; the first is `--features demo`, without
+    // which the handlers are not compiled and this block does not exist.
+    #[cfg(feature = "demo")]
     let enable_dev_endpoints = std::env::var("SAURON_ENABLE_DEV_ENDPOINTS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
         .unwrap_or(false);
 
+    #[allow(unused_mut)]
     let mut app = Router::new();
 
+    #[cfg(feature = "demo")]
     if enable_dev_endpoints {
         app = app
             .route("/dev/register_user", post(dev_register_user))
             .route("/dev/buy_tokens", post(dev_buy_tokens))
-            .route("/dev/leash/demo", post(dev_leash_demo))
-            .route("/dev/consent_profile", post(dev_consent_profile));
+            .route("/dev/leash/demo", post(dev_leash_demo));
     }
 
     let app = app
         // ZKP
-        .route("/zkp/proof_material", post(handle_zkp_proof_material))
         // A-JWT Agentic Layer
         // H1: PEM cert chains (TPM2 EK + attestation) can exceed the global
         // 64KB body cap. Lift only this route to 1MB.
@@ -327,6 +343,8 @@ async fn main() {
             post(agent::register_agent).route_layer(DefaultBodyLimit::max(1024 * 1024)),
         )
         .route("/agent/token", post(agent::issue_agent_token))
+        // Self-sovereign AGENT credential (not a human identity)
+        .route("/agent/vc/issue", post(agent_vc_issue))
         .route("/agent/verify", post(agent::verify_agent_token))
         .route(
             "/agent/attestation/challenge",
@@ -382,15 +400,9 @@ async fn main() {
             "/agent/{agent_id}",
             get(agent::get_agent).delete(agent::revoke_agent),
         )
-        // User self-service (manage own consents + agents)
         .route("/user/auth", post(user_auth))
         .route("/user/auth/challenge", post(user_auth_challenge))
         .route("/user/auth/finish", post(user_auth_finish))
-        .route("/user/consents", get(user_consents))
-        .route("/user/credential", get(user_get_credential))
-        .route("/user/consent/{request_id}", delete(user_revoke_consent))
-        // Self-sovereign agent VC (KYA without banks)
-        .route("/agent/vc/issue", post(agent_vc_issue))
         // Public health — returns {ok} ONLY (no admin key). Detailed report is
         // /admin/health/detailed (admin-gated, prevents recon).
         .route("/health", get(sauron_core::admin::health_public))
@@ -405,6 +417,7 @@ async fn main() {
         // Admin
         .nest("/admin", admin_router())
         // Sprint 2: policy DSL CRUD + evaluate (admin-gated).
+        .nest("/v1/stats", stats_router())
         .nest("/v1/policy", policy_router())
         // Sprint 3 follow-up: server-authoritative spend ledger (admin-gated).
         // Closes redteam A3 — local BudgetTracker is no longer the source of truth.
@@ -414,11 +427,9 @@ async fn main() {
         // Sprint 7: customer stat aggregation + ZK integrity (admin-gated).
         // Stores per-tenant claimed metric values bound to a Merkle root via
         // the StatsHonestComputation circuit. DP publish lives in Sprint 8.
-        .nest("/v1/stats", stats_router())
         // Sprint 8: DP-published cohort surface (admin-gated, operator-global).
         // Aggregates raw stats per cohort, applies Laplace noise per quartile
         // under the cohort's ε budget, suppresses metrics below k-anonymity.
-        .nest("/v1/cohort", cohort_router())
         // S12: security audit log query (admin-gated, tenant-scoped).
         .nest("/v1/admin/audit", audit_router())
         // Sprint 19-20: periodic ZK audit report module.
@@ -430,7 +441,6 @@ async fn main() {
         // COSE_Sign1 blobs at `/v1/attestation/nitro/verify` to validate
         // the document, surface the parsed module_id + PCRs, and confirm
         // the measurement matches their registered expected hash.
-        .nest("/v1/attestation", attestation_router())
         // Sprint 11 multi-tenancy: extract `TenantId` from
         // `x-sauron-tenant-id` header / admin JWT `tnt` claim and attach
         // to request extensions. Falls back to the `"default"` tenant for
@@ -552,6 +562,7 @@ async fn main() {
 //  Flux 1 : /register — Dépôt KYC → Token A
 // ─────────────────────────────────────────────────────
 
+#[cfg(feature = "demo")]
 fn validate_user_auth_public_key(value: &str) -> Result<(), AppError> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -577,6 +588,7 @@ fn validate_user_auth_public_key(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(feature = "demo")]
 fn store_user_auth_credential(
     state: &Arc<RwLock<ServerState>>,
     tenant_id: &str,
@@ -628,203 +640,424 @@ fn store_user_auth_credential(
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────
+//  POST /agent/vc/issue — mint a self-sovereign agent VC
+//
+//  This is an AGENT credential, not a human one: it binds the agent's
+//  ring key, PoP key and checksum to a scope and a TTL, and the
+//  autonomous-policy invariant scenario drives the whole autonomous_web3
+//  flow through it. The human-identity parts it used to carry — the
+//  nationality jurisdiction gate and the issuer-verified Groth16 root of
+//  trust — are archived; what is left is the agent binding.
+// ─────────────────────────────────────────────────────
+
 #[derive(Deserialize)]
-struct ZkpProofMaterialRequest {
+struct AgentVcIssueBody {
+    /// Human owner's key_image (legacy optional hint; server trusts authenticated session).
     #[serde(default)]
-    credential_hash: Option<String>,
-    #[serde(default)]
-    leaf_index: Option<usize>,
+    human_key_image: String,
+    /// SHA-256 of agent's behavioral config (tamper detection).
+    agent_checksum: String,
+    /// Human-readable description of agent's purpose.
+    description: String,
+    /// JSON array of allowed actions, e.g. ["read:profile", "prove:age", "prove:nationality"].
+    scope: Vec<String>,
+    /// Agent public key (Ristretto compressed hex) used in delegated-agent ring signatures.
+    public_key_hex: String,
+    /// Agent ring key image (Ristretto compressed hex) bound to action-time signatures.
+    ring_key_image_hex: String,
+    /// PoP JWK thumbprint. Mandatory for action endpoints.
+    pop_jkt: String,
+    /// Ed25519 public key, 32-byte raw as base64url. Mandatory for PoP challenges.
+    pop_public_key_b64u: String,
+    /// Lifetime hours (default 24, max 720).
+    #[serde(default = "default_vc_ttl")]
+    ttl_hours: i64,
 }
 
-async fn handle_zkp_proof_material(
+fn default_vc_ttl() -> i64 {
+    24
+}
+
+async fn agent_vc_issue(
+    headers: HeaderMap,
+    tenant: Option<axum::Extension<sauron_tenancy::TenantId>>,
     State(state): State<Arc<RwLock<ServerState>>>,
-    Json(payload): Json<ZkpProofMaterialRequest>,
+    Json(payload): Json<AgentVcIssueBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if !sauron_core::feature_flags::zkp_issuer_enabled() {
+    let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
+    if payload.agent_checksum.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "agent_checksum required".into()).into());
+    }
+    if payload.public_key_hex.trim().is_empty() {
         return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "ZKP issuer integration disabled (SAURON_DISABLE_ZKP=1)".into(),
+            StatusCode::BAD_REQUEST,
+            "public_key_hex is required for action-time ring signatures".into(),
         )
             .into());
     }
-    let (issuer_url, client) = {
-        let st = state.read_or_recover();
-        (st.issuer_url.clone(), st.issuer_runtime.client.clone())
+    if !payload
+        .ring_key_image_hex
+        .chars()
+        .all(|c| c.is_ascii_hexdigit())
+        || payload.ring_key_image_hex.len() != 64
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "ring_key_image_hex is required and must be 32-byte hex".into(),
+        )
+            .into());
+    }
+    if payload.pop_jkt.trim().is_empty() || payload.pop_public_key_b64u.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "PoP is mandatory: pop_jkt and pop_public_key_b64u are required".into(),
+        )
+            .into());
+    }
+
+    let agent_point = {
+        let bytes = hex::decode(payload.public_key_hex.trim()).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "public_key_hex must be valid hex".into(),
+            )
+        })?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "public_key_hex must be 32-byte compressed Ristretto point".into(),
+            )
+        })?;
+        CompressedRistretto(arr).decompress().ok_or((
+            StatusCode::BAD_REQUEST,
+            "public_key_hex is not a valid Ristretto point".into(),
+        ))?
     };
-    let body = serde_json::json!({
-        "credentialHash": payload.credential_hash,
-        "leafIndex": payload.leaf_index,
-    });
-    let mut request = client
-        .post(format!("{issuer_url}/proof-material"))
-        .json(&body);
-    if let Ok(secret) = std::env::var("SAURON_ISSUER_SHARED_SECRET") {
-        request = request.header("x-sauron-issuer-key", secret);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Issuer unreachable: {e}")))?;
 
-    if !response.status().is_success() {
+    let jwt_secret = state.read_or_recover().jwt_secret.clone();
+    let human_key_image = agent::session_key_image(&state, &headers, &jwt_secret, &tenant_id)
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "Valid x-sauron-session header required".into(),
+        ))?;
+    if !payload.human_key_image.is_empty() && payload.human_key_image != human_key_image {
         return Err((
-            StatusCode::BAD_GATEWAY,
-            format!(
-                "Issuer proof-material failed: {}",
-                response.text().await.unwrap_or_default()
-            ),
+            StatusCode::UNAUTHORIZED,
+            "human_key_image payload does not match authenticated session".into(),
         )
             .into());
     }
 
-    let data = response.json::<serde_json::Value>().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("Issuer payload parse error: {e}"),
+    // 1. Verify authenticated human exists and resolve trust source.
+    let human_pub_hex: String = {
+        let repo = state.read_or_recover().repo.clone();
+        repo.get_user(&human_key_image)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map(|u| u.public_key_hex)
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "Human user not found — must be registered in trusted user directory first"
+                    .to_string(),
+            ))?
+    };
+    let (human_in_user_ring, has_bank_link) = {
+        let st = state.read_or_recover();
+        let mut db = st.db.lock().unwrap();
+
+        let has_bank_link: bool = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
+            sql_params![&human_key_image],
+            |r| r.get_i64(0),
+            0,
+        ) > 0;
+
+        let bytes = hex::decode(&human_pub_hex).map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "Human user public key encoding invalid".into(),
+            )
+        })?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "Human user public key length invalid".into(),
+            )
+        })?;
+        let pt = CompressedRistretto(arr).decompress().ok_or((
+            StatusCode::UNAUTHORIZED,
+            "Human user public key point invalid".into(),
+        ))?;
+
+        (st.user_group.members.contains(&pt), has_bank_link)
+    };
+
+    let vc_issue_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    {
+        {
+            let st = state.read_or_recover();
+            let mut db = st.db.lock().unwrap();
+            risk::check_and_increment(
+                &mut db.any_conn(),
+                &risk::bucket_agent_vc_issue(&tenant_id, &human_key_image),
+                vc_issue_ts,
+                risk::limit_agent_vc_issue(),
+            )
+            .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+        }
+    }
+
+    // The non-bank root of trust used to be a Groth16 proof verified through an
+    // external ZKP issuer. Both are archived under
+    // archive/removed-2026-08/groth16-zkp/, so there is exactly one root of trust
+    // left and a caller without it gets told that rather than a 500.
+    let non_bank_kya_assertions: Option<serde_json::Map<String, serde_json::Value>> = None;
+    if !(has_bank_link && human_in_user_ring) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "no root of trust for this human: the issuer-verified ZKP path is archived, \
+             so the human must have a linked account and be a member of the user ring"
+                .to_string(),
         )
-    })?;
-    Ok(Json(data))
-}
+            .into());
+    }
+    let root_of_trust = "did:sauron:idp:bank_kyc".to_string();
 
-fn build_zkp_assertions(
-    circuit: &str,
-    public_signals: &[String],
-) -> serde_json::Map<String, serde_json::Value> {
-    fn parse_bool_signal(v: Option<&String>) -> Option<bool> {
-        v.and_then(|s| s.parse::<u8>().ok()).and_then(|n| match n {
-            0 => Some(false),
-            1 => Some(true),
-            _ => None,
-        })
+    // 2. Uniqueness check — each human may issue at most 10 active VCs, and
+    // each action signing key/key-image pair may back only one active agent.
+    {
+        let st = state.read_or_recover();
+        let mut db = st.db.lock().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let active_count: i64 = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM agent_vcs
+             WHERE agent_id IN (SELECT agent_id FROM agents WHERE tenant_id = ?1 AND human_key_image = ?2)
+             AND revoked = 0 AND expires_at > ?3",
+            sql_params![&tenant_id, &human_key_image, now],
+            |r| r.get_i64(0),
+            0,
+        );
+        if active_count >= 10 {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "Maximum 10 active agent VCs per human. Revoke some first.".into(),
+            )
+                .into());
+        }
+        // Advisory only — `uq_agents_active_public_key` is the real arbiter, so
+        // a registration that races past this check still fails at the INSERT.
+        let pub_in_use: bool = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1 AND public_key_hex = ?2 AND revoked = 0 AND expires_at > ?3",
+            sql_params![&tenant_id, &payload.public_key_hex, now],
+            |r| r.get_i64(0),
+            0,
+        ) > 0;
+        if pub_in_use {
+            return Err((
+                StatusCode::CONFLICT,
+                "public_key_hex already registered to an active agent".into(),
+            )
+                .into());
+        }
+        let key_image_in_use: bool = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1 AND ring_key_image_hex = ?2 AND revoked = 0 AND expires_at > ?3",
+            sql_params![&tenant_id, &payload.ring_key_image_hex, now],
+            |r| r.get_i64(0),
+            0,
+        ) > 0;
+        if key_image_in_use {
+            return Err((
+                StatusCode::CONFLICT,
+                "ring_key_image_hex already registered to an active agent".into(),
+            )
+                .into());
+        }
     }
 
-    fn parse_u64_signal(v: Option<&String>) -> Option<u64> {
-        v.and_then(|s| s.parse::<u64>().ok())
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let ttl_secs = payload.ttl_hours.clamp(1, 720) * 3600;
+    let expires_at = now + ttl_secs;
+
+    // 3. Derive agent_id
+    let agent_id = {
+        let mut h = Sha256::new();
+        h.update(payload.agent_checksum.as_bytes());
+        h.update(human_key_image.as_bytes());
+        h.update(now.to_le_bytes());
+        format!("agt_{}", &hex::encode(h.finalize())[..24])
+    };
+    let intent_json = serde_json::json!({
+        "description": payload.description.clone(),
+        "scope": payload.scope.clone()
+    })
+    .to_string();
+
+    // 4. Build VC (self-sovereign, Sauron as issuer)
+    let vc = serde_json::json!({
+        "@context": [
+            "https://www.w3.org/2018/credentials/v1",
+            "https://sauronid.io/credentials/agent/v1"
+        ],
+        "id": format!("urn:sauronid:agent-vc:{}", agent_id),
+        "type": ["VerifiableCredential", "SauronAgentCredential"],
+        "issuer": "did:sauron:idp",
+        "issuanceDate": now,
+        "expirationDate": expires_at,
+        "credentialSubject": {
+            "id": format!("did:sauron:agent:{}", agent_id),
+            "agentId": agent_id,
+            "agentChecksum": payload.agent_checksum.clone(),
+            "humanOwner": format!("did:sauron:user:{}", &human_key_image[..16]),
+            "description": payload.description.clone(),
+            "scope": payload.scope.clone(),
+            "agentPublicKey": payload.public_key_hex.clone(),
+            "ringKeyImage": payload.ring_key_image_hex.clone(),
+            "popThumbprint": payload.pop_jkt.clone(),
+            "rootOfTrust": root_of_trust,
+            "kyaEvidence": non_bank_kya_assertions,
+        },
+    });
+
+    // 5. Sign VC with its own HKDF-separated HMAC key.
+    let jwt_secret = state.read_or_recover().jwt_secret.clone();
+    let vc_canonical = vc.to_string();
+    let vc_key = sauron_core::crypto_protocol::derive_subkey(&jwt_secret, "agent-vc-hmac-v1");
+    let mut vc_mac = HmacSha256::new_from_slice(&vc_key).expect("HMAC key");
+    vc_mac.update(vc_canonical.as_bytes());
+    let vc_hash = hex::encode(vc_mac.finalize().into_bytes());
+
+    // 6. Persist in agents + agent_vcs tables
+    {
+        let st = state.read_or_recover();
+        let mut db = st.db.lock().unwrap();
+        // Register in agents table (so A-JWT flow works normally)
+        db.any_conn().execute(
+            "INSERT OR REPLACE INTO agents
+             (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u, tenant_id)
+             VALUES (?1,?2,?3,?4,'autonomous_web3',?5,?6,?7,?8,0,NULL,0,?9,?10,?11)
+             ON CONFLICT(agent_id) DO UPDATE SET
+               human_key_image = excluded.human_key_image,
+               agent_checksum = excluded.agent_checksum,
+               intent_json = excluded.intent_json,
+               assurance_level = excluded.assurance_level,
+               public_key_hex = excluded.public_key_hex,
+               ring_key_image_hex = excluded.ring_key_image_hex,
+               issued_at = excluded.issued_at,
+               expires_at = excluded.expires_at,
+               revoked = excluded.revoked,
+               parent_agent_id = excluded.parent_agent_id,
+               delegation_depth = excluded.delegation_depth,
+               pop_jkt = excluded.pop_jkt,
+               pop_public_key_b64u = excluded.pop_public_key_b64u,
+               tenant_id = excluded.tenant_id",
+            sql_params![
+                &agent_id,
+                &human_key_image,
+                &payload.agent_checksum,
+                &intent_json,
+                &payload.public_key_hex,
+                &payload.ring_key_image_hex,
+                now,
+                expires_at,
+                &payload.pop_jkt,
+                &payload.pop_public_key_b64u,
+                &tenant_id,
+            ],
+        ).map_err(|e| {
+            // The active-key partial unique indexes are the registration race
+            // arbiter; losing that race is a conflict, not a server fault.
+            let msg = e.to_lowercase();
+            if msg.contains("uq_agents_active") || msg.contains("unique") || msg.contains("duplicate key") {
+                (StatusCode::CONFLICT, "public_key_hex or ring_key_image_hex already registered to an active agent".to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
+
+        // Persist VC
+        db.any_conn().execute(
+            "INSERT OR REPLACE INTO agent_vcs (agent_id, vc_json, vc_hash, issued_at, expires_at)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(agent_id) DO UPDATE SET
+               vc_json = excluded.vc_json,
+               vc_hash = excluded.vc_hash,
+               issued_at = excluded.issued_at,
+               expires_at = excluded.expires_at",
+            sql_params![&agent_id, &vc_canonical, &vc_hash, now, expires_at],
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
 
-    let mut assertions = serde_json::Map::new();
-    assertions.insert("proof_verified".to_string(), serde_json::Value::Bool(true));
-    assertions.insert(
-        "circuit".to_string(),
-        serde_json::Value::String(circuit.to_string()),
+    // Add the caller-owned signing key to the in-memory delegated-agent ring.
+    {
+        let mut st = state.write_or_recover();
+        if !st.agent_group.members.contains(&agent_point) {
+            st.agent_group.members.push(agent_point);
+        }
+    }
+
+    // 7. Forge A-JWT so agent can start using it immediately
+    let extra = agent::AjwtExtraClaims {
+        cnf_jkt: Some(payload.pop_jkt.clone()),
+        workflow_id: None,
+        delegation_chain: None,
+    };
+    let ajwt = agent::forge_ajwt(
+        &jwt_secret,
+        &human_key_image,
+        &agent_id,
+        &payload.agent_checksum,
+        &intent_json,
+        &tenant_id,
+        ttl_secs,
+        Some(&extra),
     );
 
-    match circuit {
-        "AgeVerification" => {
-            let (age_ok, threshold) = if public_signals.len() >= 5 {
-                // Accept both layouts:
-                //  - outputs-last:  [ageThreshold, currentDate, issuerAx, issuerAy, valid]
-                //  - outputs-first: [valid, ageThreshold, currentDate, issuerAx, issuerAy]
-                let first_bool = parse_bool_signal(public_signals.first());
-                let last_bool = parse_bool_signal(public_signals.last());
-
-                if first_bool.is_some() && last_bool.is_none() {
-                    (
-                        first_bool.unwrap_or(false),
-                        parse_u64_signal(public_signals.get(1)).unwrap_or(0),
-                    )
-                } else {
-                    (
-                        last_bool.unwrap_or(false),
-                        parse_u64_signal(public_signals.first()).unwrap_or(0),
-                    )
-                }
-            } else {
-                // Backward-compatible mock layout: [age_ok, threshold]
-                let age_ok = parse_bool_signal(public_signals.first()).unwrap_or(false);
-                let threshold = parse_u64_signal(public_signals.get(1)).unwrap_or(0);
-                (age_ok, threshold)
-            };
-            assertions.insert(
-                "age_over_threshold".to_string(),
-                serde_json::Value::Bool(age_ok),
-            );
-            assertions.insert(
-                "age_threshold".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(threshold)),
-            );
-        }
-        "CredentialVerification" => {
-            let (age_ok, nationality_ok, credential_ok, threshold) = if public_signals.len() >= 9 {
-                // Accept both layouts:
-                //  - outputs-last:
-                //    [currentDate, ageThreshold, requiredNationality, merkleRoot, issuerAx, issuerAy, ageVerified, nationalityMatched, credentialValid]
-                //  - outputs-first:
-                //    [ageVerified, nationalityMatched, credentialValid, currentDate, ageThreshold, requiredNationality, merkleRoot, issuerAx, issuerAy]
-                let first_three_binary = public_signals
-                    .iter()
-                    .take(3)
-                    .all(|v| parse_bool_signal(Some(v)).is_some());
-
-                if first_three_binary {
-                    (
-                        parse_bool_signal(public_signals.first()).unwrap_or(false),
-                        parse_bool_signal(public_signals.get(1)).unwrap_or(false),
-                        parse_bool_signal(public_signals.get(2)).unwrap_or(false),
-                        parse_u64_signal(public_signals.get(4)).unwrap_or(0),
-                    )
-                } else {
-                    let n = public_signals.len();
-                    (
-                        parse_bool_signal(public_signals.get(n - 3)).unwrap_or(false),
-                        parse_bool_signal(public_signals.get(n - 2)).unwrap_or(false),
-                        parse_bool_signal(public_signals.get(n - 1)).unwrap_or(false),
-                        parse_u64_signal(public_signals.get(1)).unwrap_or(0),
-                    )
-                }
-            } else {
-                // Backward-compatible mock layout: [age_ok, nationality_ok, credential_ok]
-                let age_ok = parse_bool_signal(public_signals.first()).unwrap_or(false);
-                let nationality_ok = parse_bool_signal(public_signals.get(1)).unwrap_or(false);
-                let credential_ok = parse_bool_signal(public_signals.get(2)).unwrap_or(false);
-                (age_ok, nationality_ok, credential_ok, 0)
-            };
-            assertions.insert(
-                "age_over_threshold".to_string(),
-                serde_json::Value::Bool(age_ok),
-            );
-            assertions.insert(
-                "age_threshold".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(threshold)),
-            );
-            assertions.insert(
-                "nationality_match".to_string(),
-                serde_json::Value::Bool(nationality_ok),
-            );
-            assertions.insert(
-                "credential_valid".to_string(),
-                serde_json::Value::Bool(credential_ok),
-            );
-        }
-        "MerkleInclusion" => {
-            let inclusion_ok = if public_signals.len() >= 4 {
-                public_signals
-                    .last()
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1
-            } else {
-                public_signals
-                    .first()
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0)
-                    == 1
-            };
-            assertions.insert(
-                "merkle_inclusion".to_string(),
-                serde_json::Value::Bool(inclusion_ok),
-            );
-        }
-        _ => {}
+    {
+        let st = state.read_or_recover();
+        st.log(
+            "AGENT_VC_ISSUE",
+            "OK",
+            &format!("agent={} human={}", &agent_id[..16], &human_key_image[..16]),
+        );
     }
 
-    assertions
+    tracing::info!(
+        target: "sauron::kya",
+        agent = &agent_id[..16],
+        scope = ?payload.scope,
+        "self-sovereign VC issued"
+    );
+
+    Ok(Json(serde_json::json!({
+        "agent_id": agent_id,
+        "assurance_level": "autonomous_web3",
+        "vc": vc,
+        "vc_hash": vc_hash,
+        "ajwt": ajwt,
+        "agent_public_key_hex": payload.public_key_hex,
+        "ring_key_image_hex": payload.ring_key_image_hex,
+        "expires_at": expires_at,
+        "trust_chain": if has_bank_link && human_in_user_ring {
+            "SauronID self-sovereign (bank-linked human trust root)"
+        } else {
+            "SauronID self-sovereign (non-bank CredentialVerification proof root)"
+        },
+    })))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_zkp_assertions;
-
     #[tokio::test]
     async fn request_panic_is_contained_as_internal_server_error() {
         use axum::{body::Body, http::Request, routing::get, Router};
@@ -850,50 +1083,6 @@ mod tests {
         assert_eq!(
             response.status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
-        );
-    }
-
-    #[test]
-    fn age_verification_assertions_are_parsed() {
-        let signals = vec!["1".to_string(), "21".to_string()];
-        let assertions = build_zkp_assertions("AgeVerification", &signals);
-
-        assert_eq!(
-            assertions.get("proof_verified").and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            assertions
-                .get("age_over_threshold")
-                .and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            assertions.get("age_threshold").and_then(|v| v.as_u64()),
-            Some(21)
-        );
-    }
-
-    #[test]
-    fn credential_verification_assertions_are_parsed() {
-        let signals = vec!["1".to_string(), "0".to_string(), "1".to_string()];
-        let assertions = build_zkp_assertions("CredentialVerification", &signals);
-
-        assert_eq!(
-            assertions
-                .get("age_over_threshold")
-                .and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            assertions
-                .get("nationality_match")
-                .and_then(|v| v.as_bool()),
-            Some(false)
-        );
-        assert_eq!(
-            assertions.get("credential_valid").and_then(|v| v.as_bool()),
-            Some(true)
         );
     }
 }
@@ -1269,30 +1458,17 @@ async fn agent_payment_authorize(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let payment_jurisdiction = {
-        {
-            let st = state.read_or_recover();
-            let mut db = st.db.lock().unwrap();
-            risk::check_and_increment(
-                &mut db.any_conn(),
-                &risk::bucket_payment_authorize(&tenant_id, &agent_id),
-                now,
-                risk::limit_payment_authorize(),
-            )
-            .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
-        }
-        let nationality: String = {
-            let repo = state.read_or_recover().repo.clone();
-            repo.get_user(&human_key_image)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .map(|u| u.nationality)
-                .unwrap_or_default()
-        };
+    {
         let st = state.read_or_recover();
-        compliance::enforce_jurisdiction(&st.compliance, &nationality)
-            .map_err(|e| (StatusCode::FORBIDDEN, e))?
-    };
+        let mut db = st.db.lock().unwrap();
+        risk::check_and_increment(
+            &mut db.any_conn(),
+            &risk::bucket_payment_authorize(&tenant_id, &agent_id),
+            now,
+            risk::limit_payment_authorize(),
+        )
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
+    }
 
     let (assurance_level, pop_jkt) = {
         let st = state.read_or_recover();
@@ -1448,10 +1624,6 @@ async fn agent_payment_authorize(
         })?;
     }
 
-    let issuer_snap = {
-        let st = state.read_or_recover();
-        st.issuer_runtime.circuit_snapshots_json(&st.issuer_urls)
-    };
     Ok(Json(serde_json::json!({
         "authorized": true,
         "authorization_id": auth_id,
@@ -1465,8 +1637,6 @@ async fn agent_payment_authorize(
         "action_receipt": validated.receipt,
         "expires_at": expires_at,
         "controls": {
-            "compliance": payment_jurisdiction.for_agent_api(),
-            "issuer": issuer_snap,
             "risk": { "window_secs": risk::window_secs() },
         },
     })))
@@ -1480,28 +1650,6 @@ async fn agent_payment_authorize(
 // duplicated here, which is how the binary ended up issuing `v2` tokens that the
 // agent routes — already ported to the module — refused on arrival. One
 // implementation, one token version.
-
-/// Authenticate an owner session, including the revocation check.
-///
-/// The database read is what makes a leaked session cuttable: the epoch inside
-/// the signed payload has to still match the owner's current one. Before that,
-/// verification consulted no server state, so a leaked token stayed valid for
-/// its full hour no matter what the operator did.
-fn session_key_image(
-    state: &Arc<RwLock<ServerState>>,
-    headers: &HeaderMap,
-    jwt_secret: &[u8],
-    expected_tenant_id: &str,
-) -> Option<String> {
-    let st = state.read_or_recover();
-    let mut db = st.db.lock().ok()?;
-    sauron_core::user_session::key_image_from_headers(
-        headers,
-        jwt_secret,
-        expected_tenant_id,
-        &mut db.any_conn(),
-    )
-}
 
 /// Mint a session bound to the owner's CURRENT epoch.
 ///
@@ -1771,7 +1919,8 @@ async fn user_auth(
         let st = state.read_or_recover();
         (st.k, st.jwt_secret.clone())
     };
-    let oprf_result = dev_oprf_eval(server_k, &payload.email, &payload.password);
+    let oprf_result =
+        sauron_core::oprf::evaluate_unblinded(server_k, &payload.email, &payload.password);
     let identity = Identity::from_oprf(oprf_result);
     {
         let st = state.read_or_recover();
@@ -1802,66 +1951,9 @@ async fn user_auth(
 //  GET /user/consents — list all consents for user
 // ─────────────────────────────────────────────────────
 
-async fn user_consents(
-    headers: HeaderMap,
-    tenant: Option<axum::Extension<sauron_tenancy::TenantId>>,
-    State(state): State<Arc<RwLock<ServerState>>>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
-    let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let key_image = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
-        StatusCode::UNAUTHORIZED,
-        "Invalid or expired session".into(),
-    ))?;
-    let repo = state.read_or_recover().repo.clone();
-    let rows: Vec<serde_json::Value> = repo
-        .list_user_consents(&tenant_id, &key_image)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .into_iter()
-        .map(|(request_id, site_name, granted_at, token_used, revoked)| {
-            serde_json::json!({
-                "request_id": request_id,
-                "site_name":  site_name,
-                "granted_at": granted_at,
-                "used":       token_used != 0,
-                "revoked":    revoked != 0,
-            })
-        })
-        .collect();
-    Ok(Json(serde_json::json!({ "consents": rows })))
-}
-
 // ─────────────────────────────────────────────────────
 //  DELETE /user/consent/{request_id} — revoke a consent
 // ─────────────────────────────────────────────────────
-
-async fn user_revoke_consent(
-    headers: HeaderMap,
-    Path(request_id): Path<String>,
-    tenant: Option<axum::Extension<sauron_tenancy::TenantId>>,
-    State(state): State<Arc<RwLock<ServerState>>>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
-    let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let key_image = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
-        StatusCode::UNAUTHORIZED,
-        "Invalid or expired session".into(),
-    ))?;
-    let repo = state.read_or_recover().repo.clone();
-    let n = repo
-        .revoke_consent(&tenant_id, &request_id, &key_image)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    if n == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "Consent not found or not yours".into(),
-        )
-            .into());
-    }
-    Ok(Json(serde_json::json!({ "revoked": true })))
-}
 
 // ─────────────────────────────────────────────────────
 //  GET /user/credential — fetch BabyJubJub VC for ZKP proofs (frictionless)
@@ -1869,152 +1961,6 @@ async fn user_revoke_consent(
 //  Called automatically by the consent popup after the user authenticates.
 //  No extra user action needed — credential retrieved in background.
 // ─────────────────────────────────────────────────────
-
-async fn user_get_credential(
-    headers: HeaderMap,
-    tenant: Option<axum::Extension<sauron_tenancy::TenantId>>,
-    State(state): State<Arc<RwLock<ServerState>>>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
-    if !sauron_core::feature_flags::zkp_issuer_enabled() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "ZKP credential issuance disabled (SAURON_DISABLE_ZKP=1)".into(),
-        )
-            .into());
-    }
-    let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let key_image = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
-        StatusCode::UNAUTHORIZED,
-        "Invalid or expired session".into(),
-    ))?;
-
-    // Plan-2 call-site sweep: these credential lookups now go through the `Repo`
-    // abstraction instead of a sync `MutexGuard<Connection>` + inline rusqlite.
-    // The SQLite branch runs the identical query (verified locally); the same
-    // call routes to Postgres under `SAURON_DB_BACKEND=postgres`. Obtained once
-    // and reused for the claim below (also removes two blocking reads from the
-    // async runtime).
-    let repo = {
-        let st = state.read_or_recover();
-        st.repo.clone()
-    };
-
-    // Look up pre-auth code (no claimed flag yet — we claim atomically below).
-    let (pre_auth_code, subject_did) = repo
-        .select_credential_code(&tenant_id, &key_image)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            "No credential registered. Register via a bank or enroll first.".into(),
-        ))?;
-
-    // Fast path: return cached VC if already issued.
-    if let Some(vc_json) = repo
-        .select_user_credential(&tenant_id, &key_image)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    {
-        let vc: serde_json::Value =
-            serde_json::from_str(&vc_json).unwrap_or(serde_json::json!({ "raw": vc_json }));
-        return Ok(Json(
-            serde_json::json!({ "credential": vc, "cached": true }),
-        ));
-    }
-
-    // M3 port: atomic credential-code claim via dual-backend repo helper.
-    // Same TOCTOU pattern as payment_auth: conditional UPDATE under
-    // serialisable isolation, RETURNING confirms the flip.
-    let claimed_now = repo
-        .claim_credential_code(&tenant_id, &key_image)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if !claimed_now {
-        // Lost the race — another request is mid-flight or just finished. Re-check cache.
-        if let Some(vc_json) = repo
-            .select_user_credential(&tenant_id, &key_image)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        {
-            let vc: serde_json::Value =
-                serde_json::from_str(&vc_json).unwrap_or(serde_json::json!({ "raw": vc_json }));
-            return Ok(Json(
-                serde_json::json!({ "credential": vc, "cached": true }),
-            ));
-        }
-        return Err((
-            StatusCode::CONFLICT,
-            "Credential claim already in progress; retry shortly".into(),
-        )
-            .into());
-    }
-
-    // We won the race — release the claim on any failure path so the user can
-    // retry. Routed through the dual-backend repo (Postgres when enabled); the
-    // conditional single-statement UPDATE is atomic on both backends.
-
-    // Claim from issuer
-    let (issuer_url, client) = {
-        let st = state.read_or_recover();
-        (st.issuer_url.clone(), st.issuer_runtime.client.clone())
-    };
-    let body = serde_json::json!({
-        "grant_type": "urn:ietf:params:oauth:grant-type:pre-authorized_code",
-        "pre-authorized_code": pre_auth_code,
-        "subject_did": subject_did,
-    });
-
-    let mut request = client.post(format!("{issuer_url}/credential")).json(&body);
-    if let Ok(secret) = std::env::var("SAURON_ISSUER_SHARED_SECRET") {
-        request = request.header("x-sauron-issuer-key", secret);
-    }
-    let resp = match request.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = repo.release_credential_code(&tenant_id, &key_image).await;
-            return Err((StatusCode::BAD_GATEWAY, format!("Issuer unreachable: {e}")).into());
-        }
-    };
-
-    if !resp.status().is_success() {
-        let _ = repo.release_credential_code(&tenant_id, &key_image).await;
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            "Issuer returned error during credential claim".into(),
-        )
-            .into());
-    }
-
-    let vc: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = repo.release_credential_code(&tenant_id, &key_image).await;
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                format!("Issuer response parse error: {e}"),
-            )
-                .into());
-        }
-    };
-
-    // Cache the credential via the dual-backend repo. The claimed=1 flag was
-    // set atomically above, no need to re-UPDATE.
-    {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let _ = repo
-            .upsert_user_credential(&tenant_id, &key_image, &vc.to_string(), ts)
-            .await;
-    }
-
-    Ok(Json(
-        serde_json::json!({ "credential": vc, "cached": false }),
-    ))
-}
 
 // ─────────────────────────────────────────────────────
 //  POST /agent/egress/log — voluntary outbound-call reporting (Gap 2)
@@ -2248,530 +2194,3 @@ async fn agent_egress_log(
 //  Trust chain: SauronID server key → VC → agent_id
 //  Verification by retail site: POST /agent/verify with A-JWT → server returns VC proof.
 // ─────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct AgentVcIssueBody {
-    /// Human owner's key_image (legacy optional hint; server trusts authenticated session).
-    #[serde(default)]
-    human_key_image: String,
-    /// SHA-256 of agent's behavioral config (tamper detection).
-    agent_checksum: String,
-    /// Human-readable description of agent's purpose.
-    description: String,
-    /// JSON array of allowed actions, e.g. ["read:profile", "prove:age", "prove:nationality"].
-    scope: Vec<String>,
-    /// Agent public key (Ristretto compressed hex) used in delegated-agent ring signatures.
-    public_key_hex: String,
-    /// Agent ring key image (Ristretto compressed hex) bound to action-time signatures.
-    ring_key_image_hex: String,
-    /// PoP JWK thumbprint. Mandatory for action endpoints.
-    pop_jkt: String,
-    /// Ed25519 public key, 32-byte raw as base64url. Mandatory for PoP challenges.
-    pop_public_key_b64u: String,
-    /// Lifetime hours (default 24, max 720).
-    #[serde(default = "default_vc_ttl")]
-    ttl_hours: i64,
-    /// Optional Groth16 ZKP proof for non-bank KYA.
-    #[serde(default)]
-    zkp_proof: Option<serde_json::Value>,
-    /// Circuit name for non-bank proof (defaults to CredentialVerification).
-    #[serde(default)]
-    zkp_circuit: Option<String>,
-    /// Public signals for non-bank proof.
-    #[serde(default)]
-    zkp_public_signals: Option<Vec<String>>,
-}
-
-fn default_vc_ttl() -> i64 {
-    24
-}
-
-async fn agent_vc_issue(
-    headers: HeaderMap,
-    tenant: Option<axum::Extension<sauron_tenancy::TenantId>>,
-    State(state): State<Arc<RwLock<ServerState>>>,
-    Json(payload): Json<AgentVcIssueBody>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let tenant_id = tenant.map(|axum::Extension(t)| t).unwrap_or_default().0;
-    if !sauron_core::feature_flags::zkp_issuer_enabled() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "agent VC issuance disabled (SAURON_DISABLE_ZKP=1)".into(),
-        )
-            .into());
-    }
-    if payload.agent_checksum.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "agent_checksum required".into()).into());
-    }
-    if payload.public_key_hex.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "public_key_hex is required for action-time ring signatures".into(),
-        )
-            .into());
-    }
-    if !payload
-        .ring_key_image_hex
-        .chars()
-        .all(|c| c.is_ascii_hexdigit())
-        || payload.ring_key_image_hex.len() != 64
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "ring_key_image_hex is required and must be 32-byte hex".into(),
-        )
-            .into());
-    }
-    if payload.pop_jkt.trim().is_empty() || payload.pop_public_key_b64u.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "PoP is mandatory: pop_jkt and pop_public_key_b64u are required".into(),
-        )
-            .into());
-    }
-
-    let agent_point = {
-        let bytes = hex::decode(payload.public_key_hex.trim()).map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                "public_key_hex must be valid hex".into(),
-            )
-        })?;
-        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                "public_key_hex must be 32-byte compressed Ristretto point".into(),
-            )
-        })?;
-        CompressedRistretto(arr).decompress().ok_or((
-            StatusCode::BAD_REQUEST,
-            "public_key_hex is not a valid Ristretto point".into(),
-        ))?
-    };
-
-    let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let human_key_image = session_key_image(&state, &headers, &jwt_secret, &tenant_id).ok_or((
-        StatusCode::UNAUTHORIZED,
-        "Valid x-sauron-session header required".into(),
-    ))?;
-    if !payload.human_key_image.is_empty() && payload.human_key_image != human_key_image {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "human_key_image payload does not match authenticated session".into(),
-        )
-            .into());
-    }
-
-    // 1. Verify authenticated human exists and resolve trust source.
-    let human_pub_hex: String = {
-        let repo = state.read_or_recover().repo.clone();
-        repo.get_user(&human_key_image)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .map(|u| u.public_key_hex)
-            .ok_or((
-                StatusCode::NOT_FOUND,
-                "Human user not found — must be registered in trusted user directory first"
-                    .to_string(),
-            ))?
-    };
-    let (human_in_user_ring, has_bank_link) = {
-        let st = state.read_or_recover();
-        let mut db = st.db.lock().unwrap();
-
-        let has_bank_link: bool = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM bank_kyc_links WHERE user_key_image = ?1",
-            sql_params![&human_key_image],
-            |r| r.get_i64(0),
-            0,
-        ) > 0;
-
-        let bytes = hex::decode(&human_pub_hex).map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Human user public key encoding invalid".into(),
-            )
-        })?;
-        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Human user public key length invalid".into(),
-            )
-        })?;
-        let pt = CompressedRistretto(arr).decompress().ok_or((
-            StatusCode::UNAUTHORIZED,
-            "Human user public key point invalid".into(),
-        ))?;
-
-        (st.user_group.members.contains(&pt), has_bank_link)
-    };
-
-    let vc_issue_ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    {
-        {
-            let st = state.read_or_recover();
-            let mut db = st.db.lock().unwrap();
-            risk::check_and_increment(
-                &mut db.any_conn(),
-                &risk::bucket_agent_vc_issue(&tenant_id, &human_key_image),
-                vc_issue_ts,
-                risk::limit_agent_vc_issue(),
-            )
-            .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))?;
-        }
-        let nationality: String = {
-            let repo = state.read_or_recover().repo.clone();
-            repo.get_user(&human_key_image)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .map(|u| u.nationality)
-                .unwrap_or_default()
-        };
-        let st = state.read_or_recover();
-        compliance::enforce_jurisdiction(&st.compliance, &nationality)
-            .map_err(|e| (StatusCode::FORBIDDEN, e))?;
-    }
-
-    let mut non_bank_kya_assertions: Option<serde_json::Map<String, serde_json::Value>> = None;
-    let root_of_trust: String;
-
-    if has_bank_link && human_in_user_ring {
-        root_of_trust = "did:sauron:idp:bank_kyc".to_string();
-    } else {
-        let proof = payload.zkp_proof.clone().ok_or((
-            StatusCode::BAD_REQUEST,
-            "zkp_proof is required for non-bank KYA issuance".into(),
-        ))?;
-        let public_signals = payload.zkp_public_signals.clone().ok_or((
-            StatusCode::BAD_REQUEST,
-            "zkp_public_signals are required for non-bank KYA issuance".into(),
-        ))?;
-        if public_signals.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "zkp_public_signals must not be empty".into(),
-            )
-                .into());
-        }
-        let circuit = payload
-            .zkp_circuit
-            .clone()
-            .unwrap_or_else(|| "CredentialVerification".to_string());
-
-        let requested_dev_mock = proof
-            .get("dev_mock")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if requested_dev_mock && !sauron_core::runtime_mode::is_development_runtime() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "dev_mock proofs are disabled outside development".into(),
-            )
-                .into());
-        }
-
-        let (issuer_urls, issuer_rt) = {
-            let st = state.read_or_recover();
-            (st.issuer_urls.clone(), st.issuer_runtime.clone())
-        };
-        let verify_body = serde_json::json!({
-            "circuit": circuit,
-            "proof": proof,
-            "public_signals": public_signals,
-            "publicSignals": public_signals,
-        });
-        let proof_verified = if requested_dev_mock {
-            true
-        } else {
-            match issuer_rt
-                .verify_proof_failover(&issuer_urls, &verify_body)
-                .await
-            {
-                Ok(v) => v,
-                Err(IssuerVerifyError::CircuitOpen) => {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "ZKP issuer verify-proof temporarily unavailable (circuit open)".into(),
-                    )
-                        .into());
-                }
-                Err(IssuerVerifyError::Transport(e)) => {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!("ZKP issuer unreachable: {e}"),
-                    )
-                        .into());
-                }
-                Err(IssuerVerifyError::JsonParse) => {
-                    return Err((
-                        StatusCode::BAD_GATEWAY,
-                        "ZKP issuer returned unreadable JSON for verify-proof".into(),
-                    )
-                        .into());
-                }
-                Err(IssuerVerifyError::Upstream(status)) => {
-                    return Err((
-                        StatusCode::BAD_GATEWAY,
-                        format!("ZKP issuer verify-proof returned HTTP {status}"),
-                    )
-                        .into());
-                }
-            }
-        };
-
-        if !proof_verified {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Non-bank KYA proof verification failed".into(),
-            )
-                .into());
-        }
-
-        let assertions = build_zkp_assertions(&circuit, &public_signals);
-        let credential_valid = assertions
-            .get("credential_valid")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !credential_valid {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Non-bank KYA requires credential_valid=1 in CredentialVerification proof".into(),
-            )
-                .into());
-        }
-
-        non_bank_kya_assertions = Some(assertions);
-        root_of_trust = "did:sauron:idp:non_bank_zkp".to_string();
-    }
-
-    // 2. Uniqueness check — each human may issue at most 10 active VCs, and
-    // each action signing key/key-image pair may back only one active agent.
-    {
-        let st = state.read_or_recover();
-        let mut db = st.db.lock().unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let active_count: i64 = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM agent_vcs
-             WHERE agent_id IN (SELECT agent_id FROM agents WHERE tenant_id = ?1 AND human_key_image = ?2)
-             AND revoked = 0 AND expires_at > ?3",
-            sql_params![&tenant_id, &human_key_image, now],
-            |r| r.get_i64(0),
-            0,
-        );
-        if active_count >= 10 {
-            return Err((
-                StatusCode::TOO_MANY_REQUESTS,
-                "Maximum 10 active agent VCs per human. Revoke some first.".into(),
-            )
-                .into());
-        }
-        // Advisory only — `uq_agents_active_public_key` is the real arbiter, so
-        // a registration that races past this check still fails at the INSERT.
-        let pub_in_use: bool = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1 AND public_key_hex = ?2 AND revoked = 0 AND expires_at > ?3",
-            sql_params![&tenant_id, &payload.public_key_hex, now],
-            |r| r.get_i64(0),
-            0,
-        ) > 0;
-        if pub_in_use {
-            return Err((
-                StatusCode::CONFLICT,
-                "public_key_hex already registered to an active agent".into(),
-            )
-                .into());
-        }
-        let key_image_in_use: bool = db.any_conn().scalar_or(
-            "SELECT COUNT(*) FROM agents WHERE tenant_id = ?1 AND ring_key_image_hex = ?2 AND revoked = 0 AND expires_at > ?3",
-            sql_params![&tenant_id, &payload.ring_key_image_hex, now],
-            |r| r.get_i64(0),
-            0,
-        ) > 0;
-        if key_image_in_use {
-            return Err((
-                StatusCode::CONFLICT,
-                "ring_key_image_hex already registered to an active agent".into(),
-            )
-                .into());
-        }
-    }
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    let ttl_secs = payload.ttl_hours.clamp(1, 720) * 3600;
-    let expires_at = now + ttl_secs;
-
-    // 3. Derive agent_id
-    let agent_id = {
-        let mut h = Sha256::new();
-        h.update(payload.agent_checksum.as_bytes());
-        h.update(human_key_image.as_bytes());
-        h.update(now.to_le_bytes());
-        format!("agt_{}", &hex::encode(h.finalize())[..24])
-    };
-    let intent_json = serde_json::json!({
-        "description": payload.description.clone(),
-        "scope": payload.scope.clone()
-    })
-    .to_string();
-
-    // 4. Build VC (self-sovereign, Sauron as issuer)
-    let vc = serde_json::json!({
-        "@context": [
-            "https://www.w3.org/2018/credentials/v1",
-            "https://sauronid.io/credentials/agent/v1"
-        ],
-        "id": format!("urn:sauronid:agent-vc:{}", agent_id),
-        "type": ["VerifiableCredential", "SauronAgentCredential"],
-        "issuer": "did:sauron:idp",
-        "issuanceDate": now,
-        "expirationDate": expires_at,
-        "credentialSubject": {
-            "id": format!("did:sauron:agent:{}", agent_id),
-            "agentId": agent_id,
-            "agentChecksum": payload.agent_checksum.clone(),
-            "humanOwner": format!("did:sauron:user:{}", &human_key_image[..16]),
-            "description": payload.description.clone(),
-            "scope": payload.scope.clone(),
-            "agentPublicKey": payload.public_key_hex.clone(),
-            "ringKeyImage": payload.ring_key_image_hex.clone(),
-            "popThumbprint": payload.pop_jkt.clone(),
-            "rootOfTrust": root_of_trust,
-            "kyaEvidence": non_bank_kya_assertions,
-        },
-    });
-
-    // 5. Sign VC with its own HKDF-separated HMAC key.
-    let jwt_secret = state.read_or_recover().jwt_secret.clone();
-    let vc_canonical = vc.to_string();
-    let vc_key = sauron_core::crypto_protocol::derive_subkey(&jwt_secret, "agent-vc-hmac-v1");
-    let mut vc_mac = HmacSha256::new_from_slice(&vc_key).expect("HMAC key");
-    vc_mac.update(vc_canonical.as_bytes());
-    let vc_hash = hex::encode(vc_mac.finalize().into_bytes());
-
-    // 6. Persist in agents + agent_vcs tables
-    {
-        let st = state.read_or_recover();
-        let mut db = st.db.lock().unwrap();
-        // Register in agents table (so A-JWT flow works normally)
-        db.any_conn().execute(
-            "INSERT OR REPLACE INTO agents
-             (agent_id, human_key_image, agent_checksum, intent_json, assurance_level, public_key_hex, ring_key_image_hex, issued_at, expires_at, revoked, parent_agent_id, delegation_depth, pop_jkt, pop_public_key_b64u, tenant_id)
-             VALUES (?1,?2,?3,?4,'autonomous_web3',?5,?6,?7,?8,0,NULL,0,?9,?10,?11)
-             ON CONFLICT(agent_id) DO UPDATE SET
-               human_key_image = excluded.human_key_image,
-               agent_checksum = excluded.agent_checksum,
-               intent_json = excluded.intent_json,
-               assurance_level = excluded.assurance_level,
-               public_key_hex = excluded.public_key_hex,
-               ring_key_image_hex = excluded.ring_key_image_hex,
-               issued_at = excluded.issued_at,
-               expires_at = excluded.expires_at,
-               revoked = excluded.revoked,
-               parent_agent_id = excluded.parent_agent_id,
-               delegation_depth = excluded.delegation_depth,
-               pop_jkt = excluded.pop_jkt,
-               pop_public_key_b64u = excluded.pop_public_key_b64u,
-               tenant_id = excluded.tenant_id",
-            sql_params![
-                &agent_id,
-                &human_key_image,
-                &payload.agent_checksum,
-                &intent_json,
-                &payload.public_key_hex,
-                &payload.ring_key_image_hex,
-                now,
-                expires_at,
-                &payload.pop_jkt,
-                &payload.pop_public_key_b64u,
-                &tenant_id,
-            ],
-        ).map_err(|e| {
-            // The active-key partial unique indexes are the registration race
-            // arbiter; losing that race is a conflict, not a server fault.
-            let msg = e.to_lowercase();
-            if msg.contains("uq_agents_active") || msg.contains("unique") || msg.contains("duplicate key") {
-                (StatusCode::CONFLICT, "public_key_hex or ring_key_image_hex already registered to an active agent".to_string())
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e)
-            }
-        })?;
-
-        // Persist VC
-        db.any_conn().execute(
-            "INSERT OR REPLACE INTO agent_vcs (agent_id, vc_json, vc_hash, issued_at, expires_at)
-             VALUES (?1,?2,?3,?4,?5)
-             ON CONFLICT(agent_id) DO UPDATE SET
-               vc_json = excluded.vc_json,
-               vc_hash = excluded.vc_hash,
-               issued_at = excluded.issued_at,
-               expires_at = excluded.expires_at",
-            sql_params![&agent_id, &vc_canonical, &vc_hash, now, expires_at],
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    }
-
-    // Add the caller-owned signing key to the in-memory delegated-agent ring.
-    {
-        let mut st = state.write_or_recover();
-        if !st.agent_group.members.contains(&agent_point) {
-            st.agent_group.members.push(agent_point);
-        }
-    }
-
-    // 7. Forge A-JWT so agent can start using it immediately
-    let extra = agent::AjwtExtraClaims {
-        cnf_jkt: Some(payload.pop_jkt.clone()),
-        workflow_id: None,
-        delegation_chain: None,
-    };
-    let ajwt = agent::forge_ajwt(
-        &jwt_secret,
-        &human_key_image,
-        &agent_id,
-        &payload.agent_checksum,
-        &intent_json,
-        &tenant_id,
-        ttl_secs,
-        Some(&extra),
-    );
-
-    {
-        let st = state.read_or_recover();
-        st.log(
-            "AGENT_VC_ISSUE",
-            "OK",
-            &format!("agent={} human={}", &agent_id[..16], &human_key_image[..16]),
-        );
-    }
-
-    tracing::info!(
-        target: "sauron::kya",
-        agent = &agent_id[..16],
-        scope = ?payload.scope,
-        "self-sovereign VC issued"
-    );
-
-    Ok(Json(serde_json::json!({
-        "agent_id": agent_id,
-        "assurance_level": "autonomous_web3",
-        "vc": vc,
-        "vc_hash": vc_hash,
-        "ajwt": ajwt,
-        "agent_public_key_hex": payload.public_key_hex,
-        "ring_key_image_hex": payload.ring_key_image_hex,
-        "expires_at": expires_at,
-        "trust_chain": if has_bank_link && human_in_user_ring {
-            "SauronID self-sovereign (bank-linked human trust root)"
-        } else {
-            "SauronID self-sovereign (non-bank CredentialVerification proof root)"
-        },
-    })))
-}

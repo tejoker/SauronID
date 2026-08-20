@@ -111,15 +111,15 @@ compiler then located each one that still spoke rusqlite directly, because
 ```
 
 Staying on SQLite is now the thing you have to ask for, by name, through
-`DbHandle::lock_sqlite()`. There are **26 such sites in production code**, and
+`DbHandle::lock_sqlite()`. There are **4 such sites in production code**, and
 they are enumerated in `core/tests/postgres_dispatch_coverage.rs`, which fails
 if the set moves:
 
 ```
-22  repository.rs        the SQLite half of Repo's own backend match; the
+ 1  repository.rs        the BEGIN IMMEDIATE transaction helper the
                          Postgres half next to it is sqlx, and both arms are
                          selected from the same SAURON_DB_BACKEND
- 2  db.rs                the dispatcher itself
+ 1  db.rs                the dispatcher itself
  1  audit/store.rs       ensure_audit_reports_schema
  1  middleware/audit_log.rs  ensure_security_audit_schema
 ```

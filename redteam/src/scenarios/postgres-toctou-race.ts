@@ -431,46 +431,6 @@ export async function scenarioPostgresPaymentConsumeRace(
     );
 }
 
-export async function scenarioPostgresCredentialCodeRace(
-    _api: CoreApi,
-    _bank: string,
-    _label: string
-): Promise<void> {
-    if (!shouldRun()) {
-        console.log("    (skip — Postgres backend required)");
-        return;
-    }
-    const sessionHeader = process.env.SAURON_TEST_CRED_SESSION;
-    if (!sessionHeader) {
-        console.log(
-            "    (skip — set SAURON_TEST_CRED_SESSION to run credential-code race)"
-        );
-        return;
-    }
-    const calls = Array.from({ length: 8 }, () =>
-        fetch(`${baseUrl}/credential/claim`, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "x-sauron-session": sessionHeader,
-            },
-        }).then(async (r) => ({ status: r.status, text: await r.text() }))
-    );
-    const results = await Promise.all(calls);
-    // The expected pattern: at most one 2xx (the original claim winner), all
-    // others either 409 (lost the race) or 502 (issuer unreachable, fine for
-    // this test). The TOCTOU bug we are protecting against is two parallel
-    // 2xx responses with two different `credential.id` values.
-    const twoXX = results.filter((r) => r.status >= 200 && r.status < 300).length;
-    if (twoXX > 1) {
-        throw new Error(
-            `credential code race: ${twoXX} parallel 2xx — Repo::claim_credential_code ` +
-                "let a double-mint through"
-        );
-    }
-    console.log(`    race: credential-code burst — ${twoXX} winner(s), rest contended (ok)`);
-}
-
 /**
  * Standalone entry-point so the scenario can be invoked directly by the
  * `test-postgres` CI job without rebuilding the full index.ts harness.
@@ -492,9 +452,6 @@ async function main(): Promise<void> {
     );
     await run("postgres payment_authorization consume race", () =>
         scenarioPostgresPaymentConsumeRace(api, bankSite, "pgconsume")
-    );
-    await run("postgres credential_codes race", () =>
-        scenarioPostgresCredentialCodeRace(api, bankSite, "pgcred")
     );
     if (failed) {
         process.exit(1);

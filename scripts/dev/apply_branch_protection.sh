@@ -8,7 +8,11 @@ REPO="${REPO:-SauronID}"
 CHECKS="${CHECKS:-release-gate,test-sqlite,test-postgres,kya-e2e}"
 TARGET_BRANCHES=("$@")
 if [[ ${#TARGET_BRANCHES[@]} -eq 0 ]]; then
-  TARGET_BRANCHES=(main pocv1)
+  # `pocv1` was here too, and protecting a branch that does not exist on the
+  # remote fails the API call. It was deleted as four-month-old superseded KYC
+  # work; the history is at the archive/pocv1 tag. Pass branch names as
+  # arguments if you need more than main.
+  TARGET_BRANCHES=(main)
 fi
 
 if ! command -v gh >/dev/null 2>&1; then

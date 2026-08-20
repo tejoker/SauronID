@@ -2,6 +2,10 @@
 
 The active SauronID product is agent binding and bounded authorization. Routes not listed here are legacy or support-only.
 
+Routes removed in the 2026-08 archive pass (KYC consent, hardware attestation,
+Groth16 ZKP, cohort stats + compliance) are gone from this map and from
+`schemas/openapi.yaml`; see `archive/removed-2026-08/README.md`.
+
 ## Admin
 
 - `GET /admin/stats`
@@ -9,8 +13,6 @@ The active SauronID product is agent binding and bounded authorization. Routes n
 - `POST /admin/clients`
 - `GET /admin/users`
 - `GET /admin/requests`
-- `GET /admin/site/{name}/users`
-- `GET /admin/site/{name}/zkp_proofs`
 - `POST /admin/users/{key_image}/revoke_sessions` — invalidate every owner session for a key image (leaked-session response; does not touch already-registered agents)
 
 ## Agent Binding
@@ -41,11 +43,7 @@ Merkle roots are anchored through `SAURON_BITCOIN_ANCHOR_PROVIDER=mock` by defau
 
 ## Supporting Proof and Owner Routes
 
-- `POST /zkp/proof_material`
 - `POST /user/auth`
-- `GET /user/credential`
-- `GET /user/consents`
-- `DELETE /user/consent/{request_id}`
 
 ## Development-only Demo Routes
 
@@ -54,12 +52,11 @@ These routes are rejected outside development-like runtimes:
 - `POST /dev/register_user`
 - `POST /dev/buy_tokens`
 - `POST /dev/leash/demo`
-- `POST /dev/consent_profile`
 
 ## Archived product paths
 
-- **Python KYC adapter** → `archive/banking-2025/KYC/` (not started by default compose / `scripts/dev/start.sh`).
-- **CAMARA, card login, phone verification, consent-popup UIs** → see `archive/banking-2025/` (e.g. `archive/banking-2025/camara/`, archived portal flows per `archive/banking-2025/README.md`).
+- **Python KYC adapter** → removed from the working tree; see the `archive/banking-2025` git tag.
+- **CAMARA, card login, phone verification, consent-popup UIs** → removed from the working tree; see the `archive/banking-2025` git tag (`archive/banking-2025/camara/` and the portal flows described in its README).
 
 The Rust core no longer exposes any of them. `/oprf`, `/register` (KYC deposit),
 `/bank/register`, `/register/bank`, `/kyc/request`, `/kyc/consent`,

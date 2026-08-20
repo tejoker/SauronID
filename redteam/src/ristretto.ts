@@ -2,10 +2,6 @@ import { randomBytes } from "crypto";
 import { ristretto255 } from "@noble/curves/ed25519.js";
 
 /** Two distinct random compressed-Ristretto hex strings (64 hex chars) for parent/child agents. */
-export function twoRistrettoHexes(): { pk1: string; pk2: string } {
-    return { pk1: randomRistrettoHex(), pk2: randomRistrettoHex() };
-}
-
 // Ristretto255 group order.
 const RISTRETTO_ORDER = 7237005577332262213973186563042994240857116359379907606001950938285454250989n;
 

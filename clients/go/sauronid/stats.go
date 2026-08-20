@@ -72,6 +72,15 @@ type TransparentStatsSubmission struct {
 
 // SubmitStats POSTs `sub` to {coreURL}/v1/stats/submit.
 //
+// Deprecated: the server no longer serves this route. It was the Circom/Groth16
+// path, which production already refused ("Groth16 verification is
+// development-only; production accepts pinned native STARK receipts"), and its
+// verifier is archived under archive/removed-2026-08/groth16-zkp/. Against a
+// current core this returns 404.
+//
+// Use SubmitTransparentStats, which posts a native STARK receipt to
+// /v1/stats/submit-transparent and is the path the server still serves.
+//
 // The method validates that mandatory fields are set before sending so
 // most operator typos are caught client-side. Returns the server's
 // SubmitResponse on success.

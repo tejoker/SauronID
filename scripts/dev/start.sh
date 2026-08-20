@@ -73,7 +73,7 @@ log "[2/4] Seed (clients + users)..."
 cd "$ROOT/core"
 SAURON_URL=http://localhost:3001 bash seed.sh
 
-# (Optional archived Python KYC: archive/banking-2025/KYC — not started here.)
+# (The pre-pivot Python KYC service lives in the `archive/banking-2025` git tag.)
 
 # ── 3. Mandate Console Dashboard (Next.js) ──────────────────────────────────
 log "[3/4] Dashboard → :3000"
@@ -89,14 +89,11 @@ SAURONID_ALLOW_UNAUTHENTICATED_ADMIN_PROXY=1 \
 DASH_PID=$!
 PIDS+=("$DASH_PID")
 
-# (zkp/issuer removed Sprint 3 — OID4VCI service was orphan banking-era code,
-#  no callers in active product surface, feature-flagged off in operator profile A)
 
 # ── Résumé ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "  ${GRN}Partner + Bank + Dashboard (proxy) →${RST} http://localhost:3000"
 echo -e "  ${GRN}Rust Backend API                    →${RST} http://localhost:3001"
-echo -e "  ${YLW}Internal services (proxied)         →${RST} 8002 / 8003"
 echo ""
 echo -e "  ${YLW}Ctrl+C pour tout arrêter${RST}"
 echo ""

@@ -23,18 +23,13 @@ pub mod audit;
 /// integration tests import `sauron_core::attestation_cbor::*` — this
 /// re-export preserves that path without forcing every test to update its
 /// `use` lines.
-pub use attestation::cbor as attestation_cbor;
 pub mod bitcoin_anchor;
-pub mod compliance;
 pub mod crypto_protocol;
 pub mod db;
-pub mod dp;
 pub mod dpop;
 pub mod egress_gateway;
 pub mod error;
-pub mod feature_flags;
 pub mod identity;
-pub mod issuer_runtime;
 pub mod merkle;
 pub mod middleware;
 pub mod oprf;
@@ -56,4 +51,3 @@ pub mod tenancy;
 pub mod transparent_proof;
 pub mod usage;
 pub mod user_session;
-pub mod zk_verifier;

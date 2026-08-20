@@ -9,7 +9,7 @@ name: Unit + Postgres integration
 
 on:
   push:
-    branches: [main, pocv1]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

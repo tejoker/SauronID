@@ -140,3 +140,32 @@ mod tests {
         assert!(r.is_err(), "deny_unknown_fields must reject 'rogue_field'");
     }
 }
+
+/// Failure modes of the stats store.
+///
+/// Lived in `aggregation::verify` alongside the Groth16 verifier. That module is
+/// archived, and the only variants still reachable are the storage ones — but
+/// keeping the full set means `store.rs` needs no signature change if a second
+/// verifier ever lands.
+#[derive(Debug)]
+pub enum AggError {
+    Malformed(String),
+    Invalid(String),
+    KeyNotFound(String),
+    VerifierFailed(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for AggError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AggError::Malformed(s) => write!(f, "malformed submission: {s}"),
+            AggError::Invalid(s) => write!(f, "rejected: {s}"),
+            AggError::KeyNotFound(s) => write!(f, "vkey missing: {s}"),
+            AggError::VerifierFailed(s) => write!(f, "verifier failed: {s}"),
+            AggError::Storage(s) => write!(f, "storage: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for AggError {}

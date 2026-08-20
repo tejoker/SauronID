@@ -52,24 +52,96 @@ def b64u(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
 
+def pop_jkt(pop_pub_raw: bytes) -> str:
+    """RFC 7638 JWK thumbprint for an Ed25519 OKP key.
+
+    Deliberately implemented here rather than imported from
+    `sauronid_client`: this script exists to exercise the protocol
+    independently, and importing the SDK would test the SDK against itself.
+
+    The previous version hashed the RAW public key bytes, which is not what
+    RFC 7638 says and not what the server checks — `/agent/register` refuses
+    with "pop_jkt must be the RFC 7638 thumbprint of pop_public_key_b64u", so
+    this script could not get past registration.
+    """
+    canonical = json.dumps(
+        {"crv": "Ed25519", "kty": "OKP", "x": b64u(pop_pub_raw)},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return b64u(hashlib.sha256(canonical).digest())
+
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def canonical_fields(domain: str, fields: list[tuple[str, str]]) -> bytes:
+    """`u32be(len) || bytes` for the domain, then each field name and value.
+
+    The call-sig v2 wire format, from core/src/crypto_protocol.rs. JSON is
+    deliberately not used: key order, escaping and number formatting differ
+    across languages, and this payload has to match a Rust verifier byte for
+    byte. Implemented here rather than imported so this script keeps checking
+    the protocol independently of the SDK.
+    """
+    out = bytearray()
+
+    def push(value: str) -> None:
+        encoded = value.encode("utf-8")
+        out.extend(len(encoded).to_bytes(4, "big"))
+        out.extend(encoded)
+
+    push(domain)
+    for name, value in fields:
+        push(name)
+        push(value)
+    return bytes(out)
 
 
 def sign_call_headers(
     sk: Ed25519PrivateKey, agent_id: str, config_digest: str,
     method: str, path: str, body_bytes: bytes,
+    tenant_id: str = "default", audience: str = "sauron-core",
+    content_type: str = "application/json",
 ) -> dict[str, str]:
+    """Sign one call with the v2 canonical payload.
+
+    This used to sign a v1 pipe-delimited string,
+    `METHOD|path|body_sha256|ts|nonce`, which the server stopped accepting: it
+    answers 426 `call_sig_protocol_version` unless
+    `x-sauron-protocol-version: 2` is set and the payload is the v2 encoding.
+    v2 additionally binds tenant, audience and content type, which is the whole
+    point of the version bump.
+    """
     ts = now_ms()
     nonce = secrets.token_hex(16)
     body_hash_hex = hashlib.sha256(body_bytes).hexdigest()
-    payload = f"{method.upper()}|{path}|{body_hash_hex}|{ts}|{nonce}".encode("utf-8")
+    payload = canonical_fields(
+        "sauron.call.v2",
+        [
+            ("version", "2"),
+            ("agent_id", agent_id),
+            ("tenant_id", tenant_id),
+            ("audience", audience),
+            ("method", method.upper()),
+            ("target_uri", path),
+            ("content_type", content_type.strip().lower()),
+            ("body_sha256", body_hash_hex),
+            ("config_digest", config_digest),
+            ("timestamp_ms", str(ts)),
+            ("nonce", nonce),
+        ],
+    )
     sig = sk.sign(payload)
     return {
         "x-sauron-agent-id": agent_id,
         "x-sauron-call-ts": str(ts),
         "x-sauron-call-nonce": nonce,
         "x-sauron-call-sig": b64u(sig),
+        "x-sauron-call-audience": audience,
+        "x-sauron-protocol-version": "2",
         "x-sauron-agent-config-digest": config_digest,
     }
 
@@ -236,7 +308,7 @@ def provision_agent(
             format=serialization.PublicFormat.Raw,
         )
         bundle.pop_pub_b64u = b64u(pop_pub_raw)
-        bundle.pop_jkt = b64u(hashlib.sha256(pop_pub_raw).digest())
+        bundle.pop_jkt = pop_jkt(pop_pub_raw)
         s.add(
             ring_pub=bundle.ring_public_hex[:16] + "…",
             pop_jkt=bundle.pop_jkt[:14] + "…",
@@ -658,7 +730,7 @@ def cmd_attack(args: argparse.Namespace) -> int:
                 "intent_json": json.dumps(child_intent, separators=(",", ":")),
                 "public_key_hex": ring2["public_key_hex"],
                 "ring_key_image_hex": ring2["ring_key_image_hex"],
-                "pop_jkt": b64u(hashlib.sha256(pop2_pub).digest()),
+                "pop_jkt": pop_jkt(pop2_pub),
                 "pop_public_key_b64u": b64u(pop2_pub),
                 "ttl_secs": 3600,
                 "parent_agent_id": bundle.agent_id,    # delegate from bundle

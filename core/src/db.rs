@@ -77,27 +77,6 @@ impl DbHandle {
         self.pg_pool.is_some()
     }
 
-    /// Run `f` against whichever backend is configured.
-    ///
-    /// A closure rather than a returned `AnyConn` because the Postgres variant
-    /// borrows a pooled client mutably: handing the guard back out would leak
-    /// the pool's lifetime into every call site.
-    pub fn any<T>(
-        &self,
-        f: impl FnOnce(&mut AnyConn<'_>) -> Result<T, String>,
-    ) -> Result<T, String> {
-        match &self.pg_pool {
-            Some(pool) => {
-                let mut client = pool.get().map_err(|e| e.to_string())?;
-                f(&mut AnyConn::Postgres(&mut client))
-            }
-            None => {
-                let conn = self.lock_sqlite().map_err(|e| e.to_string())?;
-                f(&mut AnyConn::Sqlite(&conn))
-            }
-        }
-    }
-
     /// An owned connection to whichever backend is configured.
     ///
     /// This is what `lock()` should have been. `lock()` hands back a SQLite
@@ -516,13 +495,6 @@ pub fn init_schema(conn: &Connection) {
             metadata_json    TEXT NOT NULL DEFAULT '{}'
         );
 
-        -- Bank attestation replay protection for webhook-based user registration
-        CREATE TABLE IF NOT EXISTS bank_attestation_nonces (
-            provider_id TEXT NOT NULL,
-            nonce       TEXT NOT NULL,
-            issued_at   INTEGER NOT NULL,
-            PRIMARY KEY (provider_id, nonce)
-        );
 
         -- BabyJubJub ZKP credentials (cached after issuer claim)
         CREATE TABLE IF NOT EXISTS user_credentials (
@@ -531,14 +503,6 @@ pub fn init_schema(conn: &Connection) {
             issued_at       INTEGER NOT NULL
         );
 
-        -- ZKP pre-auth codes (stored at user registration, claimed on first credential fetch)
-        CREATE TABLE IF NOT EXISTS credential_codes (
-            key_image_hex   TEXT    PRIMARY KEY,
-            pre_auth_code   TEXT    NOT NULL,
-            subject_did     TEXT    NOT NULL,
-            issued_at       INTEGER NOT NULL,
-            claimed         INTEGER NOT NULL DEFAULT 0
-        );
 
         -- User <-> client relationship
         CREATE TABLE IF NOT EXISTS user_registrations (
@@ -550,20 +514,6 @@ pub fn init_schema(conn: &Connection) {
             UNIQUE(client_name, user_key_image_hex, source)
         );
 
-        -- Consent log (GDPR-auditable)
-        CREATE TABLE IF NOT EXISTS consent_log (
-            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-            request_id         TEXT    UNIQUE NOT NULL,
-            user_key_image     TEXT    NOT NULL DEFAULT '',
-            site_name          TEXT    NOT NULL,
-            requested_claims_json TEXT NOT NULL DEFAULT '[]',
-            granted_at         INTEGER NOT NULL DEFAULT 0,
-            consent_expires_at INTEGER NOT NULL DEFAULT 0,
-            consent_token      TEXT    UNIQUE,
-            token_used         INTEGER NOT NULL DEFAULT 0,
-            revoked            INTEGER NOT NULL DEFAULT 0,
-            issuing_agent_id   TEXT    DEFAULT NULL
-        );
 
         -- AI agents delegated by human owners
         CREATE TABLE IF NOT EXISTS agents (
@@ -590,16 +540,6 @@ pub fn init_schema(conn: &Connection) {
             revoked         INTEGER NOT NULL DEFAULT 0
         );
 
-        -- Trusted device tokens (silent re-auth)
-        CREATE TABLE IF NOT EXISTS device_tokens (
-            token_hash       TEXT    PRIMARY KEY,
-            user_key_image   TEXT    NOT NULL,
-            site_name        TEXT    NOT NULL,
-            fingerprint_hash TEXT    NOT NULL,
-            issued_at        INTEGER NOT NULL,
-            expires_at       INTEGER NOT NULL,
-            revoked          INTEGER NOT NULL DEFAULT 0
-        );
 
         -- API usage billing (per-call metering)
         -- action: 'kyc_human' | 'kyc_agent' | 'zkp_login' | 'agent_register' | 'agent_vc_issue'
@@ -628,16 +568,7 @@ pub fn init_schema(conn: &Connection) {
             detail      TEXT    NOT NULL DEFAULT ''
         );
 
-        -- Pre-computed analytics
-        CREATE TABLE IF NOT EXISTS company_data (
-            company_id  INTEGER NOT NULL,
-            data_type   TEXT    NOT NULL CHECK(data_type IN ('stats', 'forecast', 'fraud_summary', 'fraud_recent')),
-            data_json   TEXT    NOT NULL,
-            PRIMARY KEY (company_id, data_type)
-        );
 
-        CREATE INDEX IF NOT EXISTS idx_consent_log_token ON consent_log (consent_token, token_used, revoked, consent_expires_at);
-        CREATE INDEX IF NOT EXISTS idx_consent_log_request ON consent_log (request_id, token_used, revoked);
         CREATE INDEX IF NOT EXISTS idx_agents_human_active ON agents (human_key_image, revoked, expires_at);
         CREATE INDEX IF NOT EXISTS idx_api_usage_client_ts ON api_usage (client_name, timestamp);
 
@@ -859,13 +790,6 @@ pub fn init_schema(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_agent ON agent_payment_authorizations(agent_id, expires_at);
         CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_payment_ref ON agent_payment_authorizations(payment_ref);
 
-        -- Payment SMT leaves: key = SHA256(agent_id|window_start), value = 0 (no payment) or 1 (consumed).
-        -- Root is recomputed in-memory at startup from these rows.
-        CREATE TABLE IF NOT EXISTS payment_smt_leaves (
-            key_hex     TEXT    PRIMARY KEY NOT NULL,
-            value       INTEGER NOT NULL DEFAULT 0,
-            updated_at  INTEGER NOT NULL
-        );
 
         -- Bitcoin anchoring receipts for Merkle roots.
         -- Default provider is local mock: OP_RETURN payload + fake txid, no real BTC.
@@ -923,22 +847,6 @@ pub fn init_schema(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_solana_merkle_root ON solana_merkle_anchors(merkle_root_hex);
         CREATE INDEX IF NOT EXISTS idx_solana_pending ON solana_merkle_anchors(confirmed, created_at);
 
-        -- Lightning/L402 invoices for agent-paid APIs.
-        -- Default provider is local mock: no real sats move during tests.
-        CREATE TABLE IF NOT EXISTS lightning_l402_invoices (
-            invoice_id      TEXT PRIMARY KEY NOT NULL,
-            auth_id         TEXT NOT NULL,
-            agent_id        TEXT NOT NULL,
-            service         TEXT NOT NULL,
-            amount_msat     INTEGER NOT NULL,
-            payment_hash    TEXT NOT NULL,
-            macaroon        TEXT NOT NULL UNIQUE,
-            settled         INTEGER NOT NULL DEFAULT 0,
-            created_at      INTEGER NOT NULL,
-            expires_at      INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_lightning_l402_auth ON lightning_l402_invoices(auth_id);
-        CREATE INDEX IF NOT EXISTS idx_lightning_l402_agent ON lightning_l402_invoices(agent_id, settled);
 
         -- Opaque rate-limit buckets (SHA256-derived keys); sliding windows by window_id = floor(epoch/window).
         CREATE TABLE IF NOT EXISTS risk_rate_counters (
@@ -977,13 +885,23 @@ pub fn init_schema(conn: &Connection) {
         -- holds the running total per (policy_id, agent_id, period_start).
         -- POST /v1/policy/evaluate now looks up the authoritative value from
         -- this ledger when the request carries an `agent_id`.
+        -- tenant_id is part of the KEY, not just a column. It was added as a
+        -- column by the multi-tenant migration while the key stayed
+        -- (policy_id, agent_id, period_start), which made the upsert conflict
+        -- target tenant-blind: two tenants spending against the same logical
+        -- (agent, policy, period) collapsed into ONE row owned by whichever
+        -- wrote first. The non-owning tenant then read 0 and its budget cap
+        -- never tripped, while the owning tenant absorbed spend it never made.
+        -- `tenant-spend-ledger-race.ts` reproduces it; docs/multi-tenancy-audit.md
+        -- has the numbers.
         CREATE TABLE IF NOT EXISTS spend_ledger (
             policy_id    TEXT NOT NULL,
             agent_id     TEXT NOT NULL,
             period_start BIGINT NOT NULL,        -- unix epoch, 0 = lifetime
             total_usd    REAL NOT NULL DEFAULT 0,
             last_updated BIGINT NOT NULL,
-            PRIMARY KEY (policy_id, agent_id, period_start)
+            tenant_id    TEXT NOT NULL DEFAULT 'default',
+            PRIMARY KEY (tenant_id, policy_id, agent_id, period_start)
         );
         CREATE INDEX IF NOT EXISTS idx_spend_ledger_agent ON spend_ledger(agent_id);
 
@@ -1164,6 +1082,86 @@ pub fn init_schema(conn: &Connection) {
     )
     .expect("DB schema init failed");
 
+    // ── spend_ledger: put tenant_id in the primary key on EXISTING databases ──
+    //
+    // SQLite cannot ALTER a primary key, so this is the twelve-step rebuild:
+    // create the correctly-keyed table, copy, drop, rename. Guarded on the old
+    // key still being in place so it runs once and is a no-op afterwards.
+    //
+    // NON-DESTRUCTIVE ON PURPOSE. Every existing row is copied verbatim, keeping
+    // whatever tenant_id it already carries. What the rebuild CANNOT do is
+    // un-merge a row whose total already absorbed another tenant's spend — that
+    // information was never recorded separately. Such a row stays with the
+    // tenant that owned it, i.e. over-counted rather than lost, which is the
+    // conservative direction for a budget cap. The victim tenant starts
+    // accumulating its own row correctly from here. An operator who needs the
+    // historical split can rebuild it from spend_log, which WAS tenant-correct
+    // throughout.
+    {
+        let needs_rebuild = conn
+            .prepare("SELECT 1 FROM pragma_index_list('spend_ledger') LIMIT 0")
+            .is_ok()
+            && conn
+                .prepare("PRAGMA table_info(spend_ledger)")
+                .and_then(|mut st| {
+                    let cols: Vec<(i64, String)> = st
+                        .query_map([], |r| Ok((r.get::<_, i64>(5)?, r.get::<_, String>(1)?)))?
+                        .filter_map(Result::ok)
+                        .collect();
+                    // pk column 5 is the 1-based position in the primary key.
+                    let in_pk: Vec<&str> = cols
+                        .iter()
+                        .filter(|(pk, _)| *pk > 0)
+                        .map(|(_, n)| n.as_str())
+                        .collect();
+                    Ok(!in_pk.is_empty() && !in_pk.contains(&"tenant_id"))
+                })
+                .unwrap_or(false);
+        if needs_rebuild {
+            let rebuilt = conn.execute_batch(
+                r#"
+                BEGIN IMMEDIATE;
+                CREATE TABLE spend_ledger__new (
+                    policy_id    TEXT NOT NULL,
+                    agent_id     TEXT NOT NULL,
+                    period_start BIGINT NOT NULL,
+                    total_usd    REAL NOT NULL DEFAULT 0,
+                    last_updated BIGINT NOT NULL,
+                    tenant_id    TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (tenant_id, policy_id, agent_id, period_start)
+                );
+                INSERT INTO spend_ledger__new
+                    (policy_id, agent_id, period_start, total_usd, last_updated, tenant_id)
+                SELECT policy_id, agent_id, period_start, total_usd, last_updated,
+                       COALESCE(tenant_id, 'default')
+                FROM spend_ledger;
+                DROP TABLE spend_ledger;
+                ALTER TABLE spend_ledger__new RENAME TO spend_ledger;
+                CREATE INDEX IF NOT EXISTS idx_spend_ledger_agent ON spend_ledger(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_spend_ledger_tenant
+                    ON spend_ledger(tenant_id, policy_id, agent_id);
+                COMMIT;
+                "#,
+            );
+            match rebuilt {
+                Ok(()) => tracing::warn!(
+                    target: "sauron::db",
+                    "spend_ledger rebuilt with tenant_id in the primary key; \
+                     pre-existing totals were copied as-is and may over-count the \
+                     owning tenant (see docs/multi-tenancy-audit.md)"
+                ),
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK;");
+                    panic!(
+                        "[FATAL] spend_ledger tenant-key rebuild failed: {e}. \
+                         Refusing to run with a tenant-blind spend ledger: cross-tenant \
+                         writes would collapse into one row and a budget cap would not trip."
+                    );
+                }
+            }
+        }
+    }
+
     // Migration-safe add for existing databases created before requested_claims_json existed.
     let _ = conn.execute(
         "ALTER TABLE clients ADD COLUMN tokens_b INTEGER NOT NULL DEFAULT 0",
@@ -1176,18 +1174,6 @@ pub fn init_schema(conn: &Connection) {
     // insert would fail until the column goes. Ignoring the error is the
     // idempotency: on a fresh database there is nothing to drop.
     let _ = conn.execute("ALTER TABLE clients DROP COLUMN private_key_hex", []);
-    let _ = conn.execute(
-        "ALTER TABLE consent_log ADD COLUMN requested_claims_json TEXT NOT NULL DEFAULT '[]'",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE consent_log ADD COLUMN issuing_agent_id TEXT DEFAULT NULL",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE consent_log ADD COLUMN consent_expires_at INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
     let _ = conn.execute(
         "ALTER TABLE agents ADD COLUMN assurance_level TEXT NOT NULL DEFAULT 'delegated_nonbank'",
         [],
@@ -1390,11 +1376,9 @@ pub fn init_schema(conn: &Connection) {
     //
     // Tables intentionally NOT scoped here (see core/src/tenancy/mod.rs
     // for the audit rationale): users, clients, bank_kyc_links,
-    // bank_attestation_nonces, agent_pop_challenges, agent_call_nonces,
-    // ajwt_used_jtis, agent_action_nonces, agent_vcs, device_tokens,
-    // api_usage, requests_log, company_data, agent_checksum_inputs,
-    // agent_checksum_audit, payment_smt_leaves,
-    // user_compliance_screening, lightning_l402_invoices.
+    // agent_pop_challenges, agent_call_nonces, ajwt_used_jtis,
+    // agent_action_nonces, agent_vcs, api_usage, requests_log,
+    // agent_checksum_inputs, agent_checksum_audit.
     let tenant_scoped_tables: &[&str] = &[
         "agents",
         "policies",
@@ -1403,9 +1387,7 @@ pub fn init_schema(conn: &Connection) {
         "bitcoin_merkle_anchors",
         "solana_merkle_anchors",
         "agent_egress_log",
-        "consent_log",
         "agent_payment_authorizations",
-        "credential_codes",
         "user_credentials",
         "user_registrations",
         "merkle_leaves",
@@ -1455,9 +1437,7 @@ pub fn init_schema(conn: &Connection) {
         "CREATE INDEX IF NOT EXISTS idx_bitcoin_merkle_anchors_tenant ON bitcoin_merkle_anchors(tenant_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_solana_merkle_anchors_tenant ON solana_merkle_anchors(tenant_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_agent_egress_log_tenant ON agent_egress_log(tenant_id, agent_id, ts)",
-        "CREATE INDEX IF NOT EXISTS idx_consent_log_tenant ON consent_log(tenant_id, request_id)",
         "CREATE INDEX IF NOT EXISTS idx_agent_payment_auth_tenant ON agent_payment_authorizations(tenant_id, agent_id)",
-        "CREATE INDEX IF NOT EXISTS idx_credential_codes_tenant ON credential_codes(tenant_id, key_image_hex)",
         "CREATE INDEX IF NOT EXISTS idx_user_credentials_tenant ON user_credentials(tenant_id, key_image_hex)",
         "CREATE INDEX IF NOT EXISTS idx_user_registrations_tenant ON user_registrations(tenant_id, client_name)",
         "CREATE INDEX IF NOT EXISTS idx_merkle_leaves_tenant ON merkle_leaves(tenant_id, registered_at)",
@@ -1479,14 +1459,9 @@ pub fn init_schema(conn: &Connection) {
             &["tenant_id", "pop_public_key_b64u", "ring_key_image_hex"] as &[&str],
         ),
         (
-            "consent_log",
-            &["tenant_id", "consent_token", "consent_expires_at"] as &[&str],
-        ),
-        (
             "agent_payment_authorizations",
             &["tenant_id", "consumed"] as &[&str],
         ),
-        ("credential_codes", &["tenant_id", "claimed"] as &[&str]),
         (
             "user_credentials",
             &["tenant_id", "credential_json"] as &[&str],

@@ -93,10 +93,14 @@ When hardware-backed: even host compromise no longer leaks the PoP private key. 
 
 ### Enforced at registration (not just available)
 
-Previously the attestation verifiers were reachable only via the standalone `POST /v1/attestation/*` route; `/agent/register` stored the blob verbatim without verifying it. Registration now runs `enforce_registration_attestation` (`core/src/attestation/mod.rs`) inline:
+The standalone `POST /v1/attestation/*` route is gone with the hardware verifiers. Registration runs `enforce_registration_attestation` (`core/src/attestation/mod.rs`) inline for the one remaining kind:
 
 - The operator asserts the runtime measurement via `expected_measurement_hex`. `verify_attestation` checks BOTH the signature / cert-chain AND that the blob attests to exactly that measurement — an attacker who asserts a blessed value but whose blob attests a different state is rejected with `MeasurementMismatch`.
-- `SAURON_REQUIRE_HARDWARE_ATTESTATION=1` rejects `none` / `server_derived` kinds outright (a verifiable hardware kind becomes mandatory).
+- `SAURON_REQUIRE_HARDWARE_ATTESTATION=1` now fails closed with an explanation: this
+  build ships no hardware verifier. TPM2 and Nitro are archived under
+  `archive/removed-2026-08/hardware-attestation/`, and what remains is
+  `ed25519_self` — an operator-signed runtime measurement, i.e. evidence about
+  configuration, not about hardware.
 - The expected measurement is sourced one of two ways:
   - **Mode (a) — pre-registered (`SAURON_REQUIRE_PREREGISTERED_MEASUREMENT=1`):** the asserted measurement must be in the operator's out-of-band golden allowlist (`SAURON_ATTESTATION_GOLDEN_MEASUREMENTS`). Defends a compromised-at-first-boot host, whose blob attests a non-golden measurement and therefore cannot pass.
   - **Mode (b) — trust-on-first-use (default):** no allowlist; the genuine measurement the operator asserts is accepted and pinned to `agents.attestation_pcr_set`. Catches post-enrollment drift, not a compromised first boot.

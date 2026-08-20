@@ -40,8 +40,26 @@ def _core_alive() -> bool:
         return False
 
 
+def _tool_available() -> bool:
+    """Is the agent-action-tool resolvable?
+
+    Two of these tests sign a call with it. Guarding only on "is the core up"
+    meant that on a machine with a running core but no built tool they FAILED
+    instead of skipping, which reads as a product regression rather than a
+    missing build artefact.
+    """
+    from sauronid_client.agent import _agent_action_tool_path
+
+    try:
+        return bool(_agent_action_tool_path())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not _core_alive(), reason=f"core not reachable at {CORE_URL}"
+    not (_core_alive() and _tool_available()),
+    reason=f"needs a core at {CORE_URL} and an agent-action-tool "
+    "(build it, or set SAURONID_AGENT_ACTION_TOOL)",
 )
 
 
