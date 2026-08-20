@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-16T00:00:00Z",
+  "title": "Design System: SauronID",
+  "extensions": {
+    "colorMeta": {
+      "signal-600": { "role": "primary", "displayName": "Signal Blue", "canonical": "#0054f3" },
+      "signal-500": { "role": "primary", "displayName": "Signal Blue Light", "canonical": "#2384fb" },
+      "sky-300": { "role": "primary", "displayName": "Sky (on-dark link)", "canonical": "#78c6fb" },
+      "cloud-50": { "role": "neutral", "displayName": "Cloud", "canonical": "#f7faff" },
+      "white": { "role": "neutral", "displayName": "White", "canonical": "#ffffff" },
+      "midnight-950": { "role": "neutral", "displayName": "Midnight (proof sections)", "canonical": "#000d35" },
+      "navy-900": { "role": "neutral", "displayName": "Navy 900", "canonical": "#000f3b" },
+      "navy-800": { "role": "neutral", "displayName": "Navy 800", "canonical": "#071b51" },
+      "ink-950": { "role": "neutral", "displayName": "Ink", "canonical": "#071229" },
+      "slate-700": { "role": "neutral", "displayName": "Slate 700", "canonical": "#455570" },
+      "slate-600": { "role": "neutral", "displayName": "Slate 600", "canonical": "#60708f", "note": "Also drives --sid-text-3 (tertiary/disclaimer text) since v2, darkened from Slate 400 for WCAG AA on white." },
+      "slate-400": { "role": "neutral", "displayName": "Slate 400", "canonical": "#8b98b3" },
+      "border-200": { "role": "neutral", "displayName": "Border 200", "canonical": "#d7e1f1" },
+      "border-100": { "role": "neutral", "displayName": "Border 100", "canonical": "#e8eef8" },
+      "allowed-600": { "role": "status", "displayName": "Allowed Teal", "canonical": "#0c9b8e" },
+      "allowed-700": { "role": "status", "displayName": "Allowed Teal (text)", "canonical": "#0a7f75" },
+      "allowed-50": { "role": "status", "displayName": "Allowed Teal (fill)", "canonical": "#eaf8f5" },
+      "review-600": { "role": "status", "displayName": "Review Amber", "canonical": "#d69020" },
+      "review-700": { "role": "status", "displayName": "Review Amber (text)", "canonical": "#a86f12" },
+      "review-50": { "role": "status", "displayName": "Review Amber (fill)", "canonical": "#fff7e8" },
+      "stopped-600": { "role": "status", "displayName": "Stopped Rose", "canonical": "#d94c64" },
+      "stopped-700": { "role": "status", "displayName": "Stopped Rose (text)", "canonical": "#b93850" },
+      "stopped-50": { "role": "status", "displayName": "Stopped Rose (fill)", "canonical": "#fff0f3" },
+      "running-600": { "role": "status", "displayName": "Running Indigo", "canonical": "#6c63e8" },
+      "running-50": { "role": "status", "displayName": "Running Indigo (fill)", "canonical": "#f1efff" }
+    },
+    "typographyMeta": {
+      "h1": { "displayName": "H1 / Hero headline", "purpose": "One per page, the hero headline only." },
+      "h2": { "displayName": "H2 / Section heading", "purpose": "Section titles." },
+      "h3": { "displayName": "H3 / Card title", "purpose": "Card, panel, and flow-step titles." },
+      "lede": { "displayName": "Lede", "purpose": "The single supporting paragraph under a headline." },
+      "body": { "displayName": "Body", "purpose": "Running copy." },
+      "mono": { "displayName": "Evidence mono", "purpose": "Rule quotes, receipts, and literal values only — never headlines or UI chrome." }
+    },
+    "shadows": [
+      { "name": "shadow-sm", "value": "0 8px 24px rgba(0, 15, 59, 0.08)", "purpose": "Skip-link, mobile nav panel." },
+      { "name": "shadow-md", "value": "0 18px 48px rgba(0, 15, 59, 0.12)", "purpose": "Mobile nav dropdown, featured plan card." },
+      { "name": "shadow-lg", "value": "0 28px 90px rgba(0, 15, 59, 0.18)", "purpose": "The hero launcher-window mock — the single most elevated object on the site." }
+    ],
+    "motion": [
+      { "name": "d-micro", "value": "160ms", "purpose": "Hover/focus color and transform transitions (buttons, nav, inputs)." },
+      { "name": "d-comp", "value": "280ms", "purpose": "Component-level transitions (attempt card border/shadow, FAQ marker rotation)." },
+      { "name": "d-step", "value": "420ms", "purpose": "Boundary-demo status reveal per attempt." },
+      { "name": "d-narrative", "value": "620ms", "purpose": "Reserved narrative-pace transition token." },
+      { "name": "ease-out", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Default easing across all transitions; all durations collapse to 1ms under prefers-reduced-motion." },
+      { "name": "d-rail", "value": "900ms", "purpose": "Checkpoint-path rail draw (scaleY), once per checkpoint on first IntersectionObserver hit." },
+      { "name": "ease-in-out-strong", "value": "cubic-bezier(0.77, 0, 0.175, 1)", "purpose": "Reserved for the checkpoint-rail draw only — a stronger, more deliberate in-out curve than --ease-out." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "560px" },
+      { "name": "md", "value": "640px" },
+      { "name": "path-sm", "value": "700px" },
+      { "name": "lg", "value": "760px" },
+      { "name": "xl", "value": "900px" },
+      { "name": "xxl", "value": "980px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The only high-emphasis call-to-action; pill-shaped, Signal Blue fill.",
+      "html": "<button class=\"ds-btn-primary\">Get early access <span class=\"ds-arrow\">→</span></button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 0.5rem; font-family: Inter, system-ui, sans-serif; font-size: 1rem; font-weight: 600; line-height: 1; padding: 0 1.375rem; height: 3.125rem; border-radius: 999px; border: 1px solid transparent; background: #0054f3; color: #fff; cursor: pointer; transition: background 160ms cubic-bezier(0.22,1,0.36,1), transform 160ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-primary:hover { background: #0047cf; } .ds-btn-primary:active { transform: scale(0.98); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 4px rgba(35,132,251,0.42); } .ds-arrow { transition: transform 160ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-primary:hover .ds-arrow { transform: translateX(3px); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Low-emphasis action on light canvas.",
+      "html": "<button class=\"ds-btn-secondary\">See how it works</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; gap: 0.5rem; font-family: Inter, system-ui, sans-serif; font-size: 1rem; font-weight: 600; padding: 0 1.375rem; height: 3.125rem; border-radius: 999px; background: #ffffff; color: #071229; border: 1px solid #d7e1f1; cursor: pointer; transition: border-color 160ms cubic-bezier(0.22,1,0.36,1), background 160ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-secondary:hover { border-color: #8b98b3; background: #f7faff; } .ds-btn-secondary:focus-visible { outline: none; box-shadow: 0 0 0 4px rgba(35,132,251,0.42); }"
+    },
+    {
+      "name": "Status Pill — Allowed",
+      "kind": "chip",
+      "refersTo": "status-allowed",
+      "description": "Action-state pill for a granted/in-scope agent action.",
+      "html": "<span class=\"ds-status ds-status-allowed\">Allowed</span>",
+      "css": ".ds-status { display: inline-flex; align-items: center; gap: 0.4rem; font-family: Inter, system-ui, sans-serif; font-size: 0.8125rem; font-weight: 600; line-height: 1; padding: 0.375rem 0.6875rem; border-radius: 999px; white-space: nowrap; } .ds-status::before { content: \"\"; width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: currentColor; } .ds-status-allowed { color: #0a7f75; background: #eaf8f5; }"
+    },
+    {
+      "name": "Chip — Early Access",
+      "kind": "chip",
+      "refersTo": "chip-ea",
+      "description": "Availability chip distinct from action-state pills; marks a feature as early-access.",
+      "html": "<span class=\"ds-chip ds-chip-ea\">Early access</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 0.375rem; font-family: Inter, system-ui, sans-serif; font-size: 0.8125rem; font-weight: 600; line-height: 1; padding: 0.375rem 0.75rem; border-radius: 999px; border: 1px solid #d7e1f1; } .ds-chip::before { content: \"\"; width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: currentColor; } .ds-chip-ea { color: #4f46b8; background: #f1efff; border-color: #d7d3f7; }"
+    },
+    {
+      "name": "Boundary Row",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "The signature boundary-rail row: a plain-language rule paired with its exact enforced value, rail colored by state.",
+      "html": "<div class=\"ds-boundary ds-boundary-review\"><span class=\"ds-rule\">Payments above €500</span><span class=\"ds-val\">pause for approval</span></div>",
+      "css": ".ds-boundary { position: relative; display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: 0.6875rem 0.875rem 0.6875rem 1.125rem; background: #f7faff; border: 1px solid #e8eef8; border-radius: 0.625rem; font-family: Inter, system-ui, sans-serif; font-size: 0.875rem; overflow: hidden; } .ds-boundary::before { content: \"\"; position: absolute; left: 0; top: 0; bottom: 0; width: 0.25rem; background: #2384fb; } .ds-boundary-review::before { background: #d69020; } .ds-boundary-stopped::before { background: #d94c64; } .ds-boundary-allowed::before { background: #0c9b8e; } .ds-rule { font-weight: 550; } .ds-val { font-family: 'IBM Plex Mono', SFMono-Regular, Consolas, monospace; font-size: 0.75rem; font-weight: 500; color: #60708f; white-space: nowrap; }"
+    },
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Default bordered surface for grouped content.",
+      "html": "<div class=\"ds-panel\"><h3>Human approval when it matters</h3><p>The run pauses at the checkpoint.</p></div>",
+      "css": ".ds-panel { background: #ffffff; border: 1px solid #d7e1f1; border-radius: 1.5rem; padding: 1.75rem; } .ds-panel h3 { font-family: 'Inter Tight', Inter, system-ui, sans-serif; font-size: 1.375rem; font-weight: 620; letter-spacing: -0.012em; margin: 0 0 0.375rem; color: #071229; } .ds-panel p { margin: 0; color: #60708f; font-size: 0.9375rem; }"
+    },
+    {
+      "name": "Field (form input)",
+      "kind": "input",
+      "refersTo": null,
+      "description": "Labeled text input as used in the early-access form.",
+      "html": "<div class=\"ds-field\"><label for=\"ds-name\">Name</label><input id=\"ds-name\" type=\"text\"></div>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 0.375rem; } .ds-field label { font-family: Inter, system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; color: #071229; } .ds-field input { font: inherit; font-size: 0.9688rem; color: #071229; background: #ffffff; border: 1px solid #d7e1f1; border-radius: 0.625rem; padding: 0.75rem 0.875rem; caret-color: #0054f3; transition: border-color 160ms cubic-bezier(0.22,1,0.36,1), box-shadow 160ms cubic-bezier(0.22,1,0.36,1); } .ds-field input:focus-visible { border-color: #2384fb; box-shadow: 0 0 0 3px rgba(35,132,251,0.42); outline: none; } .ds-field input::placeholder { color: #8b98b3; }"
+    },
+    {
+      "name": "Trail Node",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Vertical timeline node with a state-colored ring and monospace evidence line; the audit-trail signature component.",
+      "html": "<div class=\"ds-trail-node ds-trail-review\"><div class=\"ds-trail-dot\"><svg viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"><path d=\"M8 5.5v3.5M8 11.4v.1\"/><circle cx=\"8\" cy=\"8\" r=\"6.4\"/></svg></div><div class=\"ds-trail-body\"><h4>14:07 — Send onboarding invoice payment</h4><p>€25,000 exceeds the €500 approval threshold.</p><div class=\"ds-evidence\">paused · approved by C. Moreau at 14:31</div></div></div>",
+      "css": ".ds-trail-node { position: relative; display: grid; grid-template-columns: 2.25rem minmax(0,1fr); gap: 1rem; padding-bottom: 1.75rem; } .ds-trail-dot { width: 2.25rem; height: 2.25rem; border-radius: 50%; background: #ffffff; border: 2px solid #2384fb; display: flex; align-items: center; justify-content: center; color: #0054f3; } .ds-trail-dot svg { width: 1rem; height: 1rem; } .ds-trail-review .ds-trail-dot { border-color: #d69020; color: #a86f12; } .ds-trail-body h4 { font-family: 'Inter Tight', Inter, system-ui, sans-serif; margin: 0 0 0.25rem; color: #071229; } .ds-trail-body p { margin: 0; font-size: 0.9375rem; color: #60708f; } .ds-evidence { margin-top: 0.625rem; font-family: 'IBM Plex Mono', SFMono-Regular, Consolas, monospace; font-size: 0.75rem; line-height: 1.6; color: #60708f; background: #f7faff; border: 1px solid #e8eef8; border-radius: 0.625rem; padding: 0.625rem 0.875rem; }"
+    },
+    {
+      "name": "Checkpoint",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Signature v2 component: one stop on the home page's checkpoint path — a sticky numbered dot plus a rail segment that draws once on first scroll-into-view. Shown here already activated (.on).",
+      "html": "<section class=\"ds-checkpoint ds-on\"><div><span class=\"ds-checkpoint-dot\">1</span><span class=\"ds-checkpoint-rail\"></span></div><div class=\"ds-checkpoint-body\"><h2><span class=\"ds-kind\">Intent.</span> Give it a job, not a personality</h2><p>A SauronID agent starts with an outcome you can evaluate.</p></div></section>",
+      "css": ".ds-checkpoint { position: relative; display: grid; grid-template-columns: 2.75rem minmax(0,1fr); column-gap: 2rem; padding-block: 3rem; font-family: Inter, system-ui, sans-serif; } .ds-checkpoint-dot { position: sticky; top: 6.5rem; width: 2.75rem; height: 2.75rem; border-radius: 50%; background: #ffffff; border: 2px solid #0054f3; color: #0054f3; display: flex; align-items: center; justify-content: center; font-family: 'Inter Tight', Inter, system-ui, sans-serif; font-weight: 650; font-size: 1.0625rem; } .ds-checkpoint-rail { position: absolute; left: calc(1.375rem - 1px); top: 0; bottom: 0; width: 2px; background: #0054f3; } .ds-checkpoint-body h2 { font-family: 'Inter Tight', Inter, system-ui, sans-serif; font-size: clamp(1.9rem, 3.2vw, 2.625rem); font-weight: 680; letter-spacing: -0.022em; margin: 0 0 0.75rem; color: #071229; } .ds-kind { color: #0054f3; }"
+    },
+    {
+      "name": "Intent Card",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Border-only card showing the agent's bound job as a typed sentence with a static caret and a monospace credential line — the Intent checkpoint's signature visual.",
+      "html": "<div class=\"ds-intent-card\"><div class=\"ds-intent-label\">This agent's job</div><div class=\"ds-intent-text\">Keep our CRM enriched and flag accounts worth a call.<span class=\"ds-intent-caret\"></span></div><div class=\"ds-intent-meta\">intent bound to credential · signed by owner · valid 90 days</div></div>",
+      "css": ".ds-intent-card { background: #ffffff; border: 1px solid #d7e1f1; border-radius: 1rem; padding: 1.5rem 1.625rem; max-width: 38rem; font-family: Inter, system-ui, sans-serif; } .ds-intent-label { font-size: 0.75rem; font-weight: 650; color: #60708f; margin-bottom: 0.625rem; } .ds-intent-text { font-family: 'Inter Tight', Inter, system-ui, sans-serif; font-size: 1.375rem; line-height: 1.35; font-weight: 600; letter-spacing: -0.015em; color: #071229; } .ds-intent-caret { display: inline-block; width: 2px; height: 1.15em; background: #0054f3; vertical-align: text-bottom; margin-left: 2px; } .ds-intent-meta { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e8eef8; font-family: 'IBM Plex Mono', SFMono-Regular, Consolas, monospace; font-size: 0.75rem; color: #60708f; }"
+    },
+    {
+      "name": "Capability Connect Item",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "A capability row inside the Capabilities checkpoint's connect-grid — bordered, white, with a monospace state value; a denied variant switches to a dashed border. Reveals with a staggered fade/translateY when its checkpoint activates (shown here already revealed).",
+      "html": "<div class=\"ds-connect-item\">CRM — read &amp; update<span class=\"ds-conn-state\">granted · 3 fields</span></div><div class=\"ds-connect-item ds-denied\">Email — send<span class=\"ds-conn-state\">not granted</span></div>",
+      "css": ".ds-connect-item { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; background: #ffffff; border: 1px solid #d7e1f1; border-radius: 1rem; padding: 0.9375rem 1.125rem; font-family: Inter, system-ui, sans-serif; font-size: 0.9375rem; font-weight: 550; color: #071229; margin-bottom: 0.75rem; } .ds-conn-state { font-family: 'IBM Plex Mono', SFMono-Regular, Consolas, monospace; font-size: 0.71875rem; color: #0a7f75; white-space: nowrap; } .ds-denied { border-style: dashed; color: #60708f; background: #f7faff; } .ds-denied .ds-conn-state { color: #8b98b3; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Signed Boundary",
+    "overview": "SauronID's site is a light-first control room, not a dark security-vendor bunker: white and Cloud (#f7faff) canvases carry the argument, Signal Blue (#0054f3) marks the one thing you can act on, and Midnight (#000d35) is spent only where the site actually proves something — the enforcement architecture, the audit trail, the closing call to action. The recurring device is a rail: a thin vertical bar of color on the left edge of a boundary row, a colored ring around a trail-dot, a left border on a table cell. The rail always encodes the same three-state vocabulary — allowed (teal), needs approval (amber), stopped (rose) — and it never appears as decoration divorced from a real state.\n\nThe system refuses the two postures PRODUCT.md rules out: the fear-first security landing page (no terminals-as-decor, no cyberpunk glow, no surveillance framing) and the generic SaaS feature grid (no icon-card walls; recurring content is a definition list, a mapping table, or a numbered flow instead). Depth is restrained — soft, deep-blurred shadows on the launcher window and featured plan only — because the site's authority comes from named rules and receipts, not from visual weight.\n\nRedesign v2 extended the rail grammar to page scale. The home page is now a single continuous \"checkpoint path\": one .path container holding five sticky, numbered checkpoints — Intent, Capabilities, Boundaries, Run, Proof — the product's own grammar rendered as the page's structure rather than described in prose. Each checkpoint's rail segment is undrawn (grey) until the checkpoint first enters the viewport, then draws once via scaleY. The fifth checkpoint, Proof, is the one stop that sits on Midnight — the path's own rail and dot re-skin to the on-dark palette there, rather than the section switching to a generic dark variant.",
+    "keyCharacteristics": [
+      "Light Cloud/White canvas by default; Midnight reserved for proof moments (architecture, audit trail, final CTA)",
+      "One action color (Signal Blue) carries every primary call-to-action and interactive accent",
+      "Status colors (allowed/review/stopped/running) are reserved for action-state communication, never general decoration",
+      "Boundary-rail grammar: a colored left rail is the site's signature recurring device, reused across boundary rows, trail nodes, table cells, and — at page scale — the checkpoint path's spine",
+      "Evidence typography (IBM Plex Mono) appears only where the copy is quoting a rule, a receipt, or a value — never as a display face",
+      "The home page's five sections are one continuous checkpoint path, not five independent blocks: a shared sticky dot + rail system carries the reader from Intent through Proof"
+    ],
+    "rules": [
+      { "name": "The Rail-Is-State Rule", "body": "In a boundary row, trail node, or table cell, a colored rail, ring, or border only ever encodes one of the four action states (allowed/review/stopped/running or the default action blue for not-yet-decided). It never appears there as a stand-alone accent stripe. The one deliberate exception, added in v2: the page-scale .checkpoint-rail spine encodes reading progress along the fixed five-stop path, not an action state — it runs from the border-neutral gray to Signal Blue (Sky on the Midnight Proof checkpoint) as each checkpoint is read, once, never reversing.", "section": "colors" },
+      { "name": "The Midnight-Is-Earned Rule", "body": "The deep navy background is not a section variant to reach for at will — it marks the handful of moments the site is proving something (architecture, evidence, the close, and — in v2 — the Proof checkpoint on the home path itself). Everywhere else the canvas stays light.", "section": "colors" },
+      { "name": "The Evidence-Only-Mono Rule", "body": "IBM Plex Mono renders only text that is quoting a rule, a receipt, or a raw value. It never sets a headline, a button, or narrative prose.", "section": "typography" },
+      { "name": "The One-Lifted-Object Rule", "body": "Only the launcher window and the featured plan use a shadow strong enough to read as physically raised; everything else sits flush on the canvas with a 1px border instead.", "section": "elevation" },
+      { "name": "The One-Path Rule", "body": "The home page's five checkpoints (Intent, Capabilities, Boundaries, Run, Proof) are one continuous path, not five independent sections: they share a single dot-and-rail system, appear in a fixed order, and each rail segment draws exactly once — on first viewport entry — never re-triggering or reversing on scroll-up.", "section": "layout" }
+    ],
+    "dos": [
+      "Do keep Signal Blue as the only interactive/action color; every other color communicates state, not affordance.",
+      "Do reserve Midnight (.dark) sections for moments that prove something (architecture, evidence, close) — not as a generic alternating-background rhythm.",
+      "Do render literal values (rule quotes, receipt IDs, exact limits) in IBM Plex Mono; render everything else in Inter/Inter Tight.",
+      "Do use the boundary-rail (colored left bar) device only to encode one of the four action states.",
+      "Do build recurring content as a deflist or map-table rather than an icon-card grid.",
+      "Do draw a checkpoint's rail exactly once, the first time it enters the viewport — never re-trigger, reverse, or loop it on scroll.",
+      "Do keep the in-heading .kind lead-in inside the same H2 as the rest of the headline; it is not a kicker/eyebrow."
+    ],
+    "donts": [
+      "Don't introduce hard-offset or neobrutalist shadows; the system's only depth vocabulary is soft, blurred shadow-sm/md/lg.",
+      "Don't use glyph icon fonts or external icon packages; the build's icons are hand-authored inline SVG (trail-dot glyphs, nav hamburger, arrow).",
+      "Don't add a kicker/eyebrow label above headlines; none exist in the build — section heads go straight from context into the H2.",
+      "Don't apply a status color (allowed/review/stopped/running) to anything that isn't an actual agent-action state.",
+      "Don't widen Midnight into a general dark theme; it is a narrative beat reserved for proof sections.",
+      "Don't reach for the retired .flow/.flow-step 4-column step grid; it is unreferenced in the current build — stepped narrative content now lives on the checkpoint path.",
+      "Don't confuse the two rail systems: 0.25rem boundary-rails encode action state, the 2px checkpoint-rail encodes reading progress. Don't borrow one width for the other's job."
+    ]
+  }
+}
