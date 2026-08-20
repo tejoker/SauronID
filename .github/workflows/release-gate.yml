@@ -7,6 +7,17 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_prove:
+        description: >-
+          Generate real STARK receipts from the committed fixtures and check them
+          with the independent customer verifier. Slow, so it is off by default
+          and normally only a v* tag turns it on — but a tag also fires
+          release-publish, which npm-publishes, pushes signed ghcr images and
+          updates the public mirror. This input exists so the proof path can be
+          exercised without shipping a release.
+        type: boolean
+        default: false
 
 jobs:
   release-gate:
@@ -83,7 +94,7 @@ jobs:
 
       - name: Reproduce transparent guests and test customer verifier
         env:
-          SAURON_TRANSPARENT_FULL_PROVE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+          SAURON_TRANSPARENT_FULL_PROVE: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.full_prove) && '1' || '0' }}
         run: bash scripts/ci/verify-transparent-zk.sh
 
       - name: Agentic SDK
