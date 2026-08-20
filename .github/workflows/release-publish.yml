@@ -58,7 +58,7 @@ jobs:
         working-directory: core
       - if: runner.os != 'Windows'
         run: chmod 755 core/target/release/${{ matrix.bin }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tool-${{ matrix.target }}
           path: core/target/release/${{ matrix.bin }}
@@ -108,7 +108,7 @@ jobs:
           PLATFORM_TAG: ${{ matrix.plat }}
         run: |
           python -c "import glob,os,zipfile; wheel=glob.glob('dist/*.whl'); assert len(wheel)==1, wheel; assert wheel[0].endswith('-'+os.environ['PLATFORM_TAG']+'.whl'), wheel[0]; z=zipfile.ZipFile(wheel[0]); metadata=[n for n in z.namelist() if n.endswith('.dist-info/WHEEL')]; assert len(metadata)==1; assert ('Tag: py3-none-'+os.environ['PLATFORM_TAG']) in z.read(metadata[0]).decode(); print(wheel[0])"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel-${{ matrix.target }}
           path: clients/python/dist/*.whl
@@ -145,7 +145,7 @@ jobs:
         working-directory: packaging/npm-agent-action-tool
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-agent-action-tool
           path: packaging/npm-agent-action-tool/*.tgz
