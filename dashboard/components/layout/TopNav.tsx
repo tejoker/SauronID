@@ -14,6 +14,7 @@ const NAV_LINKS = [
   { key: "protected", href: "/protected" },
   { key: "activity",  href: "/activity" },
   { key: "policies",  href: "/policies" },
+  { key: "compliance", href: "/compliance" },
   { key: "proofs",    href: "/proofs" },
   { key: "explorer",  href: "/explorer" },
   { key: "try",       href: "/try" },
