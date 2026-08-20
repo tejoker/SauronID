@@ -4,7 +4,7 @@ name: Dependency Audit
 # fails the build even with no code change.
 on:
   push:
-    branches: [main, pocv1]
+    branches: [main]
   pull_request:
   schedule:
     - cron: "17 6 * * 1" # Mondays 06:17 UTC

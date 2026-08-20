@@ -3,7 +3,7 @@ name: Release Gate
 on:
   workflow_call:
   push:
-    branches: [main, pocv1]
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:

@@ -12,7 +12,7 @@ name: Security scans
 
 on:
   push:
-    branches: [main, pocv1]
+    branches: [main]
   pull_request:
   schedule:
     - cron: "37 7 * * 1" # Mondays 07:37 UTC
