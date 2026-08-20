@@ -429,7 +429,10 @@ fn open_sqlite_only_with_timeout(path: &str, pool_size: u32, timeout: Duration) 
 
     tracing::info!(target: "sauron::db", %path, pool_size, "SQLite opened");
 
-    DbHandle { pool, pg_pool: None }
+    DbHandle {
+        pool,
+        pg_pool: None,
+    }
 }
 
 pub fn init_schema(conn: &Connection) {
