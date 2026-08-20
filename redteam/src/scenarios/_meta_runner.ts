@@ -16,8 +16,9 @@ export interface ScenarioRun {
 export interface CategoryResult {
     category: string;
     server_url: string;
+    strict: boolean;
     results: ScenarioRun[];
-    summary: { total: number; passed: number };
+    summary: { total: number; passed: number; skipped: number };
 }
 
 export async function runOne(name: string): Promise<ScenarioRun> {
@@ -66,12 +67,30 @@ export async function runCategory(
         results.push(await runOne(s));
     }
     const passed = results.filter((r) => r.exit_code === 0).length;
+    // A skipped scenario exits 0, so exit codes alone cannot tell "the
+    // invariant holds" from "nothing ran". Under strict mode a skip is a
+    // failure: in CI the core is supposed to be up, so a skip means the
+    // harness lost its target and the category proved nothing.
+    const skipped = results.filter(
+        (r) => (r.parsed as { skipped?: boolean } | undefined)?.skipped === true,
+    ).length;
+    const strict = process.env.SAURON_REDTEAM_STRICT === "1";
     const agg: CategoryResult = {
         category,
         server_url: baseUrl,
+        strict,
         results,
-        summary: { total: scenarios.length, passed },
+        summary: { total: scenarios.length, passed, skipped },
     };
     console.log(JSON.stringify(agg, null, 2));
-    process.exit(passed === scenarios.length ? 0 : 1);
+    if (passed !== scenarios.length) process.exit(1);
+    if (strict && skipped > 0) {
+        console.error(
+            `SAURON_REDTEAM_STRICT=1 and ${skipped}/${scenarios.length} scenario(s) ` +
+                `skipped in category '${category}' — the core was expected to be ` +
+                `reachable, so nothing was actually tested.`,
+        );
+        process.exit(1);
+    }
+    process.exit(0);
 }

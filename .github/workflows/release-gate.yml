@@ -178,6 +178,31 @@ jobs:
           curl -sf http://127.0.0.1:3001/health >/dev/null || { echo "core never came up"; kill "$CORE_PID"; exit 1; }
           npm ci
           npx tsx src/scenarios/empirical-suite.ts
+          # S12 category scenarios, every category, against the same core.
+          # These are the files that rotted: nine of them drove routes that had
+          # been archived, were wired into no suite, and each counted a rejection
+          # as a pass — so they would have reported green forever while testing
+          # nothing. Running every category in CI is what makes that impossible
+          # to repeat.
+          #
+          # STRICT=1 turns a skip into a failure. A skipped scenario exits 0 by
+          # design so a developer with no core running does not see red, but that
+          # is also how an unreachable core reads as green: pass:true with nothing
+          # tested. In CI the core is up by construction, so a skip means the
+          # harness lost its target.
+          npm run build
+          for cat in proof-integrity protocol-abuse binding-bypass cross-tenant egress-privacy replay tenant-isolation; do
+            echo "::group::redteam category $cat"
+            if ! SAURON_REDTEAM_STRICT=1 node "dist/scenarios/run-all-$cat.js" > "redteam-$cat.json"; then
+              echo "::endgroup::"
+              echo "Redteam category '$cat' failed:"
+              cat "redteam-$cat.json"
+              kill "$CORE_PID" || true
+              exit 1
+            fi
+            jq -c '.summary' "redteam-$cat.json"
+            echo "::endgroup::"
+          done
           kill "$CORE_PID" || true
           # Freshness guard: a crashed run leaves no file — it MUST NOT pass.
           test -f empirical-results.json || { echo "empirical-results.json missing — suite did not complete"; exit 1; }

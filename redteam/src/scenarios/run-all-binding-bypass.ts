@@ -15,6 +15,7 @@ const SCENARIOS = [
     // policy, same action → different verdict path depending on the
     // server's enforcement mode).
     "advisory-vs-enforce",
+    "policy-bypass",
 ];
 
 if (require.main === module) {
