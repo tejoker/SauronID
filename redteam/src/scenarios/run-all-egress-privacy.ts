@@ -5,7 +5,6 @@
 import { runCategory } from "./_meta_runner";
 
 const SCENARIOS = [
-    "dp-cohort-deanonymize",
     "egress-leak-claim",
     "tee-revoke",
 ];

@@ -37,7 +37,7 @@
     "test": "npm run build && node dist/test/e2e.test.js && node dist/test/signed-agent.test.js && node dist/test/ring.test.js",
     "test:integration": "npm run build && node dist/test/integration-shim.test.js",
     "test:enforcement": "npm run build && node dist/test/enforcement.test.js",
-    "test:stats": "npm run build && node dist/test/local-aggregate.test.js && node dist/test/integrity-proof.test.js && node dist/test/scheduler.test.js && node dist/test/transparent-stats.test.js"
+    "test:stats": "npm run build && node dist/test/local-aggregate.test.js && node dist/test/transparent-stats.test.js"
   },
   "dependencies": {
     "@noble/curves": "^2.3.0",

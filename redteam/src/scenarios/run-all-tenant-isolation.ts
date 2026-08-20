@@ -27,14 +27,12 @@ const SCENARIOS = [
     "tenant-binding-injection",
     "tenant-audit-report-leak",
     "tenant-spend-history-leak",
-    "tenant-cohort-publish-cross",
     "tenant-tpm2-attestation-cross",
     "tenant-anchor-merkle-extraction",
     "tenant-jwt-claim-forgery",
     "tenant-header-spoof",
     "tenant-policy-store-enumeration",
     "tenant-spend-ledger-race",
-    "tenant-cohort-budget-rotate-cross",
 ];
 
 function printHelp(): void {

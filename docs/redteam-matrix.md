@@ -2,7 +2,7 @@
 
 Sprint-12 redteam scenarios indexed by ID, category, attack description, expected outcome, and runtime status (dynamic vs source-review). Aim: ≥ 80% dynamic.
 
-The existing `docs/empirical-comparison.md` keeps the A1-A16 invariant matrix vs other vendors; this doc tracks the S12 binding-bypass / proof-forgery / replay / cross-tenant / egress+privacy scenarios.
+The existing `docs/empirical-comparison.md` keeps the A1-A16 invariant matrix vs other vendors; this doc tracks the S12 binding-bypass / replay / cross-tenant / egress+privacy scenarios.
 
 | ID | Category | Description | Expected | Status |
 |---|---|---|---|---|
@@ -11,11 +11,6 @@ The existing `docs/empirical-comparison.md` keeps the A1-A16 invariant matrix vs
 | B3 | binding-bypass | Agent fakes local spend tracker. | Server-side spend ledger refuses via `/v1/policy/evaluate` (closes S3 cross-check). | dynamic — `binding-bumped-budget.ts` |
 | B4 | binding-bypass | `classifyAction` lies (PII → "public"). | SDK allows (trusted classifier); server denies on re-eval. | dynamic — `binding-classifier-lie.ts` |
 | B5 | binding-bypass | Policy deleted server-side; SDK keeps cache; calls succeed until refresh. | Documented stale-cache window = `refreshIntervalMs`. | dynamic — `binding-revoke-replay.ts` |
-| P1 | proof-forgery | Re-submit identical proof. | Idempotent (no double-count) OR duplicate-rejected. | dynamic — `proof-replay.ts` |
-| P2 | proof-forgery | Submit proof under unknown `vk_id`. | Verifier rejects (400 / 404). | dynamic — `proof-wrong-vk.ts` |
-| P3 | proof-forgery | Flip a byte in `merkle_root`. | Verifier rejects (status != 200). | dynamic — `proof-tampered-root.ts` |
-| P4 | proof-forgery | Tenant A submits proof; tenant B's cohort row must be untouched. | B's row count unchanged. | dynamic — `proof-cross-tenant.ts` |
-| P5 | proof-forgery | Period_start 6 months ago. | Server rejects outside the configured freshness/duration window. | dynamic — `proof-stale-period.ts` |
 | R1 | replay | Replay A-JWT JTI. | Second call rejected (UNIQUE `ajwt_used_jtis`). | source-review — full path in `redteam/src/scenarios/jti-replay.ts` (existing); S12 anchor in `replay-ajwt-jti.ts` |
 | R2 | replay | Replay per-call nonce. | UNIQUE`(agent_id, nonce)` on `agent_call_nonces` rejects. | source-review — full path in `call-sig-binding.ts` (existing); S12 anchor in `replay-call-nonce.ts` |
 | R3 | replay | Concurrent burst of `/agent/payment/consume` with the same `authorization_id`. | 1 winner, rest 409. | dynamic — `replay-consent-token.ts` (mints its own authorization, so it always runs) |
@@ -23,14 +18,18 @@ The existing `docs/empirical-comparison.md` keeps the A1-A16 invariant matrix vs
 | T1 | cross-tenant | Random-UUID probe on `/v1/policy/{id}`. | Uniform 404 (no existence leak). | dynamic — `tenant-list-leak.ts` |
 | T2 | cross-tenant | GET spend for unknown (agent, policy). | Zeros or uniform 404 (shape-identical). | dynamic — `tenant-spend-leak.ts` |
 | T3 | cross-tenant | Tenant A hammers rate limit; tenant B unaffected. | B's quota intact, returns 200. | dynamic — `tenant-rate-limit-cross.ts` |
-| D1 | egress-privacy | DP cohort de-anonymise via N snapshots. | Variance consistent with calibrated noise OR cached values when budget exhausted. | dynamic — `dp-cohort-deanonymize.ts` |
 | E1 | egress-privacy | Agent requests a capability for a disallowed host/method/path or tries to reuse one. | Capability issuance/proxy fails closed; direct egress must be denied by the deployment network policy. | dynamic gateway tests + deployment negative probe — legacy `egress-leak-claim.ts` covers only the old log path |
 | X1 | egress-privacy | Revoke phantom agent; ensure clean 404 path; full TEE cascade documented. | Phantom revoke returns 404 (not 200/500). | dynamic — `tee-revoke.ts` |
 
 ## Summary
 
-- **Total scenarios:** 20 standalone S12 scenarios + 5 per-category meta-runners.
-- **Dynamic:** 18 of 20 (90%). The two "source-review" entries (R1, R2) anchor to existing dynamic scenarios in the legacy runner — the S12 file documents the invariant and runs a smoke control.
+- **Total scenarios:** 14 standalone S12 scenarios + 5 per-category meta-runners.
+- **Dynamic:** 12 of 14 (86%). The two "source-review" entries (R1, R2) anchor to existing dynamic scenarios in the legacy runner — the S12 file documents the invariant and runs a smoke control.
+- **Retired:** the `proof-forgery` category (P1-P5) and the DP-cohort probe (D1) were deleted, not moved. They
+  drove `POST /v1/stats/submit`, `/v1/stats/cohort` and `/v1/proofs/action-log/verify` — the Circom/Groth16
+  and DP-cohort surfaces, all now archived. Against a current core every one of those requests 404s, and each
+  scenario counted a rejection as a pass, so all five would have reported green while testing nothing.
+  A vacuous pass is worse than an absent test, hence deletion.
 - **Skipped under no-server / no-admin-key:** scenarios exit 0 with a `skipped` note, never 1 (no false negatives).
 
 ## How to run
@@ -48,10 +47,10 @@ Per-category aggregate:
 
 ```bash
 node dist/scenarios/run-all-binding-bypass.js
-node dist/scenarios/run-all-proof-forgery.js
 node dist/scenarios/run-all-replay.js
 node dist/scenarios/run-all-cross-tenant.js
 node dist/scenarios/run-all-egress-privacy.js
+node dist/scenarios/run-all-tenant-isolation.js
 ```
 
 Each scenario emits a single JSON object on stdout matching `ScenarioResult` from `_s12_lib.ts`:
