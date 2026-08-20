@@ -109,7 +109,7 @@ ok "ports clear, toolchain present"
 # ────────────────────────────────────────────────────────────────────────
 step "Build Rust core (release)"
 cd "$ROOT/core"
-cargo build --release 2>&1 | tail -3
+cargo build --release --features demo 2>&1 | tail -3
 ok "core compiled"
 
 # ────────────────────────────────────────────────────────────────────────

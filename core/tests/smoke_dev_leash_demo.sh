@@ -20,7 +20,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-(cd "${ROOT_DIR}" && cargo build --bins >/dev/null)
+# --features demo: this script POSTs /dev/leash/demo, and the whole /dev/*
+# surface is behind that cargo feature. A default build serves 404 there,
+# which is what "dev leash demo returned HTTP 404" meant.
+(cd "${ROOT_DIR}" && cargo build --features demo --bins >/dev/null)
 
 ENV=development \
 SAURON_ENABLE_DEV_ENDPOINTS=1 \

@@ -63,7 +63,7 @@ ok "ports clear ($PORT, $DASHBOARD_PORT)"
 # 2. Build everything
 # ────────────────────────────────────────────────────────────────────────
 step "Build Rust core (release)"
-(cd "$ROOT/core" && cargo build --release 2>&1 | tail -2)
+(cd "$ROOT/core" && cargo build --release --features demo 2>&1 | tail -2)
 ok "core compiled"
 
 step "Build redteam (TS)"
