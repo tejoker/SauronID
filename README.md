@@ -478,7 +478,9 @@ transparent-zk/        RISC Zero guests (stats + action-policy), journal types, 
                        published on its own so the proofs stay verifiable without this repo.
                        Both guests are on live paths: action-policy via
                        /v1/proofs/transparent/verify, stats via /v1/stats/submit-transparent
-site/                  Single static landing page (index.html)
+site/                  Marketing site — Next.js app (7,655 lines), separate from the
+                       dashboard console. Supabase-backed early-access capture in
+                       site/supabase/early_access.sql
 
 scripts/dev/           Dev orchestration shell scripts (quickstart, launch, start, ...)
 scripts/demo/          Live-demo driver (democtl.sh) + real LLM agent-runner (agent_runner.py)
