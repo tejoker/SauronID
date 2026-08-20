@@ -1041,8 +1041,21 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
     };
 
     // DB roundtrip
+    //
+    // The label used to be the literal "sqlite" regardless of backend, so a
+    // PostgreSQL deployment reported `"database": {"detail": "sqlite"}` while
+    // `db.lock()` was correctly dispatching to Postgres — the check was right and
+    // only its name was wrong. That matters twice over: an operator reads this to
+    // confirm which tier they are on, and the benchmark harness reads it to record
+    // which backend a result was measured against, where the two differ by more
+    // than 10x on throughput.
     let database = {
         let st = state.read_or_recover();
+        let backend = if st.db.is_postgres() {
+            "postgres"
+        } else {
+            "sqlite"
+        };
         match st.db.lock() {
             Ok(mut conn) => match conn
                 .any_conn()
@@ -1050,11 +1063,11 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
             {
                 Ok(_) => HealthComponent {
                     ok: true,
-                    detail: "sqlite".into(),
+                    detail: backend.into(),
                 },
                 Err(e) => HealthComponent {
                     ok: false,
-                    detail: format!("sqlite query failed: {e}"),
+                    detail: format!("{backend} query failed: {e}"),
                 },
             },
             Err(e) => HealthComponent {

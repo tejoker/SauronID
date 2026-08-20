@@ -1,0 +1,27 @@
+{
+  "target": "sauron",
+  "conc": 10,
+  "n": 400,
+  "warmup": 40,
+  "p50_ms": 7,
+  "p95_ms": 9,
+  "p99_ms": 10,
+  "avg_ms": 7.4,
+  "rps": 1169.5906432748536,
+  "errors": 0,
+  "rejected": 0,
+  "integration_loc": {
+    "client": 25,
+    "server": 0,
+    "total": 25
+  },
+  "host": {
+    "cpu_model": "AMD Ryzen 7 7735HS with Radeon Graphics",
+    "cpu_count": 16,
+    "ram_gb": 15,
+    "node": "20.20.0",
+    "platform": "linux 7.0.0-28-generic"
+  },
+  "db_backend": "postgres",
+  "generated_at": "2026-08-20T08:50:42.984Z"
+}

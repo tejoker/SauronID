@@ -94,6 +94,20 @@ interface BenchResult {
         node: string;
         platform: string;
     };
+    /**
+     * Which database the SauronID core under test was actually using.
+     *
+     * This is THE configuration variable for the sauron target and it used to go
+     * unrecorded: measured on the same host, the same run is ~50 rps on SQLite and
+     * ~670 rps on PostgreSQL — more than 10x — and two result files were
+     * indistinguishable. Reported by the server via /admin/health/detailed rather
+     * than read from this process's environment, because the client's
+     * SAURON_DB_BACKEND says nothing about how the core was launched.
+     *
+     * "n/a" for the reference targets, which are in-process Node handlers with no
+     * database at all — worth remembering when reading their throughput.
+     */
+    db_backend: string;
     generated_at: string;
 }
 
@@ -109,6 +123,21 @@ function pct(samples: number[], p: number): number {
 function avg(samples: number[]): number {
     if (samples.length === 0) return NaN;
     return samples.reduce((s, x) => s + x, 0) / samples.length;
+}
+
+/** Ask the core which backend it is on. Never infer it from local env. */
+async function sutDbBackend(target: string): Promise<string> {
+    if (target !== "sauron") return "n/a";
+    try {
+        const r = await fetch(`${SAURON_BASE}/admin/health/detailed`, {
+            headers: { "x-admin-key": process.env.SAURON_ADMIN_KEY ?? "" },
+        });
+        if (!r.ok) return `unknown (health ${r.status})`;
+        const body = (await r.json()) as { database?: { detail?: string } };
+        return body.database?.detail ?? "unknown";
+    } catch (e) {
+        return `unknown (${e instanceof Error ? e.message : String(e)})`;
+    }
 }
 
 function hostInfo(): BenchResult["host"] {
@@ -195,6 +224,7 @@ async function runBench(t: BenchTarget, conc: number, n: number, warmup: number)
         rejected,
         integration_loc: t.integrationLoC(),
         host: hostInfo(),
+        db_backend: await sutDbBackend(t.name),
         generated_at: new Date().toISOString(),
     };
 }
@@ -1143,13 +1173,28 @@ function reportSummary(): void {
         lines.push("");
         lines.push(`Generated: ${new Date().toISOString()}`);
         lines.push("");
-        lines.push("| Target | conc | n | p50 (ms) | p95 (ms) | p99 (ms) | RPS | errors | rejected | client LoC | server LoC |");
-        lines.push("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        // `db` and `date` are in the table because this file accumulates runs from
+        // different machines, dates and BACKENDS, and without them the rows are not
+        // comparable. The sauron target moves by an order of magnitude between
+        // SQLite and PostgreSQL, so a table that omits the backend invites exactly
+        // the wrong conclusion — earlier rows recorded no backend at all and read as
+        // if they were the product's ceiling.
+        lines.push("| Target | db | conc | n | p50 (ms) | p95 (ms) | p99 (ms) | RPS | errors | rejected | client LoC | server LoC | run date |");
+        lines.push("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");
         for (const r of rows) {
+            const db = r.db_backend ?? "unrecorded";
+            const day = (r.generated_at ?? "").slice(0, 10);
             lines.push(
-                `| ${r.target} | ${r.conc} | ${r.n} | ${r.p50_ms.toFixed(2)} | ${r.p95_ms.toFixed(2)} | ${r.p99_ms.toFixed(2)} | ${r.rps.toFixed(1)} | ${r.errors} | ${r.rejected} | ${r.integration_loc.client} | ${r.integration_loc.server} |`
+                `| ${r.target} | ${db} | ${r.conc} | ${r.n} | ${r.p50_ms.toFixed(2)} | ${r.p95_ms.toFixed(2)} | ${r.p99_ms.toFixed(2)} | ${r.rps.toFixed(1)} | ${r.errors} | ${r.rejected} | ${r.integration_loc.client} | ${r.integration_loc.server} | ${day} |`
             );
         }
+        lines.push("");
+        lines.push("`db` is the backend the SauronID core under test reported via");
+        lines.push("`/admin/health/detailed`. `n/a` is a reference target, which is an");
+        lines.push("in-process Node handler doing signature verification only — no");
+        lines.push("database, no receipt chain, no policy evaluation. `unrecorded` is a");
+        lines.push("run from before the harness captured this, and cannot be compared");
+        lines.push("against a row that names its backend.");
         lines.push("");
         lines.push("Host info from latest run:");
         const last = rows[rows.length - 1];
