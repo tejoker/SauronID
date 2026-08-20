@@ -574,7 +574,6 @@ pub fn admin_router() -> Router<Arc<RwLock<ServerState>>> {
         )
         .route("/agent_actions/recent", get(admin::get_recent_actions))
         // Dashboard "Try" page — runs real governance scenarios (replay/scope/normal).
-        .route("/demo/scenario/{scenario}", post(admin::run_demo_scenario))
         .route("/anchor/status", get(admin::get_anchor_status))
         .route("/per_agent_metrics", get(admin::get_per_agent_metrics))
         .route("/egress/recent", get(admin::get_recent_egress))

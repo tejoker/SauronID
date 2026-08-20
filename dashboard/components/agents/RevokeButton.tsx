@@ -4,6 +4,7 @@ import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/Button";
 import { useTranslations } from "next-intl";
+import { revokeAgent } from "@/lib/api";
 
 interface Props {
   agentId: string;
@@ -17,7 +18,13 @@ export function RevokeButton({ agentId, agentName, label }: Props) {
   const [typed, setTyped] = useState("");
 
   async function handleRevoke() {
-    await fetch(`/api/agents/${agentId}/revoke`, { method: "POST" });
+    // `revokeAgent` wraps this exact call and maps a non-2xx to an error
+    // instead of swallowing it. It was the unused one of the pair while this
+    // button ignored the status entirely.
+    const res = await revokeAgent(agentId);
+    if (!res.ok) {
+      console.error(`revoke failed: ${res.error}`);
+    }
     setOpen(false);
     window.location.reload();
   }

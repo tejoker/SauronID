@@ -57,4 +57,14 @@ n=$(sqlite_tables | wc -l | tr -d ' ')
 if [ "$rc" -eq 0 ]; then
   echo "schema parity ok: $n tables declared in both backends"
 fi
+
+# Table-name parity is necessary and not sufficient: a column added to one
+# backend and not the other passes the check above and then fails at runtime on
+# whichever backend is missing it. check-column-parity.py compares the column
+# sets, folding in ALTER TABLE ADD/DROP COLUMN and db.rs's dynamic
+# tenant_scoped_tables loop.
+if ! python3 "$(dirname "$0")/check-column-parity.py"; then
+  rc=1
+fi
+
 exit "$rc"

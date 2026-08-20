@@ -2237,30 +2237,6 @@ paths:
                     created_at: { type: integer, format: int64 }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
-  /admin/demo/scenario/{scenario}:
-    post:
-      tags: [admin]
-      summary: Run a governance demo scenario
-      operationId: adminRunDemoScenario
-      security: [{ adminKey: [] }, { adminJwt: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - { name: scenario, in: path, required: true, schema: { type: string, enum: [normal, scope, replay] } }
-      responses:
-        '200':
-          description: Scenario result.
-          content:
-            application/json:
-              # TODO-refine: detail payload varies per scenario
-              schema:
-                type: object
-                required: [result, status_code, detail]
-                properties:
-                  result: { type: string }
-                  status_code: { type: integer }
-                  detail: { type: object, additionalProperties: true }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
   /admin/per_agent_metrics:
     get:
       tags: [admin]

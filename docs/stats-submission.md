@@ -224,6 +224,26 @@ curl -sS \
 
 ## SDK auto-submission (weekly cron)
 
+> **RETIRED — this scheduler posts to a route the core no longer serves.**
+>
+> `createWeeklyScheduler` and `submitWeeklyStats` drive
+> `POST /v1/stats/submit`, the Circom/Groth16 path. Production always refused it
+> (`zk_verifier.rs`: "Groth16 verification is development-only; production
+> accepts pinned native STARK receipts"), and its verifier is archived under
+> [`archive/removed-2026-08/groth16-zkp/`](../archive/removed-2026-08/groth16-zkp/).
+> Against a current core the submit step returns 404, which the scheduler
+> surfaces through its `onError` callback.
+>
+> They are still exported, and this example is kept, because there is no drop-in
+> replacement: `submitTransparentStats` needs a STARK receipt from the
+> version-pinned `transparent-zk` prover, which the SDK cannot generate. So the
+> automation described below has no successor yet — use the
+> `/v1/stats/submit-transparent` section above and generate the receipt out of
+> band.
+>
+> Read what follows as the shape a future scheduler should have, not as working
+> instructions.
+
 ```ts
 import { createWeeklyScheduler } from "@sauronid/agentic";
 

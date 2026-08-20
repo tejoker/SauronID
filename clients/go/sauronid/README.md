@@ -111,7 +111,7 @@ For the one-shot wiring use `sauronid.CreateEnforcer(ctx, opts)`.
 - `Enforcer` / `CreateEnforcer` — one-shot wiring.
 - `Evaluate` — pure invariant evaluator (7 checks).
 - `SignCall`, `GeneratePopKeyPair`, `SignPopChallenge` — call-signing + PoP key helpers.
-- `SubmitStats` — POST a pre-computed stats proof to the core.
+- `SubmitStats` — **RETIRED.** POSTs to `/v1/stats/submit`, the Groth16 path, which the core no longer serves and production always refused. Returns 404. Use `SubmitTransparentStats` with a receipt from the pinned `transparent-zk` prover.
 
 Full reference: `go doc github.com/tejoker/SauronID/clients/go/sauronid`.
 
