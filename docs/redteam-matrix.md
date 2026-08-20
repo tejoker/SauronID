@@ -48,10 +48,23 @@ The existing `docs/empirical-comparison.md` keeps the A1-A16 invariant matrix vs
   are their replacements and target the live transparent path. `replay-consent-token` (old R3) was
   deleted too: its body predated `agent_action` becoming required, so it never ran, and the property
   it described is covered by empirical A11 and `postgres-toctou-race.ts`, both of which run in CI.
-- **Known gap:** no scenario submits a *valid* STARK receipt, so the journal-to-body binding and the
-  checkpoint root/size/anchor comparison in `submit_transparent_handler` are unexercised. That needs a
-  receipt from the version-pinned Rust prover in `transparent-zk/`, which the harness cannot generate.
-  P3 reaches the verification stage but only proves refusal, never acceptance.
+- **Known gap, now narrowed to the HTTP layer.** The proof system itself is proven end to end:
+  release-gate's `full_prove` path generates real receipts for both guests from the committed
+  fixtures and checks them with the independent customer verifier, printing "transparent ZK locks,
+  image IDs, verifier, and native proofs: OK". That had never run anywhere before 2026-08-20 — it was
+  gated on a `v*` tag and this repository has no tags, so what CI actually proved was image-ID
+  reproducibility plus the verifier crate's unit tests. It is now runnable on demand, without cutting
+  a release (a `v*` tag also fires release-publish, which npm-publishes and pushes signed images):
+
+      gh workflow run release-gate.yml --ref <branch> -f full_prove=true
+
+  Budget ~50 minutes for the proving step. What remains uncovered is the HTTP boundary, not the
+  cryptography: `transparent-zk/verify.sh` drives the prover and verifier as CLIs and makes no HTTP
+  calls, so nothing has ever fed a *valid* receipt to `POST /v1/stats/submit-transparent`. The
+  handler's journal-to-body equality checks and its checkpoint root/size/anchor comparison therefore
+  have no coverage — P1-P3 prove the route refuses every wrong receipt, nothing proves it accepts a
+  right one. Closing it means either teaching the harness to invoke the pinned prover, or committing
+  a receipt fixture plus the finalized `zk_proof_checkpoints` row its journal must match.
 
 ## How to run
 
