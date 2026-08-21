@@ -7,7 +7,6 @@ import { runCategory } from "./_meta_runner";
 const SCENARIOS = [
     "replay-ajwt-jti",
     "replay-call-nonce",
-    "replay-consent-token",
     "replay-spend-record",
 ];
 

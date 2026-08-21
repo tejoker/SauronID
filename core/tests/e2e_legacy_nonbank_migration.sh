@@ -31,7 +31,9 @@ ensure_binary() {
     echo "${ROOT_DIR}/target/debug/sauron-core"
     return
   fi
-  (cd "${ROOT_DIR}" && cargo build --bin sauron-core >/dev/null)
+  # --features demo: this script drives /dev/* endpoints, which that cargo
+# feature gates. A default build answers 404 on every one of them.
+(cd "${ROOT_DIR}" && cargo build --features demo --bin sauron-core >/dev/null)
   echo "${ROOT_DIR}/target/debug/sauron-core"
 }
 

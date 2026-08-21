@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use sauron_core::db::{open_db_at, DbHandle};
+use sauron_core::db::{open_sqlite_only, DbHandle};
 use sauron_core::error::AppError;
 use sauron_core::policy::binding_handlers::{
     bind_policy_with_handles, get_binding_with_handle, unbind_policy_with_handle, BindPolicyBody,
@@ -36,7 +36,7 @@ fn build_test_repo(test_name: &str) -> Repo {
         .subsec_nanos();
     let path = std::env::temp_dir().join(format!("sauron-routes-{pid}-{nanos}-{test_name}.db"));
     let _ = std::fs::remove_file(&path);
-    let handle = open_db_at(path.to_str().unwrap(), 2);
+    let handle = open_sqlite_only(path.to_str().unwrap(), 2);
     Repo::Sqlite(Arc::new(handle))
 }
 
@@ -51,7 +51,7 @@ fn build_binding_state(test_name: &str) -> (Arc<DbHandle>, Arc<PolicyStore>) {
     let path =
         std::env::temp_dir().join(format!("sauron-bind-routes-{pid}-{nanos}-{test_name}.db"));
     let _ = std::fs::remove_file(&path);
-    let handle = Arc::new(open_db_at(path.to_str().unwrap(), 2));
+    let handle = Arc::new(open_sqlite_only(path.to_str().unwrap(), 2));
     let store = Arc::new(PolicyStore::new(Arc::clone(&handle)));
     (handle, store)
 }
@@ -419,7 +419,7 @@ fn build_enforce_state(test_name: &str) -> (Arc<DbHandle>, Arc<PolicyStore>, Rep
         .subsec_nanos();
     let path = std::env::temp_dir().join(format!("sauron-enforce-{pid}-{nanos}-{test_name}.db"));
     let _ = std::fs::remove_file(&path);
-    let handle = Arc::new(open_db_at(path.to_str().unwrap(), 2));
+    let handle = Arc::new(open_sqlite_only(path.to_str().unwrap(), 2));
     let store = Arc::new(PolicyStore::new(Arc::clone(&handle)));
     let repo = Repo::Sqlite(Arc::clone(&handle));
     (handle, store, repo)

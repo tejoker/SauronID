@@ -1375,7 +1375,7 @@ static SPEND_LOG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::open_db_at;
+    use crate::db::open_sqlite_only;
 
     /// Build a unique-path Repo::Sqlite for parallel test isolation.
     fn build_test_repo(test_name: &str) -> Repo {
@@ -1388,7 +1388,7 @@ mod tests {
             std::env::temp_dir().join(format!("sauron-repo-test-{pid}-{nanos}-{test_name}.db"));
         // Ensure clean slate.
         let _ = std::fs::remove_file(&path);
-        let handle = open_db_at(path.to_str().unwrap(), 2);
+        let handle = open_sqlite_only(path.to_str().unwrap(), 2);
         Repo::Sqlite(Arc::new(handle))
     }
 

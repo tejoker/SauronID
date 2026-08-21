@@ -20,6 +20,19 @@ export interface ScenarioResult {
     pass: boolean;
     note: string;
     evidence?: Record<string, unknown>;
+    /**
+     * Set when the scenario did not actually run (no server, no admin key).
+     *
+     * A skip still exits 0 on purpose — a developer without a core running
+     * should not see red. But `pass: true` alone cannot distinguish "the
+     * invariant holds" from "nothing was tested", and a category runner that
+     * only reads exit codes reports the second as green. That is precisely how
+     * the retired proof-forgery scenarios stayed green against a route that had
+     * been deleted. This flag makes the difference machine-readable so
+     * `_meta_runner` can refuse to call a skipped run a pass under
+     * SAURON_REDTEAM_STRICT=1, which CI sets.
+     */
+    skipped?: boolean;
 }
 
 export const BASE_URL =
@@ -96,6 +109,7 @@ export function skipped(id: string, name: string, why: string): ScenarioResult {
         id,
         name,
         pass: true,
+        skipped: true,
         note: `skipped — ${why}`,
         evidence: { skipped: true },
     };

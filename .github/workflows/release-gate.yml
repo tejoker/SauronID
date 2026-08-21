@@ -7,6 +7,17 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_prove:
+        description: >-
+          Generate real STARK receipts from the committed fixtures and check them
+          with the independent customer verifier. Slow, so it is off by default
+          and normally only a v* tag turns it on — but a tag also fires
+          release-publish, which npm-publishes, pushes signed ghcr images and
+          updates the public mirror. This input exists so the proof path can be
+          exercised without shipping a release.
+        type: boolean
+        default: false
 
 jobs:
   release-gate:
@@ -20,7 +31,7 @@ jobs:
           toolchain: 1.91.1
           components: clippy,rustfmt
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -83,7 +94,7 @@ jobs:
 
       - name: Reproduce transparent guests and test customer verifier
         env:
-          SAURON_TRANSPARENT_FULL_PROVE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+          SAURON_TRANSPARENT_FULL_PROVE: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.full_prove) && '1' || '0' }}
         run: bash scripts/ci/verify-transparent-zk.sh
 
       - name: Agentic SDK
@@ -150,7 +161,11 @@ jobs:
           # compile. Nothing else in this job builds the release profile, so the
           # cache is cold whenever a dependency changed. Compiling here leaves
           # the wait to measure what it is named for.
-          ( cd ../core && cargo build --locked --release --bin sauron-core )
+          # --features demo: the empirical suite goes through core-api.ts, which
+          # calls /dev/register_user. Those handlers are behind that feature, so a
+          # default build answers 404 at setup no matter what
+          # SAURON_ENABLE_DEV_ENDPOINTS is set to below.
+          ( cd ../core && cargo build --locked --release --features demo --bin sauron-core )
           # Boot core: fresh DB, call-sig enforced. Raise the GLOBAL (coarse,
           # per-IP) rate limiter so the harness's setup burst isn't throttled —
           # the suite exercises the specific PER-ENDPOINT risk limits via its own
@@ -165,7 +180,7 @@ jobs:
             SAURON_GLOBAL_RATE_LIMIT_BURST=100000 \
             DATABASE_PATH="${RUNNER_TEMP:-/tmp}/empirical.db" \
             PORT=3001 \
-            cargo run --locked --release --bin sauron-core ) &
+            cargo run --locked --release --features demo --bin sauron-core ) &
           CORE_PID=$!
           for i in $(seq 1 90); do
             curl -sf http://127.0.0.1:3001/health >/dev/null 2>&1 && break
@@ -174,6 +189,31 @@ jobs:
           curl -sf http://127.0.0.1:3001/health >/dev/null || { echo "core never came up"; kill "$CORE_PID"; exit 1; }
           npm ci
           npx tsx src/scenarios/empirical-suite.ts
+          # S12 category scenarios, every category, against the same core.
+          # These are the files that rotted: nine of them drove routes that had
+          # been archived, were wired into no suite, and each counted a rejection
+          # as a pass — so they would have reported green forever while testing
+          # nothing. Running every category in CI is what makes that impossible
+          # to repeat.
+          #
+          # STRICT=1 turns a skip into a failure. A skipped scenario exits 0 by
+          # design so a developer with no core running does not see red, but that
+          # is also how an unreachable core reads as green: pass:true with nothing
+          # tested. In CI the core is up by construction, so a skip means the
+          # harness lost its target.
+          npm run build
+          for cat in proof-integrity protocol-abuse binding-bypass cross-tenant egress-privacy replay tenant-isolation; do
+            echo "::group::redteam category $cat"
+            if ! SAURON_REDTEAM_STRICT=1 node "dist/scenarios/run-all-$cat.js" > "redteam-$cat.json"; then
+              echo "::endgroup::"
+              echo "Redteam category '$cat' failed:"
+              cat "redteam-$cat.json"
+              kill "$CORE_PID" || true
+              exit 1
+            fi
+            jq -c '.summary' "redteam-$cat.json"
+            echo "::endgroup::"
+          done
           kill "$CORE_PID" || true
           # Freshness guard: a crashed run leaves no file — it MUST NOT pass.
           test -f empirical-results.json || { echo "empirical-results.json missing — suite did not complete"; exit 1; }

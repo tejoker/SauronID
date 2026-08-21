@@ -239,9 +239,13 @@ Non-exhaustive list of hostile scenarios pentest should specifically rehearse. E
 | **Solana RPC censorship** | RPC silently drops our memo writes. | Multi-RPC failover (`SAURON_SOLANA_RPC_FALLBACK_URLS`); Bitcoin-only fallback. We detect by comparing in-flight queue depth against expected drain rate. | n/a |
 | **Stale-policy replay window** | Server-side revoke happens; SDK cache still has the old policy until refresh interval. | Documented window. Future sprint: server-pushed revocation feed. | `binding-revoke-replay.ts` |
 | **Cross-tenant existence probe** | Attacker enumerates UUIDs hoping to learn which `(tenant, policy_id)` pairs exist. | `404 Not Found` returned uniformly for misses, no `403 Forbidden` that would leak existence. | `tenant-list-leak.ts`, `tenant-spend-leak.ts` |
-| **DP cohort de-anonymisation** | Attacker pulls cohort numbers across N snapshots hoping to average out the noise. | Per-period ε budget caps total privacy loss; k-anonymity suppresses small cohorts | `dp-cohort-deanonymize.ts` |
 | **Gateway bypass** | Compromised agent opens a direct socket and omits the protected egress path. | In-band one-use capability proxy plus the deny-by-default Kubernetes NetworkPolicy reference; production egress policies require exact host/method/path/disclosure/byte contracts. | The deployment must prove its CNI/firewall actually blocks the negative direct-egress probe |
 | **TEE revocation cascade** | Agent registered with `Tpm2Quote` / `NitroEnclave`; agent then revoked; attacker reuses the attestation blob for a new agent registration. | Revoke cascades on the agent record; attestation hash + agent_id uniqueness check prevents reuse. | `tee-revoke.ts` |
+
+The **DP cohort de-anonymisation** abuse case was dropped rather than mitigated: the differential-privacy
+cohort surface it applied to (`/v1/stats/cohort`) is archived along with the Circom/Groth16 stats path, so
+there is no cohort endpoint left to average out. Its `dp-cohort-deanonymize.ts` probe is deleted too — kept
+against a current core it would have passed by 404, which is a green light for an absent test.
 
 ## Out of scope: what SauronID does NOT protect against
 

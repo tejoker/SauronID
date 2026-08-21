@@ -20,7 +20,10 @@ value and period. Clients can verify the same receipt independently with
 `sauron-transparent-verify`; they do not trust a SauronID success boolean.
 
 `POST /v1/stats/submit` and the Circom/Groth16 material described below are
-development/migration compatibility only and are refused in production.
+**archived**, not merely refused: the route, its verifier and the DP cohort surface all live under
+[`archive/removed-2026-08/groth16-zkp/`](../archive/removed-2026-08/groth16-zkp/) and a current core
+404s on every one of them. The sections below are kept as a record of what that surface looked like,
+so an old client's traffic can still be identified. None of it is callable.
 
 ## Legacy Circom model (development only)
 
@@ -176,10 +179,9 @@ aggregation construction.
 
 ## Worked curl example
 
-Assumes the dev ceremony has produced the StatsHonestComputation
-artefacts under `zkp/circuits/build/keys/`. The proof JSON below is a
-placeholder — in practice the SDK produces it via
-`StatsProver.proveStat` shelling out to snarkjs.
+Historical. Assumed the dev ceremony had produced the StatsHonestComputation artefacts under
+`zkp/circuits/build/keys/`, with the proof JSON produced by the SDK's `StatsProver` shelling out to
+snarkjs. Both the prover and the route are deleted; this call now 404s.
 
 ```bash
 # 1. Submit
@@ -222,49 +224,20 @@ curl -sS \
 # Expected: {"rows":[{...}], "n":1}
 ```
 
-## SDK auto-submission (weekly cron)
+## SDK auto-submission — removed, no successor
 
-> **RETIRED — this scheduler posts to a route the core no longer serves.**
->
-> `createWeeklyScheduler` and `submitWeeklyStats` drive
-> `POST /v1/stats/submit`, the Circom/Groth16 path. Production always refused it
-> (`zk_verifier.rs`: "Groth16 verification is development-only; production
-> accepts pinned native STARK receipts"), and its verifier is archived under
-> [`archive/removed-2026-08/groth16-zkp/`](../archive/removed-2026-08/groth16-zkp/).
-> Against a current core the submit step returns 404, which the scheduler
-> surfaces through its `onError` callback.
->
-> They are still exported, and this example is kept, because there is no drop-in
-> replacement: `submitTransparentStats` needs a STARK receipt from the
-> version-pinned `transparent-zk` prover, which the SDK cannot generate. So the
-> automation described below has no successor yet — use the
-> `/v1/stats/submit-transparent` section above and generate the receipt out of
-> band.
->
-> Read what follows as the shape a future scheduler should have, not as working
-> instructions.
+`WeeklyStatsScheduler`, `createWeeklyScheduler`, `submitWeeklyStats` and the `StatsProver` they depended on
+are deleted from `@sauronid/agentic`. They drove `POST /v1/stats/submit`, so against any current core every
+run ended in a 404 through the `onError` callback. An automation that cannot succeed is worse than none.
 
-```ts
-import { createWeeklyScheduler } from "@sauronid/agentic";
+Nothing replaces it yet, and the reason is not effort: a transparent submission needs a STARK receipt from
+the version-pinned prover in `transparent-zk/`, which is a Rust binary the SDK does not embed and cannot
+substitute for. A future scheduler has to shell out to that prover, so it needs a deployment decision
+(where the prover runs, who holds the receipts) rather than more TypeScript.
 
-const sched = createWeeklyScheduler({
-  coreUrl: "https://sauron.example.com",
-  adminKey: process.env.SAURON_ADMIN_KEY!,
-  tenantId: "acme_corp",
-  circuitsDir: "/opt/sauron/zkp/circuits/build",
-  // The two callbacks below are the customer's integration point — they
-  // pull receipts from the customer's own datastore + compute the merkle
-  // bundle. The scheduler does NOT assume access to the customer DB.
-  receiptsProvider: async ({ start, end }) => fetchReceiptsBetween(start, end),
-  merkleProofProvider: async (receipts) => buildMerkleBundle(receipts),
-  onSubmit: (id, r) => log.info({ id, ...r }),
-  onSkip:   (id, why) => log.info({ id, skipped: why }),
-  onError:  (id, e) => log.error({ id, err: e.message }),
-});
-sched.start();
-```
-
-`submitWeeklyStats(opts)` is the one-shot variant for ad-hoc backfills.
+What survives in the SDK is the half that never needed a proof: `LocalAggregator` (`stats/local-aggregate.ts`)
+computes the metric value from the customer's own receipts, and `metric-catalog.ts` fixes the metric ids and
+fixed-point scaling. Feed that value to the prover, then post the receipt with `submitTransparentStats`.
 
 ## Legacy audit anchoring (development compatibility only)
 
@@ -316,12 +289,9 @@ agentic/src/stats/
   metric-catalog.ts          — 10 metrics + sensitivity + provable flag
   local-aggregate.ts         — LocalAggregator (compute / computeAll)
   transparent.ts             — strict transparent-STARK submission client
-  integrity-proof.ts         — legacy Circom development compatibility
-
-agentic/src/scheduler.ts     — WeeklyStatsScheduler + submitWeeklyStats
 
 transparent-zk/             — production guests, prover, minimal verifier
-zkp/                        — legacy Circom/Groth16 development path
+archive/removed-2026-08/groth16-zkp/  — the archived Circom/Groth16 path (not built, not served)
 
 core/src/aggregation/
   mod.rs       — re-exports

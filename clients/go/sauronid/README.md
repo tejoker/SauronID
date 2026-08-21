@@ -111,7 +111,10 @@ For the one-shot wiring use `sauronid.CreateEnforcer(ctx, opts)`.
 - `Enforcer` / `CreateEnforcer` — one-shot wiring.
 - `Evaluate` — pure invariant evaluator (7 checks).
 - `SignCall`, `GeneratePopKeyPair`, `SignPopChallenge` — call-signing + PoP key helpers.
-- `SubmitStats` — **RETIRED.** POSTs to `/v1/stats/submit`, the Groth16 path, which the core no longer serves and production always refused. Returns 404. Use `SubmitTransparentStats` with a receipt from the pinned `transparent-zk` prover.
+- `SubmitTransparentStats` — POSTs a native RISC Zero STARK receipt to `/v1/stats/submit-transparent`. Generate
+  and verify the receipt with the pinned `transparent-zk` prover first; the server's 200 is storage, not your
+  own verification. (The Groth16 `SubmitStats` that used to sit here is deleted — the route it called has been
+  archived and returned 404.)
 
 Full reference: `go doc github.com/tejoker/SauronID/clients/go/sauronid`.
 
@@ -124,8 +127,8 @@ immediately.
 
 ## Known limitations
 
-- **No ZK proof generation.** snarkjs is JavaScript-only. Compute proofs
-  via the TS or Python SDKs; Go can only submit them (`SubmitStats`).
+- **No proof generation.** Receipts come from the version-pinned Rust prover in `transparent-zk/`, not from
+  any SDK. Go transports one that already exists (`SubmitTransparentStats`).
 - **No local policy YAML parser.** Upload policies via the server's
   `POST /v1/policy` endpoint (`Client.UploadPolicy`) — the server returns
   the canonical compiled AST that the cache then fetches.
@@ -144,7 +147,7 @@ immediately.
 | `budget_tracker.go` | Spend + rate ledger, ServerPush flush |
 | `bind.go` | Tool wrapper, PolicyDeniedError, PolicyNotLoadedError |
 | `enforcer.go` | CreateEnforcer one-shot wiring |
-| `stats.go` | StatsSubmission + Client.SubmitStats |
+| `stats.go` | MetricValue interchange + Client.SubmitTransparentStats |
 | `pop_keys.go` | Ed25519 PoP keypair helpers |
 | `call_sig.go` | Signed-call header bundle |
 | `signed_agent.go` | SignedAgent runtime + Register*Agent helpers |

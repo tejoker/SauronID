@@ -63,7 +63,7 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 if [[ ! -x "$CORE_BIN" ]]; then
-    red "[ERROR] core binary not found at $CORE_BIN; run 'cargo build --release' first"
+    red "[ERROR] core binary not found at $CORE_BIN; run 'cargo build --release --features demo' first (this script uses /dev/*)"
     exit 1
 fi
 

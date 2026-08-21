@@ -107,26 +107,6 @@ export {
     type ReceiptLike,
     type MetricValue,
 } from "./stats/local-aggregate";
-export {
-    StatsProver,
-    NotProvableError,
-    MAX_RECEIPTS_PER_PROOF,
-    receiptToFields,
-    type MerkleProof,
-    type ProofObject,
-    type StatsHonestProof,
-    type StatsProverOptions,
-    type ProofRunner,
-    type ProofRunnerInput,
-} from "./stats/integrity-proof";
-export {
-    WeeklyStatsScheduler,
-    createWeeklyScheduler,
-    submitWeeklyStats,
-    type WeeklyStatsSchedulerOptions,
-    type MerkleBundle,
-    type SubmitResponse,
-} from "./scheduler";
 
 export {
     STATS_PROGRAM_ID,

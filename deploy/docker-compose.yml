@@ -9,6 +9,13 @@ services:
     build:
       context: ..
       dockerfile: core/Dockerfile
+      args:
+        # redteam-e2e.yml brings the core up from THIS file, then runs suites that
+        # go through redteam/src/core-api.ts — which calls /dev/register_user and
+        # /dev/buy_tokens. Those handlers are behind the `demo` cargo feature, so
+        # without this the e2e job gets 404s at setup. A client image is built
+        # with no features and cannot serve them at all.
+        CARGO_FEATURES: demo
     image: hackeurope-24-backend:latest
     container_name: sauron-backend
     ports:

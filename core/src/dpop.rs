@@ -556,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn replayed_jti_rejected() {
         // In-memory single-connection pool; schema init creates agent_call_nonces.
-        let db = crate::db::open_db_at(":memory:", 1);
+        let db = crate::db::open_sqlite_only(":memory:", 1);
         let repo = crate::repository::Repo::Sqlite(std::sync::Arc::new(db));
         consume_jti(&repo, "agent-1", "jti-5", i64::MAX - 1)
             .await

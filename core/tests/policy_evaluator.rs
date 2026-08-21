@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use sauron_core::db::open_db_at;
+use sauron_core::db::open_sqlite_only;
 use sauron_core::policy::handlers::resolve_spend_for_evaluation;
 use sauron_core::policy::{
     compile, evaluate,
@@ -350,7 +350,7 @@ fn build_ledger_repo(label: &str) -> Repo {
         .subsec_nanos();
     let path = std::env::temp_dir().join(format!("sauron-eval-{pid}-{nanos}-{label}.db"));
     let _ = std::fs::remove_file(&path);
-    Repo::Sqlite(Arc::new(open_db_at(path.to_str().unwrap(), 2)))
+    Repo::Sqlite(Arc::new(open_sqlite_only(path.to_str().unwrap(), 2)))
 }
 
 #[test]

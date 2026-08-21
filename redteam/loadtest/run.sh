@@ -22,7 +22,7 @@ DB="${LOADTEST_DB:-${TMPDIR:-/tmp}/sauronid-loadtest-$PORT.db}"
 CORE_BIN="$ROOT/core/target/release/sauron-core"
 ACTION_TOOL="$ROOT/core/target/release/agent-action-tool"
 
-[[ -x "$CORE_BIN" ]] || { echo "missing $CORE_BIN (cd core && cargo build --release)"; exit 1; }
+[[ -x "$CORE_BIN" ]] || { echo "missing $CORE_BIN (cd core && cargo build --release --features demo — this harness uses /dev/*)"; exit 1; }
 [[ -x "$ACTION_TOOL" ]] || { echo "missing $ACTION_TOOL"; exit 1; }
 [[ -d "$HERE/node_modules" ]] || { echo "run 'npm install' in $HERE first"; exit 1; }
 

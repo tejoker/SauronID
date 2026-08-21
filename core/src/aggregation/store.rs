@@ -212,7 +212,7 @@ pub fn persist_verified_submission(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::open_db_at;
+    use crate::db::open_sqlite_only;
 
     fn temp_db(label: &str) -> DbHandle {
         let pid = std::process::id();
@@ -222,7 +222,7 @@ mod tests {
             .subsec_nanos();
         let path = std::env::temp_dir().join(format!("sauron-stats-{pid}-{nanos}-{label}.db"));
         let _ = std::fs::remove_file(&path);
-        open_db_at(path.to_str().unwrap(), 2)
+        open_sqlite_only(path.to_str().unwrap(), 2)
     }
 
     fn sample(tenant: &str, agent: Option<&str>) -> StatsSubmission {
@@ -276,7 +276,11 @@ mod tests {
         assert_eq!(hash, synthetic_action_hash(&sub));
         // Dedicated statement record landed.
         // lock_sqlite: this assertion is about the sidecar's contents, and the
-        // handle under test was built by open_db_at, which is SQLite-only.
+        // handle under test was built by open_sqlite_only, so there is no
+        // Postgres pool for the write to have gone to instead. `open_db_at`
+        // would NOT have been safe here — it attaches a Postgres pool whenever
+        // SAURON_DB_BACKEND says so, and then the write dispatches to Postgres
+        // while this read still comes from the sidecar.
         let conn = db.lock_sqlite().unwrap();
         let n: i64 = conn
             .query_row(

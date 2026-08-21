@@ -108,7 +108,9 @@ case "$cmd" in
 
   build-native)
     echo "==> building core (release) locally"
-    cargo build --release --manifest-path "$REPO_ROOT/core/Cargo.toml"
+    # --features demo: democtl provisions through /dev/register_user and
+    # /dev/buy_tokens, both behind that cargo feature.
+    cargo build --release --features demo --manifest-path "$REPO_ROOT/core/Cargo.toml"
     dist="$REPO_ROOT/deploy/native/dist"
     rm -rf "$dist"; mkdir -p "$dist"
     cp "$REPO_ROOT/core/target/release/sauron-core" "$dist/"

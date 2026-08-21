@@ -42,7 +42,7 @@ if [ ! -f "$BINARY" ]; then
   SAURON_ADMIN_KEY="$SAURON_ADMIN_KEY" \
   SAURON_ISSUER_URL="${SAURON_ISSUER_URL:-http://localhost:4000}" \
   SAURON_ISSUER_SHARED_SECRET="${SAURON_ISSUER_SHARED_SECRET:-sauron_issuer_shared_dev_key_change_me}" \
-  cargo run --bin sauron-core &
+  cargo run --features demo --bin sauron-core &
 else
   ENV="${ENV:-development}" \
   SAURON_ADMIN_KEY="$SAURON_ADMIN_KEY" \
