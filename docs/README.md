@@ -26,6 +26,16 @@ la recherche d'entreprise, dans l'ordre : problème avant solution, preuves not�
 - [copilot-vs-agent.md](company-brain/research/copilot-vs-agent.md)
 - [sources.md](company-brain/research/sources.md)
 
+## `company-brain/brand/`
+
+les fichiers canoniques de la marque, servis par le brand book
+
+- [tokens.css](company-brain/brand/tokens.css)
+- [tokens.json](company-brain/brand/tokens.json)
+- [logo.svg](company-brain/brand/logo.svg)
+- [brand-book.pdf](company-brain/brand/brand-book.pdf)
+- [build-brand-book.js](company-brain/brand/build-brand-book.js)
+
 ## `architecture/`
 
 pile technique, carte des routes, DSL de politiques, multi-tenancy, modèle de confidentialité
@@ -155,6 +165,16 @@ source de la documentation publique
 - [quickstart-go.md](site/quickstart-go.md)
 - [quickstart-python.md](site/quickstart-python.md)
 - [quickstart-typescript.md](site/quickstart-typescript.md)
+
+## `site/guides/`
+
+les guides par sujet du site public, dans l'ordre du groupe « Guides » de
+[`site/docs.json`](site/docs.json)
+
+- [payments.md](site/guides/payments.md)
+- [egress.md](site/guides/egress.md)
+- [policies.md](site/guides/policies.md)
+- [siem.md](site/guides/siem.md)
 
 ## `ideas/`
 
