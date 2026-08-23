@@ -1,7 +1,8 @@
 //! Extracted verbatim from the inline `mod call_sig_default_deny_tests` that `agent.rs` used to
 //! carry. `use super::*` still reaches the parent module's private items.
 
-use super::{call_sig_required_for, Method, CALL_SIG_EXEMPT_PATHS};
+use super::{call_sig_required_for, CALL_SIG_EXEMPT_PATHS};
+use axum::http::Method;
 
 /// Every `/agent/...` path the binary actually mounts, read out of the
 /// router source at compile time.

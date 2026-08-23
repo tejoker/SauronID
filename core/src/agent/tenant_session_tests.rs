@@ -3,7 +3,10 @@
 
 use super::*;
 use crate::any_db::AsAnyConn;
+use crate::crypto_protocol;
 use crate::user_session;
+use axum::http::HeaderMap;
+use sha2::Sha256;
 
 /// Forge a legacy `v2` session — correctly signed, but carrying no epoch.
 ///

@@ -88,11 +88,24 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// `lock_sqlite()` uses in production code, per file.
 ///
-/// Test modules are excluded: a fixture asserting on the SQLite database it
-/// just created is not a deployment that cannot use Postgres. Comments are
-/// stripped first — this counts call sites, and the doc comments explaining why
-/// a site is SQLite-only name the function too. Counting those made adding an
-/// explanation look like adding an opt-out.
+/// Test code is excluded: a fixture asserting on the SQLite database it just
+/// created is not a deployment that cannot use Postgres. That exclusion has two
+/// forms to recognise. A module still inline in its file is cut at its
+/// `#[cfg(test)]`. A module extracted to its own file carries no such marker
+/// (the parent's `mod` declaration holds it), so the file name is the signal:
+/// `tests.rs` and `*_tests.rs` are test code, which is the convention every
+/// extracted module in core/src follows.
+///
+/// Comments are stripped first — this counts call sites, and the doc comments
+/// explaining why a site is SQLite-only name the function too. Counting those
+/// made adding an explanation look like adding an opt-out.
+fn is_test_file(p: &Path) -> bool {
+    match p.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n == "tests.rs" || n.ends_with("_tests.rs"),
+        None => false,
+    }
+}
+
 fn sqlite_only_sites() -> BTreeMap<String, usize> {
     let mut files = Vec::new();
     rust_files(&core_src(), &mut files);
@@ -100,6 +113,9 @@ fn sqlite_only_sites() -> BTreeMap<String, usize> {
 
     let mut by_file = BTreeMap::new();
     for f in files {
+        if is_test_file(&f) {
+            continue;
+        }
         let src = std::fs::read_to_string(&f).expect("readable source");
         let body = match src.find("#[cfg(test)]") {
             Some(i) => &src[..i],
