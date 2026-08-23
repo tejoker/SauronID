@@ -1,7 +1,7 @@
 /**
  * Redteam P4 — transparent-admin-gate.
  *
- * Threat-model citation: docs/threat-model.md "Out of scope → Compromised admin
+ * Threat-model citation: docs/security/threat-model.md "Out of scope → Compromised admin
  * key" defines the admin credential as the trust boundary for this route; that
  * only holds if the route actually demands it. `/v1/stats/submit-transparent`
  * writes into `customer_stats`, which the periodic audit report reads as

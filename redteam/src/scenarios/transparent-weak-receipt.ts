@@ -1,7 +1,7 @@
 /**
  * Redteam P1 — transparent-weak-receipt.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component →
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component →
  * Transparent proof path". The server pins a reviewed guest image ID and
  * accepts ONE receipt type: a native Succinct STARK. Three weaker receipt
  * kinds must be refused before any verification work happens:

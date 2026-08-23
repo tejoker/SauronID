@@ -1,7 +1,7 @@
 /**
  * S12 redteam — tenant-spend-leak.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component →
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component →
  * core → Information disclosure". Spend ledger lookups by
  * (agent, policy) must not leak existence of rows that belong to
  * another tenant. The expected behaviour is "return zeros" — same

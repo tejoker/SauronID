@@ -25,7 +25,7 @@
 //! surface that used to live beside this module is archived too. What remains is
 //! the one production path the Python, TypeScript and Go SDKs actually call.
 //!
-//! Documentation: `docs/stats-submission.md`.
+//! Documentation: `docs/compliance/stats-submission.md`.
 
 pub mod handlers;
 pub mod store;

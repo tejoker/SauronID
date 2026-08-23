@@ -1,7 +1,7 @@
 /**
  * S12 redteam — replay-spend-record.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component →
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component →
  * core → Repudiation: spend_log". POST /v1/agents/:id/spend appends to
  * spend_log keyed by an internally-assigned log_id (uuid in
  * core/src/repository.rs:1714). The client does NOT supply log_id;

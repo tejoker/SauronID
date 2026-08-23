@@ -1,7 +1,7 @@
 /**
  * S12 redteam — replay-ajwt-jti (covers A2).
  *
- * Threat-model citation: docs/threat-model.md "In scope" → "Captured A-JWT
+ * Threat-model citation: docs/security/threat-model.md "In scope" → "Captured A-JWT
  * replay" → single-use JTI table (`ajwt_used_jtis`); atomic UNIQUE-constraint
  * insert.
  *

@@ -1,7 +1,7 @@
 /**
  * S12 redteam — binding-bypass #1: direct call without bind().
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component → SDK
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component → SDK
  * → Spoofing: Agent forks process, never calls bind()". Documented gap:
  * the SDK wrapper guards only when invoked; an agent that keeps a
  * reference to the underlying tool and calls it directly bypasses the

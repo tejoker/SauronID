@@ -2,7 +2,7 @@
 set -euo pipefail
 
 expected_commit=${1:-}
-manifest=security/external-assessment.json
+manifest=release/external-assessment.json
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
 [[ -n "$expected_commit" ]] || { echo "usage: $0 <release-commit-sha>" >&2; exit 2; }
 [[ "${SAURON_REVIEWER_KEY_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || {
@@ -26,7 +26,7 @@ high=$(jq -er '.open_findings.high' "$manifest")
 [[ "$commit" == "$expected_commit" ]] || { echo "assessment covers $commit, release is $expected_commit" >&2; exit 1; }
 [[ -n "$reviewer" && "$reviewer" != "PENDING" ]] || { echo "independent reviewer organization missing" >&2; exit 1; }
 [[ "$report" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid report SHA-256" >&2; exit 1; }
-[[ "$public_key" == security/reviewers/*.pem && -f "$public_key" ]] || { echo "pinned reviewer public key missing" >&2; exit 1; }
+[[ "$public_key" == release/reviewers/*.pem && -f "$public_key" ]] || { echo "pinned reviewer public key missing" >&2; exit 1; }
 actual_key_sha=$(sha256sum "$public_key" | awk '{print $1}')
 [[ "$actual_key_sha" == "$SAURON_REVIEWER_KEY_SHA256" ]] || {
   echo "reviewer public key does not match the protected trust anchor" >&2

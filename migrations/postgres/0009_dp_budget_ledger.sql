@@ -8,7 +8,7 @@
 --
 -- Composition: basic (sequential) — ε's add. Advanced composition would
 -- be looser but riskier without RDP tracking; see core/src/dp/ledger.rs
--- documentation and docs/privacy-model.md.
+-- documentation and docs/architecture/privacy-model.md.
 
 BEGIN;
 
@@ -44,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_dp_pub_cohort
     ON dp_budget_publications(cohort_id, cycle_start);
 
 -- Operator-managed cohort registry for DP-published cross-tenant benchmarks.
--- Global (NOT tenant-scoped) — see docs/privacy-model.md "Publication pipeline".
+-- Global (NOT tenant-scoped) — see docs/architecture/privacy-model.md "Publication pipeline".
 -- Created here because 0009 is the first migration to reference it; the ε ledger
 -- above extends it with per-cycle caps below.
 CREATE TABLE IF NOT EXISTS cohort_definitions (

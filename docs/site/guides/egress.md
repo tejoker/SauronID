@@ -84,4 +84,4 @@ The gateway is deliberately hostile to indirection:
 - Outbound request bodies pass a PII redaction pass; redacted classes are
   reported in the proxy response.
 
-See `docs/threat-model.md` in the repo for the full rationale.
+See `docs/security/threat-model.md` in the repo for the full rationale.

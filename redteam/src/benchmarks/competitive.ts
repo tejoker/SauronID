@@ -2,7 +2,7 @@
  * Competitive benchmark harness — SauronID vs DPoP vs HTTP Message Signatures
  * vs AWS STS vs Auth0.
  *
- * See `docs/competitive-benchmark.md` for methodology, scope decisions, and
+ * See `docs/planning/competitive-benchmark.md` for methodology, scope decisions, and
  * threats to validity. This file is the runnable scaffold referenced there.
  *
  * Status:
@@ -232,7 +232,7 @@ async function runBench(t: BenchTarget, conc: number, n: number, warmup: number)
 // ─── target: SauronID ─────────────────────────────────────────────────────
 //
 // Talks to the running sauron-core (booted out-of-band — see
-// docs/competitive-benchmark.md §7). Registers ONE long-lived agent during
+// docs/planning/competitive-benchmark.md §7). Registers ONE long-lived agent during
 // setup() and reuses it for every request.
 
 const SAURON_BASE = process.env.SAURON_CORE_URL || "http://127.0.0.1:3001";
@@ -960,7 +960,7 @@ function loadAuth0Env(): Auth0Env {
     const clientSecret = process.env.AUTH0_CLIENT_SECRET;
     if (!domain || !clientId || !clientSecret) {
         throw new Error(
-            "set AUTH0_* env to run this target; see docs/competitive-benchmark.md §7. " +
+            "set AUTH0_* env to run this target; see docs/planning/competitive-benchmark.md §7. " +
             "Required: AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET. " +
             "Optional: AUTH0_AUDIENCE (defaults to https://${AUTH0_DOMAIN}/api/v2/)."
         );

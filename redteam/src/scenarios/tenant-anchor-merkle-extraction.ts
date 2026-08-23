@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-anchor-merkle-extraction.
  *
- * Threat model: docs/multi-tenancy.md "What we don't isolate (by
+ * Threat model: docs/architecture/multi-tenancy.md "What we don't isolate (by
  * design) → anchor batches". Anchor batches are operator-level
  * artifacts — they timestamp the cross-tenant merkle root on Bitcoin
  * (via OpenTimestamps) and Solana (via memo program). The batch

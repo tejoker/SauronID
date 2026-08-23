@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@sauronid/agentic": "file:../../agentic"
+    "@sauronid/agentic": "file:../../sdk/typescript"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

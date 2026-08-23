@@ -40,7 +40,7 @@ pub struct StatsSubmission {
     /// Optional agent scoping. `None` means the metric is tenant-aggregate.
     #[serde(default)]
     pub agent_id_or_none: Option<String>,
-    /// Catalog metric id (matches `agentic/src/stats/metric-catalog.ts`).
+    /// Catalog metric id (matches `sdk/typescript/src/stats/metric-catalog.ts`).
     pub metric_id: String,
     /// Claimed metric value as fixed-point ×1000 integer.
     pub claimed_value: i64,

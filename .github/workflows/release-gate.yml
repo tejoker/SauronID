@@ -98,7 +98,7 @@ jobs:
         run: bash scripts/ci/verify-transparent-zk.sh
 
       - name: Agentic SDK
-        working-directory: agentic
+        working-directory: sdk/typescript
         run: |
           npm ci
           npm test
@@ -108,23 +108,23 @@ jobs:
       - name: Python SDK
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e clients/python pytest "pip-audit==2.10.1"
-          python -m pytest clients/python/tests -q
-          python -m pip_audit clients/python
+          python -m pip install -e sdk/python pytest "pip-audit==2.10.1"
+          python -m pytest sdk/python/tests -q
+          python -m pip_audit sdk/python
 
       - name: SQLite clean-room backup and restore drill
         run: |
           python core/tests/sqlite_backup_restore.py
 
       - name: Go SDK
-        working-directory: clients/go/sauronid
+        working-directory: sdk/go/sauronid
         run: |
           go test ./...
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
 
       - name: MCP server
-        working-directory: mcp-server
+        working-directory: sdk/mcp-server
         run: |
           npm ci
           npm test

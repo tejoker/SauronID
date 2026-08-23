@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-spend-history-leak.
  *
- * Threat model: docs/threat-model.md "STRIDE per component → core →
+ * Threat model: docs/security/threat-model.md "STRIDE per component → core →
  * Information disclosure". The spend log endpoint MUST scope to the
  * caller's tenant. A spend record written by tenant A for agent X
  * must be invisible to tenant B querying the same agent_id.

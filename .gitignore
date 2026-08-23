@@ -186,5 +186,5 @@ core/tests/lib/zkp_fixture.sh
 *.png
 !site/public/*.png
 !site/app/icon.png
-!branding/*.png
+!docs/company-brain/brand/*.png
 !docs/img/*.png

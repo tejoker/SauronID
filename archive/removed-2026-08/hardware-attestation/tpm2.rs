@@ -1,7 +1,7 @@
 //! TPM 2.0 quote attestation.
 //!
 //! M1 ships only field parsing; M2 is the cert-chain walker. See
-//! `docs/roadmap.md` Plan 1.
+//! `docs/planning/roadmap.md` Plan 1.
 //!
 //! Full M2 verifier flow (`Tpm2QuoteVerifier::verify`):
 //!
@@ -112,7 +112,7 @@ impl Tpm2QuotePayload {
 // ─────────────────────────────────────────────────────────────────────────────
 // M2 of TPM2 PoP roadmap: real TPMS_ATTEST parser + AIK signature verification
 // + EK→AIK cert-chain walker (operator-supplied vendor roots) + PCR digest
-// comparison. See docs/roadmap.md Plan 1.
+// comparison. See docs/planning/roadmap.md Plan 1.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// TPM_GENERATED_VALUE — every TPMS_ATTEST starts with this magic to prove the
@@ -439,7 +439,7 @@ pub fn verify_aik_cert_chain(
 ) -> Result<(), AttestationError> {
     if trusted_roots.is_empty() {
         return Err(AttestationError::PartialImplementation(
-            "no TPM2 vendor roots configured; place vendor DER certs at SAURON_TPM2_VENDOR_ROOTS_DIR (default /etc/sauronid/tpm2-roots/) — see docs/operations.md"
+            "no TPM2 vendor roots configured; place vendor DER certs at SAURON_TPM2_VENDOR_ROOTS_DIR (default /etc/sauronid/tpm2-roots/) — see docs/operations/operations.md"
         ));
     }
 

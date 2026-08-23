@@ -595,7 +595,7 @@ pub fn admin_router() -> Router<Arc<RwLock<ServerState>>> {
         // Admin endpoints aggregate across tenants by default — they are
         // operator-global. Per-endpoint tenant filtering is layered in
         // 11.5; today the operator MUST treat `/admin/*` output as
-        // cross-tenant aggregate (see docs/multi-tenancy.md §"Admin").
+        // cross-tenant aggregate (see docs/architecture/multi-tenancy.md §"Admin").
         .route_layer(middleware::from_fn(tenancy::extract_tenant))
 }
 

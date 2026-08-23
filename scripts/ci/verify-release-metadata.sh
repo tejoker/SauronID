@@ -16,8 +16,8 @@ release_version=${expected_tag#v}
 }
 
 core=$(sed -n 's/^version = "\([^"]*\)"/\1/p' core/Cargo.toml | head -1)
-python=$(sed -n 's/^version = "\([^"]*\)"/\1/p' clients/python/pyproject.toml | head -1)
-agentic=$(jq -er '.version' agentic/package.json)
+python=$(sed -n 's/^version = "\([^"]*\)"/\1/p' sdk/python/pyproject.toml | head -1)
+agentic=$(jq -er '.version' sdk/typescript/package.json)
 tool=$(jq -er '.version' packaging/npm-agent-action-tool/package.json)
 
 [[ "$core" == "$(jq -er '.components.core' "$manifest")" ]] || { echo "core version drift" >&2; exit 1; }
@@ -30,7 +30,7 @@ tool=$(jq -er '.version' packaging/npm-agent-action-tool/package.json)
 [[ "$tool" == "$(jq -er '.components.agent_action_tool_npm' "$manifest")" ]] || { echo "tool version drift" >&2; exit 1; }
 # PostgreSQL became a supported topology once `DbHandle::lock()` started
 # dispatching (every call site, not a subset) and the tier was measured — see
-# Runs C and D in docs/load-test.md. The allowlist stays an allowlist: a topology
+# Runs C and D in docs/operations/load-test.md. The allowlist stays an allowlist: a topology
 # string nobody has run a soak against must not reach a release.
 case "$(jq -er '.supported_topology' "$manifest")" in
   single-node-sqlite|single-node-sqlite-or-postgres) ;;

@@ -1,7 +1,7 @@
 /**
  * S12 redteam — binding-bypass #2: stale-cache race.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component → SDK
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component → SDK
  * → Information disclosure: SDK caches stale policy after server-side
  * revoke". The PolicyCache keeps the last good copy on refresh failure,
  * by design. Operators can configure refreshIntervalMs.
@@ -64,7 +64,8 @@ function loadEnforcement(): EnforcementModule | null {
             "..",
             "..",
             "..",
-            "agentic",
+            "sdk",
+            "typescript",
             "dist",
             "src",
             "enforcement.js",
@@ -82,7 +83,7 @@ async function main(): Promise<ScenarioResult> {
 
     const enforcement = loadEnforcement();
     if (!enforcement) {
-        return skipped(id, name, "agentic/dist not built; run `cd agentic && npm run build`");
+        return skipped(id, name, "sdk/typescript/dist not built; run `cd sdk/typescript && npm run build`");
     }
     const { PolicyCache, bind, PolicyNotLoadedError } = enforcement;
 
@@ -138,7 +139,7 @@ async function main(): Promise<ScenarioResult> {
         note:
             "Fork-and-go race: SDK wrapper invoked before cache.load() throws " +
             "PolicyNotLoadedError. Operators MUST await cache.load() during agent " +
-            "boot. Documented in agentic/src/enforcement.ts.",
+            "boot. Documented in sdk/typescript/src/enforcement.ts.",
         evidence: {
             threw_class: threw?.constructor.name ?? "none",
             threw_message: threw?.message,

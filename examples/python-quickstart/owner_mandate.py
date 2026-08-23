@@ -13,7 +13,7 @@ not sign for. This script proves that by trying.
 Run against the dev stack from the repository root:
 
     docker compose up -d
-    python -m pip install -e ./clients/python
+    python -m pip install -e ./sdk/python
     python examples/python-quickstart/owner_mandate.py
 """
 

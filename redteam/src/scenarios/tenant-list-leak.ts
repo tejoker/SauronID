@@ -1,7 +1,7 @@
 /**
  * S12 redteam — tenant-list-leak.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component →
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component →
  * core → Information disclosure: cross-tenant data leak". Tenant
  * isolation enforced by tenancy middleware (core/src/tenancy/mod.rs).
  * Enumerating policy UUIDs from another tenant MUST return 404 (not

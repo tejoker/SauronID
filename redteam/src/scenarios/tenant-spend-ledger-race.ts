@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-spend-ledger-race.
  *
- * Threat model: docs/threat-model.md "Tampering → spend ledger
+ * Threat model: docs/security/threat-model.md "Tampering → spend ledger
  * collision". When tenant A and tenant B share an agent_id (same
  * logical agent name registered under both tenants), concurrent
  * POST /spend calls MUST land in separate ledger rows keyed by

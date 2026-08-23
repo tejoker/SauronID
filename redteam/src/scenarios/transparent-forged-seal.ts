@@ -1,7 +1,7 @@
 /**
  * Redteam P3 — transparent-forged-seal.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component →
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component →
  * Transparent proof path → Spoofing". Succinct is the ONE receipt kind the
  * server accepts, so it is the only shape that reaches the pinning and
  * verification stage. This scenario submits a well-formed Succinct receipt

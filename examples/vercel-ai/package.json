@@ -6,7 +6,7 @@
     "start": "tsx main.ts"
   },
   "dependencies": {
-    "@sauronid/agentic": "file:../../agentic",
+    "@sauronid/agentic": "file:../../sdk/typescript",
     "ai": "^5.0.0",
     "zod": "^3.23.0"
   },

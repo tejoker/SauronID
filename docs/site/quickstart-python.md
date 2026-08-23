@@ -16,7 +16,7 @@ builds can take 15–45 minutes; no sub-minute setup claim is made.
 ## Install
 
 ```bash
-python -m pip install -e ./clients/python
+python -m pip install -e ./sdk/python
 ```
 
 Optional framework extras: `sauronid-client[langchain]`, `[llamaindex]`,

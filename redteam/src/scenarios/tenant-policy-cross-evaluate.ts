@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-policy-cross-evaluate.
  *
- * Threat model: docs/threat-model.md "STRIDE per component → core →
+ * Threat model: docs/security/threat-model.md "STRIDE per component → core →
  * Information disclosure". A tenant must not be able to evaluate
  * another tenant's policy. Crucially, the response must be 404 (not
  * 403) so existence of the policy is not leaked across tenants.

@@ -29,7 +29,7 @@
 //! small enough to enumerate rather than count. Each entry below is a claim
 //! that the code there does not work on Postgres and is not meant to.
 //!
-//! These tests exist so the figure in `docs/production-readiness.md` comes from
+//! These tests exist so the figure in `docs/operations/production-readiness.md` comes from
 //! the build rather than from reading, and so re-pinning a call site forces the
 //! claim to move with the code.
 
@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 /// only ever runs when there is no Postgres pool at all. Making those dispatch
 /// would give Postgres two independent routes to one table.
 ///
-/// Update together with the figure in docs/production-readiness.md.
+/// Update together with the figure in docs/operations/production-readiness.md.
 const SQLITE_ONLY: &[(&str, usize, &str)] = &[
     (
         "repository.rs",
@@ -154,7 +154,7 @@ fn the_sqlite_only_opt_outs_are_exactly_the_documented_ones() {
              Every `lock_sqlite()` asserts \"this does not work on Postgres and is \
              not meant to\". Adding one is a deliberate act: record it in \
              SQLITE_ONLY with the reason, and update the figure in \
-             docs/production-readiness.md in the same commit. Removing one is the \
+             docs/operations/production-readiness.md in the same commit. Removing one is the \
              port progressing — do the same."
         );
     }

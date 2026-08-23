@@ -1,7 +1,7 @@
 /**
  * S12 redteam — replay-call-nonce.
  *
- * Threat-model citation: docs/threat-model.md "In scope" → "A-JWT replay
+ * Threat-model citation: docs/security/threat-model.md "In scope" → "A-JWT replay
  * against a different endpoint or with a mutated body" — per-call
  * DPoP-style signature with single-use nonce stored in
  * `agent_call_nonces`. Replaying the same (agent_id, nonce) MUST be

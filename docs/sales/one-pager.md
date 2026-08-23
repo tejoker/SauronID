@@ -26,7 +26,7 @@ Each alternative is good at what it was built for. None was built for this.
 | **MCP permissions** | Standard tool-permission surface inside the agent framework; sensible session-token handling | Enforcement runs in the same process as the possibly-injected agent. No independent boundary, no body binding, no per-call replay protection, no tamper-evident audit. SauronID ships an MCP server so MCP agents get the external leash without SDK work. |
 | **API gateways (Cloudflare Access-class)** | Global edge latency, terabit DDoS absorption, TLS, coarse rate limits — keep yours, SauronID sits behind it | No per-agent cryptographic identity, no body-bound signatures, no one-use capabilities, no verifiable receipts. |
 
-Where peers win outright: standardisation, ecosystem size, compliance certifications, global edge. The full honest scorecard, including the rows we lose, is in [docs/empirical-comparison.md](../empirical-comparison.md).
+Where peers win outright: standardisation, ecosystem size, compliance certifications, global edge. The full honest scorecard, including the rows we lose, is in [docs/planning/empirical-comparison.md](../planning/empirical-comparison.md).
 
 ## Proof points
 
@@ -42,12 +42,12 @@ Where peers win outright: standardisation, ecosystem size, compliance certificat
 
 ## Deployment
 
-`docker compose up` for evaluation; production-shaped compose with fail-closed pins; Helm chart and Terraform module for Kubernetes; a no-Docker native/systemd path with Caddy auto-TLS. Index: [deploy/README.md](../../deploy/README.md). Audit trail ships to your SIEM as configuration, not a project: [docs/siem-integration.md](../siem-integration.md).
+`docker compose up` for evaluation; production-shaped compose with fail-closed pins; Helm chart and Terraform module for Kubernetes; a no-Docker native/systemd path with Caddy auto-TLS. Index: [deploy/README.md](../../deploy/README.md). Audit trail ships to your SIEM as configuration, not a project: [docs/operations/siem-integration.md](../operations/siem-integration.md).
 
 ## Honest limits
 
-SauronID is containment, not a proof that an agent is benevolent: a valid but overly broad policy still authorizes harm, and traffic that can bypass the gateway is outside its control — production requires a deny-by-default network boundary so the agent's only route is through the gateway. Today the supported topology is single-node SQLite (startup makes you accept this explicitly); the Postgres port is partial and HA is roadmap, not product. There are no compliance certifications yet; an external cryptography review is in progress and a public audit report plus bug bounty follow it. The is/is-not/cannot tables in the [README](../../README.md) and the [threat model](../threat-model.md) are the contract — we would rather you read them before the pilot than after.
+SauronID is containment, not a proof that an agent is benevolent: a valid but overly broad policy still authorizes harm, and traffic that can bypass the gateway is outside its control — production requires a deny-by-default network boundary so the agent's only route is through the gateway. Today the supported topology is single-node SQLite (startup makes you accept this explicitly); the Postgres port is partial and HA is roadmap, not product. There are no compliance certifications yet; an external cryptography review is in progress and a public audit report plus bug bounty follow it. The is/is-not/cannot tables in the [README](../../README.md) and the [threat model](../security/threat-model.md) are the contract — we would rather you read them before the pilot than after.
 
 ## Read next
 
-[README](../../README.md) · [Empirical comparison](../empirical-comparison.md) · [Threat model](../threat-model.md) · [Production readiness](../production-readiness.md) · [Security questionnaire (pre-answered)](security-questionnaire.md) · [Pilot brief](pilot-brief.md)
+[README](../../README.md) · [Empirical comparison](../planning/empirical-comparison.md) · [Threat model](../security/threat-model.md) · [Production readiness](../operations/production-readiness.md) · [Security questionnaire (pre-answered)](security-questionnaire.md) · [Pilot brief](pilot-brief.md)

@@ -6,7 +6,7 @@ payment. Node 18+.
 ## Prereqs
 
 - `docker compose up` at the repo root (core on `http://localhost:3001`).
-- Build the SDK once: `cd ../../agentic && npm install && npm run build`.
+- Build the SDK once: `cd ../../sdk/typescript && npm install && npm run build`.
 - Ring keygen binary: `cd ../../core && cargo build --release`, or set
   `SAURONID_AGENT_ACTION_TOOL=/path/to/agent-action-tool`.
 

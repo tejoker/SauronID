@@ -2006,7 +2006,7 @@ struct AgentPaymentConsumeBody {
 /// `/agent/payment/authorize` minted authorizations that nothing could spend:
 /// `Repo::consume_payment_authorization` — the atomic single-use flip, written
 /// for both backends and covered by unit tests — had no route reaching it, and
-/// `docs/active-route-map.md` advertised a `/merchant/payment/consume` that was
+/// `docs/architecture/active-route-map.md` advertised a `/merchant/payment/consume` that was
 /// never implemented. An authorization that cannot be consumed is not a
 /// capability, it is a receipt.
 ///

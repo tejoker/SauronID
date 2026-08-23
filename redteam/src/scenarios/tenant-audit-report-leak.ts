@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-audit-report-leak.
  *
- * Threat model: docs/threat-model.md "STRIDE per component → core →
+ * Threat model: docs/security/threat-model.md "STRIDE per component → core →
  * Information disclosure". Audit reports are tenant-scoped (see
  * core/src/audit/store.rs::get_report which filters by tenant_id).
  * A tenant must not be able to retrieve another tenant's report by

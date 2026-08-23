@@ -20,10 +20,10 @@ the signature layer to advisory for a first integration — in that mode an
 unsigned call returns 200, so it is not what you should judge the product on.
 
 Then leash your first agent (Python shown; same 15 lines in
-[TypeScript](agentic/README.md) and [Go](clients/go/sauronid/README.md)):
+[TypeScript](sdk/typescript/README.md) and [Go](sdk/go/sauronid/README.md)):
 
 ```python
-# from the repository: python -m pip install -e ./clients/python
+# from the repository: python -m pip install -e ./sdk/python
 from sauronid_client import SauronIDClient, register_llm_agent
 
 client = SauronIDClient(base_url="http://localhost:3001")
@@ -58,7 +58,7 @@ config digest and a wrong-key signature are refused the same way, each with a
 Log in to the dashboard at `http://localhost:3000` (dev/dev) and open
 **Getting started** for the guided version, or **API** for copy-as-curl access
 to everything. More entry points: [`examples/`](examples/) (one folder per
-framework), the [MCP server](mcp-server/) (add SauronID to any MCP-capable
+framework), the [MCP server](sdk/mcp-server/) (add SauronID to any MCP-capable
 agent without SDK work), and the [docs site](docs/site/).
 
 | Console — your agents | Getting started | API explorer |
@@ -134,14 +134,14 @@ Be honest about who you have to trust.
   caps, response-disclosure rules, and network isolation limit that authority;
   they cannot infer whether an allowed action is wise.
 - Canonical trust boundaries and remaining impossibility results are maintained
-  in [`docs/crypto-migration-boundary.md`](docs/crypto-migration-boundary.md).
+  in [`docs/security/crypto/crypto-migration-boundary.md`](docs/security/crypto/crypto-migration-boundary.md).
 
 ## Verifying a release without reading this source
 
 Verification does not depend on source access, which matters if you received
 SauronID as images rather than as a repository. Three independent checks, none of
 which require our cooperation — full procedure in
-[`docs/verifying-what-you-run.md`](docs/verifying-what-you-run.md):
+[`docs/security/verifying-what-you-run.md`](docs/security/verifying-what-you-run.md):
 
 - **The image is ours.** Released images are signed keylessly at their digest
   (GitHub OIDC → Fulcio), so `cosign verify` establishes that the bytes were
@@ -165,7 +165,7 @@ What none of that establishes: that an instance **somebody else operates** runs
 the image it claims to. Self-hosting closes that gap because you start the
 process; a managed instance needs hardware attestation of the gateway, which is
 scoped but not built — see
-[`docs/attestation-scope.md`](docs/attestation-scope.md). A self-reported version
+[`docs/security/attestation-scope.md`](docs/security/attestation-scope.md). A self-reported version
 string is not evidence and is deliberately not offered as one.
 
 ## What ships, what's partial, what doesn't yet exist
@@ -221,9 +221,9 @@ Honest table. Re-verifiable from the source.
   request/response disclosure modes, allowed-header and byte caps, DNS/SSRF
   checks, redirect refusal, credential brokerage, one-use capabilities, and
   rate buckets. Production rejects bare-host policies.
-- Python client (`clients/python/sauronid_client/`) with LangChain, LlamaIndex, CrewAI, AutoGen, OpenAI Assistants, and Anthropic tool-use adapters, plus a generic `wrap()`.
-- TypeScript client (`agentic/src/`) with the same signed-call flow and Vercel AI / OpenAI / Anthropic adapters; Go client (`clients/go/sauronid/`) with the same flow.
-- MCP server (`mcp-server/`) exposing the leash as tools to any MCP client.
+- Python client (`sdk/python/sauronid_client/`) with LangChain, LlamaIndex, CrewAI, AutoGen, OpenAI Assistants, and Anthropic tool-use adapters, plus a generic `wrap()`.
+- TypeScript client (`sdk/typescript/src/`) with the same signed-call flow and Vercel AI / OpenAI / Anthropic adapters; Go client (`sdk/go/sauronid/`) with the same flow.
+- MCP server (`sdk/mcp-server/`) exposing the leash as tools to any MCP client.
 - SQLite online-backup verification and restore-integrity tooling for the
   supported single-node topology.
 
@@ -243,7 +243,7 @@ Honest table. Re-verifiable from the source.
   acceptance of the single-node topology; on Postgres that gate does not apply.
 
   **What that does and does not buy you.** Measured, single host, in
-  [docs/load-test.md](docs/load-test.md): PostgreSQL sustains **2,274 rps over
+  [docs/operations/load-test.md](docs/operations/load-test.md): PostgreSQL sustains **2,274 rps over
   15 minutes with 0 errors across 2.05M requests**, and its p99 stays flat
   (15.9 ms → 18.3 ms). The same workload on SQLite manages 636 rps with p99
   drifting **monotonically 105.7 ms → 301.5 ms** and ~5.2 s max spikes, because
@@ -258,7 +258,7 @@ Honest table. Re-verifiable from the source.
   one every `lock()` site uses — so budget `SAURON_PG_POOL_SIZE +
   SAURON_DB_POOL_SIZE` connections against the server's `max_connections`.
   Database TLS is driven by `sslmode`; see
-  [docs/operations.md](docs/operations.md#database-tls).
+  [docs/operations/operations.md](docs/operations/operations.md#database-tls).
 - **OpenTimestamps confirmation latency**: receipts are submitted instantly to public calendars; **Bitcoin block inclusion takes ~1 hour**. Solana memo finalisation is ~30 s. Dashboard surfaces three honest states per batch (ADR-001): Solana-confirmed (≤30 s), BTC-pending (≤1 h), Dually anchored. No single false "anchored" summary — both chains are reported independently on `/admin/anchor/batches` and the `/proofs` console page. Operators with stricter timing pick the Solana path or run their own calendar.
 - **No human-identity surface**: the bank-KYC ingest, the end-user consent routes, the credential issuer and the legacy Groth16 circuits are archived under [`archive/removed-2026-08/`](archive/removed-2026-08/). SauronID binds agents, not humans. No sanctions/PEP screening is shipped and none is stubbed.
 - **External key custody**: production secret resolution and external partner-key
@@ -291,14 +291,14 @@ Same 15-line path in every language: `client` → `user_auth` → `register_llm_
 
 | Surface | Install | Adapters |
 |---|---|---|
-| [Python](clients/python/sauronid_client/) | `python -m pip install -e ./clients/python` | LangChain, LlamaIndex, CrewAI, AutoGen, OpenAI, Anthropic — or `sauronid_client.wrap(...)` for one-import wrapping |
-| [TypeScript](agentic/) | `npm ci --prefix agentic` | Vercel AI SDK, OpenAI tool calls, Anthropic tool use |
-| [Go](clients/go/sauronid/) | `cd clients/go/sauronid && go test ./...` | Local policy guard + full signed-call flow |
-| [MCP server](mcp-server/) | `npm ci --prefix mcp-server && npm run build --prefix mcp-server` | Any MCP client — seven tools (status, register, payment, leashed fetch, egress log, receipts, revoke) |
+| [Python](sdk/python/sauronid_client/) | `python -m pip install -e ./sdk/python` | LangChain, LlamaIndex, CrewAI, AutoGen, OpenAI, Anthropic — or `sauronid_client.wrap(...)` for one-import wrapping |
+| [TypeScript](sdk/typescript/) | `npm ci --prefix sdk/typescript` | Vercel AI SDK, OpenAI tool calls, Anthropic tool use |
+| [Go](sdk/go/sauronid/) | `cd sdk/go/sauronid && go test ./...` | Local policy guard + full signed-call flow |
+| [MCP server](sdk/mcp-server/) | `npm ci --prefix sdk/mcp-server && npm run build --prefix sdk/mcp-server` | Any MCP client — seven tools (status, register, payment, leashed fetch, egress log, receipts, revoke) |
 
 The per-call signature is DPoP-style by construction; an RFC 9449 DPoP
 compatibility envelope is available opt-in (`SAURON_ACCEPT_DPOP=1`) for stacks
-that already speak DPoP — see [docs/sdk-integration.md](docs/sdk-integration.md)
+that already speak DPoP — see [docs/integration/sdk-integration.md](docs/integration/sdk-integration.md)
 for the body-digest caveat. Full HTTP surface:
 [`schemas/openapi.yaml`](schemas/openapi.yaml).
 
@@ -334,7 +334,7 @@ For a full local demo (core + analytics shim + branded Next.js dashboard) in one
 # dashboard → http://127.0.0.1:3000   (Mandate Console, reads the core directly)
 ```
 
-To deploy, pick your scenario in [`deploy/README.md`](deploy/README.md): root `docker compose up` (evaluation), [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) (production, fail-closed pins), a **Helm chart** ([`deploy/helm/sauronid/`](deploy/helm/sauronid/)) and **Terraform module** ([`deploy/terraform/`](deploy/terraform/)) for Kubernetes, or the **no-Docker native/systemd** path in [`deploy/native/`](deploy/native/) (Caddy auto-TLS + `sauronid-core` / `sauronid-dashboard` units). The [`scripts/demo/democtl.sh`](scripts/demo/) driver wraps the native path (`build-native` → `deploy-native` → `runner` → `status`) and brings up the real LLM agent behind the Console. Full guide: [docs/operations.md](docs/operations.md).
+To deploy, pick your scenario in [`deploy/README.md`](deploy/README.md): root `docker compose up` (evaluation), [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) (production, fail-closed pins), a **Helm chart** ([`deploy/helm/sauronid/`](deploy/helm/sauronid/)) and **Terraform module** ([`deploy/terraform/`](deploy/terraform/)) for Kubernetes, or the **no-Docker native/systemd** path in [`deploy/native/`](deploy/native/) (Caddy auto-TLS + `sauronid-core` / `sauronid-dashboard` units). The [`scripts/demo/democtl.sh`](scripts/demo/) driver wraps the native path (`build-native` → `deploy-native` → `runner` → `status`) and brings up the real LLM agent behind the Console. Full guide: [docs/operations/operations.md](docs/operations/operations.md).
 
 ## Mandate Console — the web dashboard
 
@@ -350,7 +350,7 @@ A branded Next.js console at `dashboard/` reads **only live data from the runnin
 | **Policies** (`/policies`) | Policy invariants bound to agents, with an evaluation endpoint |
 | **Settings** (`/settings`) | Tenant + core-connection settings |
 
-Visual identity is in [`branding/BRANDING.md`](branding/BRANDING.md): dark navy canvas (`#06090F`), Sauron Blue / Ice Blue / Cyan, Instrument Serif display, Space Mono structural labels, Satoshi UI body. Brand book: [`branding/brand-book.pdf`](branding/brand-book.pdf).
+Visual identity is in [`docs/company-brain/`](docs/company-brain/): light-first canvas (`cloud-50 #f7faff`), `signal-600 #0054f3` for the one actionable thing, `midnight-950 #000d35` only where the product proves something. Canonical tokens: [`brand/tokens.css`](docs/company-brain/brand/tokens.css). Brand book: [`brand/brand-book.pdf`](docs/company-brain/brand/brand-book.pdf). The console still ships the May 2026 dark palette and is not yet realigned.
 
 ## End-to-end simulation
 
@@ -408,13 +408,13 @@ result = agent.call("GET", f"/agent/{agent.agent_id}")
 #   agent.call("POST", "/agent/payment/authorize", json_body={..., "agent_action": proof})
 ```
 
-LangChain wrapper, OpenAI Assistants wrapper, and Anthropic Computer Use wrapper in [`clients/python/sauronid_client/`](clients/python/sauronid_client/).
+LangChain wrapper, OpenAI Assistants wrapper, and Anthropic Computer Use wrapper in [`sdk/python/sauronid_client/`](sdk/python/sauronid_client/).
 
-For TypeScript: [`agentic/src/`](agentic/src/).
+For TypeScript: [`sdk/typescript/src/`](sdk/typescript/src/).
 
 ## Empirical proof
 
-Every claim above has a runnable test. See [docs/empirical-comparison.md](docs/empirical-comparison.md) for:
+Every claim above has a runnable test. See [docs/planning/empirical-comparison.md](docs/planning/empirical-comparison.md) for:
 
 - 16 concrete attacks against AI-agent binding systems.
 - A release-gated result in fail-closed mode: all 16 scenarios must execute
@@ -464,10 +464,10 @@ SAURON_REQUIRE_CALL_SIG=1 ./scripts/dev/quickstart.sh
 ```
 core/                  Rust axum service (~50k lines under core/src)
 dashboard/             Next.js Mandate Console (live data from core)
-clients/python/        Python SDK (SignedAgent + LangChain/LlamaIndex/CrewAI/AutoGen/OpenAI/Anthropic adapters)
-clients/go/            Go SDK (same signed-call flow)
-agentic/               TypeScript SDK (signed-call flow + Vercel AI/OpenAI/Anthropic adapters)
-mcp-server/            MCP server exposing the leash to any MCP client
+sdk/typescript/        TypeScript SDK (signed-call flow + Vercel AI/OpenAI/Anthropic adapters)
+sdk/python/            Python SDK (SignedAgent + LangChain/LlamaIndex/CrewAI/AutoGen/OpenAI/Anthropic adapters)
+sdk/go/                Go SDK (same signed-call flow)
+sdk/mcp-server/        MCP server exposing the leash to any MCP client
 examples/              Runnable examples, one folder per framework/use-case
 redteam/               16-attack empirical suite + 18-attack Tavily fuzzer + competitive benchmark
 contracts/             Solana Anchor program (sauron_ledger)
@@ -487,9 +487,11 @@ scripts/demo/          Live-demo driver (democtl.sh) + real LLM agent-runner (ag
 scripts/               Python simulation + audit utilities (simulate_real_actions.py, solana_audit.py, ...)
 deploy/                docker-compose (dev/prod/postgres), Helm chart, Terraform module,
                        AND a no-Docker native/systemd path (deploy/native/) + Solana setup
-branding/              BRANDING.md, logo.svg, brand-book.pdf
-docs/                  threat-model, operations, production-readiness, SIEM integration,
-                       docs site source (docs/site/), roadmap, competitive-benchmark
+docs/                  One folder per domain: architecture/, security/, operations/,
+                       compliance/, planning/, integration/, demo/, zk/, sales/,
+                       docs site source (docs/site/). See docs/README.md.
+docs/company-brain/    The reference point: product truth, design system, brand
+                       guidelines, logo and brand book
 
 archive/removed-2026-08/  The four subsystems that were not agent constraint: KYC consent,
                           hardware attestation, Groth16 ZKP, cohort stats + compliance.
@@ -502,25 +504,25 @@ archive/removed-2026-08/  The four subsystems that were not agent constraint: KY
 
 - Core service: [`core/`](core/) — Rust, axum, ~50k lines under `core/src` (recount with `find core/src -name '*.rs' -print0 | xargs -0 wc -l`).
 - Mandate Console: [`dashboard/`](dashboard/) — Next.js + Chart.js, dark branded UI reading live core data only.
-- Brand system: [`branding/`](branding/) — `BRANDING.md`, eye logo, brand book.
-- TypeScript client: [`agentic/`](agentic/) — `signCall`, `register`, `popKeys`.
-- Python client: [`clients/python/sauronid_client/`](clients/python/sauronid_client/) — LangChain + OpenAI + Anthropic adapters.
+- Company brain: [`docs/company-brain/`](docs/company-brain/) — product truth, design system, brand guidelines, eye logo, brand book.
+- TypeScript client: [`sdk/typescript/`](sdk/typescript/) — `signCall`, `register`, `popKeys`.
+- Python client: [`sdk/python/sauronid_client/`](sdk/python/sauronid_client/) — LangChain + OpenAI + Anthropic adapters.
 - Empirical attack suite: [`redteam/`](redteam/) — 9 invariant scenarios + 16-attack empirical suite + 18-attack Tavily fuzzer.
 - Simulation + audit scripts: [`scripts/`](scripts/) — Python utilities; dev orchestration shells under [`scripts/dev/`](scripts/dev/).
 - Deploy config: [`deploy/`](deploy/) — docker-compose (dev/prod/postgres) **or** no-Docker native/systemd ([`deploy/native/`](deploy/native/): `vm-setup.sh`, `sauronid-core.service`, `sauronid-dashboard.service`, Caddyfiles).
 - Live-demo driver: [`scripts/demo/democtl.sh`](scripts/demo/) — build-native / deploy-native / runner / status; pairs with the real LLM agent-runner (`agent_runner.py`) behind the Console.
 - Custom Solana program: [`contracts/sauron_ledger/`](contracts/sauron_ledger/) — Anchor program (optional; default uses Solana Memo).
 - Transparent proofs: [`transparent-zk/`](transparent-zk/) — both guests, the customer verifier, and [`verify.sh`](transparent-zk/verify.sh), which reproduces the published image IDs in a pinned container.
-- Release verification: [`docs/verifying-what-you-run.md`](docs/verifying-what-you-run.md) — the procedure to hand a customer who cannot read this source.
-- Operations: [`docs/operations.md`](docs/operations.md) — every env var, every deploy step.
-- Threat model: [`docs/threat-model.md`](docs/threat-model.md) — what we protect against, what we don't.
-- Empirical comparison: [`docs/empirical-comparison.md`](docs/empirical-comparison.md) — vs DPoP / GNAP / MCP / Auth0 / AWS / Cloudflare.
+- Release verification: [`docs/security/verifying-what-you-run.md`](docs/security/verifying-what-you-run.md) — the procedure to hand a customer who cannot read this source.
+- Operations: [`docs/operations/operations.md`](docs/operations/operations.md) — every env var, every deploy step.
+- Threat model: [`docs/security/threat-model.md`](docs/security/threat-model.md) — what we protect against, what we don't.
+- Empirical comparison: [`docs/planning/empirical-comparison.md`](docs/planning/empirical-comparison.md) — vs DPoP / GNAP / MCP / Auth0 / AWS / Cloudflare.
 
 ## Production deployment checklist
 
 ```bash
 # Deploy behind a TLS-terminating reverse proxy. The core binds plain HTTP.
-# See docs/operations.md "TLS termination" for requirements.
+# See docs/operations/operations.md "TLS termination" for requirements.
 ENV=production
 SAURON_ADMIN_KEY=$(openssl rand -hex 32)
 SAURON_TOKEN_SECRET=$(openssl rand -hex 32)
@@ -538,7 +540,7 @@ SAURON_DB_BACKEND=postgres                       # for ported modules
 DATABASE_URL=postgres://...
 ```
 
-Full guide: [docs/operations.md](docs/operations.md).
+Full guide: [docs/operations/operations.md](docs/operations/operations.md).
 
 ## Repo provenance
 
@@ -548,13 +550,13 @@ This codebase was started during the **Solana Colosseum 2026 hackathon**, buildi
 
 Read before you deploy; these are the documents a security review starts from.
 
-- [Threat model](docs/threat-model.md) — what is protected against, what is not.
-- [Trust boundaries and impossibility results](docs/crypto-migration-boundary.md) — the canonical boundary doc.
+- [Threat model](docs/security/threat-model.md) — what is protected against, what is not.
+- [Trust boundaries and impossibility results](docs/security/crypto/crypto-migration-boundary.md) — the canonical boundary doc.
 - [Security policy](SECURITY.md) — how to report a vulnerability, response targets, what is out of scope.
-- [Red-team matrix](docs/redteam-matrix.md) and the runnable [16-attack suite](redteam/).
-- [SIEM integration](docs/siem-integration.md) — shipping the hash-chained audit trail into your stack is a config, not a project.
+- [Red-team matrix](docs/security/redteam-matrix.md) and the runnable [16-attack suite](redteam/).
+- [SIEM integration](docs/operations/siem-integration.md) — shipping the hash-chained audit trail into your stack is a config, not a project.
 - CI publishes CycloneDX SBOMs on every release and runs cargo-audit, cargo-deny, gitleaks, and trivy on every push ([workflows](.github/workflows/)).
-- A public audit report and bug bounty are planned once the external crypto review lands ([current attestation](docs/crypto-review-attestation.md)).
+- A public audit report and bug bounty are planned once the external crypto review lands ([current attestation](docs/security/crypto/crypto-review-attestation.md)).
 
 ## Contributing / development
 

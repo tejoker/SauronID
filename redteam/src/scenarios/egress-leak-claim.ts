@@ -1,7 +1,7 @@
 /**
  * S12 redteam — egress-leak-claim.
  *
- * Threat-model citation: docs/threat-model.md "Gap 2 mitigation: agent
+ * Threat-model citation: docs/security/threat-model.md "Gap 2 mitigation: agent
  * egress logging" and "Abuse cases → Egress voluntary-log gap". The
  * `/agent/egress/log` endpoint is VOLUNTARY today: the server records
  * what the agent reports, but it does NOT block the actual outbound

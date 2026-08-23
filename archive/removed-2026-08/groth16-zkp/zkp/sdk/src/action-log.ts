@@ -357,7 +357,7 @@ export class ActionLogProver {
  * the agentic SDK can stay free of snarkjs as a direct dependency.
  *
  * `witness` is the canonical witness map produced by
- * `agentic/src/stats/integrity-proof.ts::buildWitness`. The keys MUST match
+ * `sdk/typescript/src/stats/integrity-proof.ts::buildWitness`. The keys MUST match
  * the circuit's signal names.
  */
 export async function proveStatsHonest(

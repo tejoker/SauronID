@@ -2,7 +2,7 @@
 
 This directory describes the legacy Groth16 ceremony path for the action-log
 circuits. Groth16 now defaults off in production; the preferred replacement is
-the transparent zkVM/STARK design in `docs/crypto-migration-boundary.md`.
+the transparent zkVM/STARK design in `docs/security/crypto/crypto-migration-boundary.md`.
 Retaining Groth16 requires an explicit reviewed opt-in, a new ceremony for the
 current circuit sources, and source/key digest pins.
 

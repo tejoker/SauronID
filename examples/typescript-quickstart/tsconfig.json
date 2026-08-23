@@ -8,7 +8,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "@sauronid/agentic": ["../../agentic/dist/src/index.d.ts"]
+      "@sauronid/agentic": ["../../sdk/typescript/dist/src/index.d.ts"]
     }
   },
   "include": ["main.ts"]

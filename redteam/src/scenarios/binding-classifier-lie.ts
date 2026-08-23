@@ -1,7 +1,7 @@
 /**
  * S12 redteam — binding-bypass #4: lying classifyAction.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component → SDK
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component → SDK
  * → Tampering: Agent lies in classifyAction". SDK trusts the classifier
  * because the classifier IS the agent — there is no out-of-process oracle
  * the SDK can consult. Server re-classifies on /v1/policy/evaluate using

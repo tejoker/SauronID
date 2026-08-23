@@ -40,7 +40,7 @@ include "../node_modules/circomlib/circuits/bitify.circom";
  * Percentile metrics (latency_p50, latency_p99) and distinct-cardinality
  * (unique_tools_used, sessions_count) are intentionally NOT covered. They
  * require a permutation argument over a sorted private witness, which is a
- * separate circuit (see docs/stats-submission.md "What we don't cover yet").
+ * separate circuit (see docs/compliance/stats-submission.md "What we don't cover yet").
  *
  * The shipped main has N=4 receipts per proof and requires authoritative
  * tree_size=4. Larger arities require a new circuit version and proving key.

@@ -1,7 +1,7 @@
 /**
  * Redteam P2 — transparent-preverify-gates.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component → Core
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component → Core
  * service → Denial of service". STARK verification is the most expensive thing
  * this route does. Every statement-level check must therefore run BEFORE the
  * receipt is verified, so an attacker cannot burn verifier CPU with a

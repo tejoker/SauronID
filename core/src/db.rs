@@ -914,7 +914,7 @@ pub fn init_schema(conn: &Connection) {
         -- (agent, policy, period) collapsed into ONE row owned by whichever
         -- wrote first. The non-owning tenant then read 0 and its budget cap
         -- never tripped, while the owning tenant absorbed spend it never made.
-        -- `tenant-spend-ledger-race.ts` reproduces it; docs/multi-tenancy-audit.md
+        -- `tenant-spend-ledger-race.ts` reproduces it; docs/compliance/multi-tenancy-audit.md
         -- has the numbers.
         CREATE TABLE IF NOT EXISTS spend_ledger (
             policy_id    TEXT NOT NULL,
@@ -992,7 +992,7 @@ pub fn init_schema(conn: &Connection) {
 
         -- Sprint 8: operator-managed cohort definitions for DP-published
         -- cross-tenant benchmarks. Global (NOT tenant-scoped) — see
-        -- docs/privacy-model.md "Publication pipeline".
+        -- docs/architecture/privacy-model.md "Publication pipeline".
         CREATE TABLE IF NOT EXISTS cohort_definitions (
             cohort_id              TEXT PRIMARY KEY,
             label                  TEXT NOT NULL,
@@ -1011,7 +1011,7 @@ pub fn init_schema(conn: &Connection) {
         -- budget for the current regulatory cycle and refuses publication
         -- when the budget is exhausted. Operators rotate (reset) the
         -- budget per regulatory cycle through POST /v1/cohort/:id/budget/rotate.
-        -- See docs/privacy-model.md § "Inter-period ε budget tracking".
+        -- See docs/architecture/privacy-model.md § "Inter-period ε budget tracking".
         CREATE TABLE IF NOT EXISTS dp_budget_ledger (
             cohort_id     TEXT NOT NULL,
             metric_id     TEXT NOT NULL,
@@ -1170,7 +1170,7 @@ pub fn init_schema(conn: &Connection) {
                     target: "sauron::db",
                     "spend_ledger rebuilt with tenant_id in the primary key; \
                      pre-existing totals were copied as-is and may over-count the \
-                     owning tenant (see docs/multi-tenancy-audit.md)"
+                     owning tenant (see docs/compliance/multi-tenancy-audit.md)"
                 ),
                 Err(e) => {
                     let _ = conn.execute_batch("ROLLBACK;");
@@ -1274,7 +1274,7 @@ pub fn init_schema(conn: &Connection) {
         [],
     );
 
-    // M1 of TPM2-bound PoP key roadmap (docs/roadmap.md Plan 1):
+    // M1 of TPM2-bound PoP key roadmap (docs/planning/roadmap.md Plan 1):
     //   - attestation_pubkey_b64u — the AIK public key extracted from the
     //     hardware attestation (used as the trusted PoP key once M2 lands).
     //   - attestation_pcr_set — JSON-encoded PCR selection + canonical hash

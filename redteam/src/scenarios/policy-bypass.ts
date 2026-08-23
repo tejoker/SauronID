@@ -2,7 +2,7 @@
  * Sprint 3 — policy-bypass redteam scenario.
  *
  * Exercises four bypass attempts against the SDK runtime guard introduced
- * in `agentic/src/enforcement.ts`. The scenario is INFORMATIONAL — it
+ * in `sdk/typescript/src/enforcement.ts`. The scenario is INFORMATIONAL — it
  * documents the threat model and the current SDK guarantees rather than
  * asserting end-to-end blocking on every case. Several "expected"
  * outcomes describe known gaps that will be closed in later sprints.
@@ -88,11 +88,11 @@ interface EnforcementModule {
 
 let enforcement: EnforcementModule;
 try {
-    const dist = path.resolve(__dirname, "..", "..", "..", "agentic", "dist", "src", "enforcement.js");
+    const dist = path.resolve(__dirname, "..", "..", "..", "sdk", "typescript", "dist", "src", "enforcement.js");
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     enforcement = require(dist) as EnforcementModule;
 } catch (err) {
-    console.error("agentic/dist not built — run `cd agentic && npm run build` first.");
+    console.error("sdk/typescript/dist not built — run `cd sdk/typescript && npm run build` first.");
     console.error((err as Error).message);
     process.exit(2);
 }

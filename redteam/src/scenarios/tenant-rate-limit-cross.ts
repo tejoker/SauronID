@@ -1,7 +1,7 @@
 /**
  * S12 redteam — tenant-rate-limit-cross.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component →
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component →
  * core → Denial of service: Endpoint flooding". Rate limits are
  * per-tenant via risk::check_and_increment scoped by tenant_id. A noisy
  * tenant cannot starve other tenants.

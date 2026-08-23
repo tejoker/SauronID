@@ -50,4 +50,4 @@ Three things worth pointing at in a demo:
 
 For MCP clients (Claude Desktop, Claude Code, Codex, Gemini CLI, Cursor), the
 same gateway is reached with one config block per client and no SDK at all — see
-`mcp-server/README.md`.
+`sdk/mcp-server/README.md`.

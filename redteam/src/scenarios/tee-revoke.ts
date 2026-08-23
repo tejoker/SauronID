@@ -1,7 +1,7 @@
 /**
  * S12 redteam — tee-revoke.
  *
- * Threat-model citation: docs/threat-model.md "Gap 3 mitigation:
+ * Threat-model citation: docs/security/threat-model.md "Gap 3 mitigation:
  * hardware-backed PoP keys (vendor-neutral)" + "STRIDE per component →
  * core → Elevation: Agent escalates beyond intent_json". When an agent
  * is registered with Tpm2Quote / NitroEnclave / sgx_quote / sev_snp /

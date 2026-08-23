@@ -835,7 +835,7 @@ pub async fn register_agent(
         )
             .into());
     }
-    // ── M1 of TPM2-bound PoP key roadmap (docs/roadmap.md Plan 1) ────────
+    // ── M1 of TPM2-bound PoP key roadmap (docs/planning/roadmap.md Plan 1) ────────
     //
     // 1. ServerDerived PoP: refuse in production unless explicitly opted in.
     //    The default-on behaviour is now opt-out — operators must set
@@ -2064,7 +2064,7 @@ const CALL_SIG_BODY_LIMIT: usize = 4 * 1024 * 1024;
 pub(crate) const CALL_SIG_HEADERS_FIX: &str = "include x-sauron-agent-id, x-sauron-call-ts, \
     x-sauron-call-nonce, x-sauron-call-sig, x-sauron-call-audience, \
     x-sauron-protocol-version, and x-sauron-agent-config-digest on every signed call; \
-    see docs/sdk-integration.md";
+    see docs/integration/sdk-integration.md";
 
 /// Resolve the accepted clock-skew window (SAURON_CALL_SIG_SKEW_MS, default
 /// 60s, clamped to 1s..10min). Shared by call-sig v2 and the DPoP surface.
@@ -2354,7 +2354,7 @@ async fn try_verify_call_sig(
              this started when you put the core behind a reverse proxy, the proxy is almost \
              certainly rewriting the request line: target_uri is signed byte-for-byte, so \
              collapsing //, decoding %2F, or reordering the query invalidates it — see \
-             docs/operations.md 'Reverse proxy requirements'",
+             docs/operations/operations.md 'Reverse proxy requirements'",
         )
     })?;
 

@@ -1,6 +1,6 @@
 name: Unit + Postgres integration
 
-# M1 of the Postgres migration roadmap (docs/roadmap.md Plan 2):
+# M1 of the Postgres migration roadmap (docs/planning/roadmap.md Plan 2):
 # - `test-sqlite`   runs the existing rusqlite + repo unit suite (default backend).
 # - `test-postgres` boots a postgres:16-alpine sidecar, applies the schema from
 #   migrations/postgres/0001_initial.sql, exports `SAURON_DB_BACKEND=postgres` +

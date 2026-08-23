@@ -123,7 +123,7 @@ curl -s http://localhost:3001/agent/action/receipt/verify \
 
 `valid` means the server signature checks out AND the receipt exists in the
 hash-chained store. Receipts are Merkle-anchored in batches; see
-`docs/demo-anchoring.md` in the repo.
+`docs/demo/demo-anchoring.md` in the repo.
 
 ## Try it
 

@@ -122,7 +122,7 @@ npm run build --silent
 ok "redteam compiled"
 
 step "Build agentic SDK (TS)"
-cd "$ROOT/agentic"
+cd "$ROOT/sdk/typescript"
 npm ci --ignore-scripts --silent
 npm run build --silent
 ok "agentic compiled"
@@ -229,7 +229,7 @@ echo "  Admin key:   $SAURON_ADMIN_KEY"
 echo "  Logs:        /tmp/sauron-quickstart.log"
 echo
 echo "  Next:"
-echo "    • run a Python adapter: see clients/python/sauronid_client/README.md"
-echo "    • verify an audit anchor: docs/empirical-comparison.md"
-echo "    • production deploy: docs/operations.md"
+echo "    • run a Python adapter: see sdk/python/sauronid_client/README.md"
+echo "    • verify an audit anchor: docs/planning/empirical-comparison.md"
+echo "    • production deploy: docs/operations/operations.md"
 echo

@@ -151,9 +151,9 @@ case "$cmd" in
     # rejects anything else, so this binary is REQUIRED (verified on hardware).
     echo "==> building agent-action-tool"
     cargo build --release --manifest-path "$REPO_ROOT/core/Cargo.toml" --bin agent-action-tool
-    echo "rsync scripts/ clients/ + agent-action-tool -> $GPU_USER@$GPU_HOST:$GPU_DIR"
+    echo "rsync scripts/ sdk/ + agent-action-tool -> $GPU_USER@$GPU_HOST:$GPU_DIR"
     ssh_gpu "mkdir -p $GPU_DIR"
-    rsync_gpu "$REPO_ROOT/scripts" "$REPO_ROOT/clients" "$GPU_USER@$GPU_HOST:$GPU_DIR/"
+    rsync_gpu "$REPO_ROOT/scripts" "$REPO_ROOT/sdk" "$GPU_USER@$GPU_HOST:$GPU_DIR/"
     rsync -az -e "ssh -p $GPU_PORT" "$REPO_ROOT/core/target/release/agent-action-tool" \
       "$GPU_USER@$GPU_HOST:$GPU_DIR/agent-action-tool"
     ;;
@@ -189,7 +189,7 @@ EOF
     echo "Running demo on GPU box against $CORE_URL ($cmd)…"
     ssh_gpu "cd $GPU_DIR && \
       { [ -d .venv ] || python3 -m venv .venv; } && . .venv/bin/activate && \
-      pip install -q -e clients/python requests cryptography && \
+      pip install -q -e sdk/python requests cryptography && \
       $remote_env python3 scripts/demo_real_agent.py --core '$CORE_URL' --admin-key '$SAURON_ADMIN_KEY' $extra"
     ;;
 
@@ -202,7 +202,7 @@ EOF
     echo "Writing signed receipts + triggering anchor on $CORE_URL …"
     ssh_gpu "cd $GPU_DIR && \
       { [ -d .venv ] || python3 -m venv .venv; } && . .venv/bin/activate && \
-      pip install -q -e clients/python requests cryptography && \
+      pip install -q -e sdk/python requests cryptography && \
       SAURON_CORE_URL='$CORE_URL' SAURON_ADMIN_KEY='$SAURON_ADMIN_KEY' SAURONID_AGENT_ACTION_TOOL='$GPU_DIR/agent-action-tool' \
       python3 scripts/simulate_real_actions.py run --n-actions 2"
     echo "== anchor status =="
@@ -249,7 +249,7 @@ EOF
     ssh_gpu "cat > $GPU_DIR/runner-launch.sh" <<EOF
 #!/usr/bin/env bash
 cd $GPU_DIR && . .venv/bin/activate
-pip install -q -e clients/python requests cryptography beautifulsoup4 2>/dev/null || true
+pip install -q -e sdk/python requests cryptography beautifulsoup4 2>/dev/null || true
 export SAURON_CORE_URL='$CORE_URL'
 export SAURON_ADMIN_KEY='$SAURON_ADMIN_KEY'
 export SAURONID_AGENT_ACTION_TOOL='$GPU_DIR/agent-action-tool'

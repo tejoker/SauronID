@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-tpm2-attestation-cross.
  *
- * Threat model: docs/threat-model.md "STRIDE per component → attestation".
+ * Threat model: docs/security/threat-model.md "STRIDE per component → attestation".
  * Hardware attestation (TPM2 quote, Nitro doc) measures the enclave —
  * it is identity for the *box*, not the tenant. The same physical
  * enclave (same EK + PCR set) could legitimately register agents under

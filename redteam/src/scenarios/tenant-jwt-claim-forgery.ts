@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-jwt-claim-forgery.
  *
- * Threat model: docs/threat-model.md "Spoofing → admin JWT forgery".
+ * Threat model: docs/security/threat-model.md "Spoofing → admin JWT forgery".
  * The tenancy middleware reads the `tnt` claim from a Bearer JWT IFF
  * the operator has wired up `SAURON_ADMIN_JWT_HS256_SECRET`. Without
  * the correct secret, the decoded JWT validation MUST fail and the

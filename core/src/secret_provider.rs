@@ -67,7 +67,7 @@ fn flag_set(env_var: &str) -> bool {
 
 /// Resolve a secret by NAME. Tries Vault Transit, then AWS KMS, then plain env.
 ///
-/// Precedence (matching `docs/operations.md` and `docs/secrets.md`):
+/// Precedence (matching `docs/operations/operations.md` and `docs/security/secrets.md`):
 ///   1. If `SAURON_VAULT_TRANSIT_ENABLED=1`, read `{NAME}_WRAPPED` and decrypt.
 ///      Returns `NotFound` if `{NAME}_WRAPPED` is missing; returns
 ///      `BackendUnavailable` if Vault is configured but unreachable.

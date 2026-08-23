@@ -125,7 +125,7 @@ pub fn check_server_derived_allowed() -> Result<(), AttestationError> {
         return Ok(());
     }
     Err(AttestationError::BadCertChain(
-        "server-derived PoP is refused in production: set SAURON_ALLOW_SERVER_DERIVED_POP=1 to opt in, or upgrade to ed25519_self / tpm2_quote (see docs/roadmap.md Plan 1)".into(),
+        "server-derived PoP is refused in production: set SAURON_ALLOW_SERVER_DERIVED_POP=1 to opt in, or upgrade to ed25519_self / tpm2_quote (see docs/planning/roadmap.md Plan 1)".into(),
     ))
 }
 

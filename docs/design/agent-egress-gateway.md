@@ -10,7 +10,7 @@ while reusing SauronID's existing binding, policy and anchor stack.
 ## Problem
 
 The original gap was **advisory / voluntary** enforcement:
-- `agentic/src/tool-proxy.ts` wraps a tool with a local policy check, but it is
+- `sdk/typescript/src/tool-proxy.ts` wraps a tool with a local policy check, but it is
   opt-in — an agent that never calls `bind()` skips it entirely.
 - `POST /agent/egress/log` records outbound calls, but the agent has to
   volunteer them.

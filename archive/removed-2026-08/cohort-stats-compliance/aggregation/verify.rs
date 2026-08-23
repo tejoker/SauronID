@@ -44,7 +44,7 @@ impl From<ZkVerifyError> for AggError {
 }
 
 /// Catalog of provable metric ids — keep in sync with
-/// `agentic/src/stats/metric-catalog.ts::METRIC_ID_INDEX` and the circuit
+/// `sdk/typescript/src/stats/metric-catalog.ts::METRIC_ID_INDEX` and the circuit
 /// guard in `StatsHonestComputation.circom`.
 pub const PROVABLE_METRICS: &[&str] = &[
     "success_rate",

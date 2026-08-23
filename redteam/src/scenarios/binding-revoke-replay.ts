@@ -1,7 +1,7 @@
 /**
  * S12 redteam — binding-bypass #5: replay after server-side revoke.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component → SDK
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component → SDK
  * → Information disclosure: SDK caches stale policy after server-side
  * revoke". The PolicyCache by design keeps the last good copy on refresh
  * failure (so transient 5xx doesn't lock out the agent). This produces
@@ -59,7 +59,8 @@ function loadEnforcement(): EnforcementModule | null {
             "..",
             "..",
             "..",
-            "agentic",
+            "sdk",
+            "typescript",
             "dist",
             "src",
             "enforcement.js",
@@ -77,7 +78,7 @@ async function main(): Promise<ScenarioResult> {
 
     const enforcement = loadEnforcement();
     if (!enforcement) {
-        return skipped(id, name, "agentic/dist not built");
+        return skipped(id, name, "sdk/typescript/dist not built");
     }
     const { PolicyCache, bind, PolicyNotLoadedError } = enforcement;
 

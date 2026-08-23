@@ -1,7 +1,7 @@
 /**
  * S12 redteam — binding-bypass #3: agent fakes local spend tracker.
  *
- * Threat-model citation: docs/threat-model.md "STRIDE per component → SDK
+ * Threat-model citation: docs/security/threat-model.md "STRIDE per component → SDK
  * → Tampering: Agent mutates the local BudgetTracker counter". Closed by
  * S3 cross-check: server-side spend ledger is authoritative
  * (core/src/repository.rs:1714, customer-stats keyed by tenant + agent

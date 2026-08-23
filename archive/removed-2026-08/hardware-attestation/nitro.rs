@@ -116,7 +116,7 @@ impl AttestationVerifier for NitroEnclaveVerifier {
 /// AWS spec + RFC 8152, but has not been exercised against a real Nitro EC2
 /// instance in this build. Operators MUST run an end-to-end test in their
 /// own Nitro environment before exposing this path. See
-/// `docs/tee-deployment.md`.
+/// `docs/operations/tee-deployment.md`.
 pub fn verify_nitro_enclave(blob: &[u8], ctx: &AttestationContext) -> Result<(), AttestationError> {
     let first = blob.first().copied().unwrap_or(0);
     // H-5: fail CLOSED in production. The unsigned dev-JSON path has NO

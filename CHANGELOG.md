@@ -108,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - **The PostgreSQL tier is measured.** Runs C and D in
-  [docs/load-test.md](docs/load-test.md): **2,274 rps sustained over 900 s, 0
+  [docs/operations/load-test.md](docs/operations/load-test.md): **2,274 rps sustained over 900 s, 0
   errors across 2,046,979 requests**, with p99 flat at 15.9 ms -> 18.3 ms. The
   same workload on SQLite manages 636 rps and drifts p99 **monotonically
   105.7 ms -> 301.5 ms** with ~5.2 s max spikes. The load harness gained a
@@ -133,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   significant — and the detector control now exercises the decision rule rather
   than just the arithmetic. Verified green under six busy cores.
 - **`@sauronid/mcp-server` would have published broken.** It depends on
-  `@sauronid/agentic` as `file:../agentic` — correct locally, unresolvable for
+  `@sauronid/agentic` as `file:../typescript` — correct locally, unresolvable for
   anyone installing from npm, so `npx @sauronid/mcp-server` would have failed
   during install. The publish workflow now rewrites that to the version in the
   tree, and refuses to publish if the matching `agentic` is not already on npm.
@@ -143,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`POST /agent/payment/consume`** — redeem a payment authorization exactly
   once. `Repo::consume_payment_authorization` was written, tested and reachable
   from nothing: `/agent/payment/authorize` minted authorizations that no route
-  could spend, and `docs/active-route-map.md` advertised a
+  could spend, and `docs/architecture/active-route-map.md` advertised a
   `/merchant/payment/consume` that never existed. Mounted under `/agent/` so the
   default-deny call-signature layer covers it without a new exemption, and
   ownership is checked against the signer so holding the id is not enough.
@@ -167,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit to the gate would have gone unnoticed by all six red-team scenarios that
   exercise those paths. The test also checks that `SAURON_ENABLE_GROTH16=1`
   cannot resurrect it outside a development runtime.
-- `security/assessment-brief.md` — the scope to hand a prospective independent
+- `docs/security/assessment/assessment-brief.md` — the scope to hand a prospective independent
   assessor: what the system is, what the two coverage areas the release gate
   demands actually contain, and what is already known-unfinished so nobody
   spends budget rediscovering it.
@@ -255,7 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 15-line quickstart flow in all three SDKs: `register_llm_agent` / `registerLlmAgent` / `RegisterLLMAgent` returning a `SignedAgent` with `.call()` in TypeScript and Go (previously Python-only)
 - Framework adapters: LlamaIndex, CrewAI, AutoGen for Python (joining LangChain/OpenAI/Anthropic) plus generic `sauronid_client.wrap()`; Vercel AI SDK, OpenAI, and Anthropic adapters for TypeScript
-- MCP server (`mcp-server/`, `@sauronid/mcp-server`) exposing the leash as seven tools to any MCP client
+- MCP server (`sdk/mcp-server/`, `@sauronid/mcp-server`) exposing the leash as seven tools to any MCP client
 - Opt-in RFC 9449 DPoP compatibility envelope (`SAURON_ACCEPT_DPOP=1`, fail-closed in production without explicit acknowledgment)
 - Teaching error envelope: 4xx responses from the central error type and call-signature middleware return `{"error": {"code", "message", "fix"}}` with stable machine-readable codes
 - `GET /healthz` and `GET /readyz` endpoints; core Dockerfile hardened (non-root user, healthcheck)
@@ -265,7 +265,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs site source (`docs/site/`): concepts, per-language quickstarts, payments/egress/policies/SIEM guides, API reference
 - Runnable examples (`examples/`), one folder per framework and use case
 - Dashboard: getting-started wizard (`/welcome`), copy-as-curl API explorer (`/explorer`), French locale + switcher, keyboard-navigable tenant switcher, skip-to-content link, tokenized login page
-- SIEM integration guide (`docs/siem-integration.md`)
+- SIEM integration guide (`docs/operations/siem-integration.md`)
 - Community files: LICENSE (Apache-2.0), CONTRIBUTING, SECURITY policy, issue/PR templates
 - Release workflow publishing container images to GHCR and packages to npm/PyPI on version tags
 - Static landing page (`site/`)

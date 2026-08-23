@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-header-spoof.
  *
- * Threat model: docs/threat-model.md "Authorization → super-admin
+ * Threat model: docs/security/threat-model.md "Authorization → super-admin
  * cross-tenant". The tenancy middleware resolution order is:
  *   (1) x-sauron-tenant-id header
  *   (2) admin JWT `tnt` claim

@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-policy-store-enumeration.
  *
- * Threat model: docs/threat-model.md "Information disclosure → policy
+ * Threat model: docs/security/threat-model.md "Information disclosure → policy
  * id enumeration". The /v1/policy/{id} GET endpoint MUST return 404
  * uniformly for unknown ids regardless of whether the id exists in
  * another tenant. A mix of 403/404 would leak existence.

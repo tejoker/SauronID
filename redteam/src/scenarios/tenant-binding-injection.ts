@@ -1,7 +1,7 @@
 /**
  * S3 redteam — tenant-binding-injection.
  *
- * Threat model: docs/threat-model.md "STRIDE per component → core →
+ * Threat model: docs/security/threat-model.md "STRIDE per component → core →
  * Tampering". A tenant must not be able to bind a policy to an agent
  * that lives in another tenant. The bind handler verifies both
  * agent_id AND policy_id exist in the caller's tenant. The expected
