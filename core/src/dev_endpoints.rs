@@ -24,6 +24,19 @@
 //! which works because a child module can see its ancestors' private items.
 
 use super::*;
+// Explicit rather than inherited: this module read `use super::*` and nothing
+// else, so it depended on whatever main.rs happened to import. Once main.rs
+// stopped needing these itself they went away, and only the demo lane noticed.
+use crate::user_credentials::store_user_auth_credential;
+use axum::extract::{Json, State};
+use axum::http::StatusCode;
+use sauron_core::any_db::AnyRowGet;
+use sauron_core::error::AppError;
+use sauron_core::identity::Identity;
+use sauron_core::sql_params;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Imported here rather than inherited through `use super::*`: these are the
 // demo scaffolding's own dependencies, and main.rs no longer needs any of them.
