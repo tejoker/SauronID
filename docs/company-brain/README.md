@@ -15,8 +15,16 @@ follows. A value that lives only in a component is not a decision.
 | [`brand/tokens.css`](brand/tokens.css), [`brand/tokens.json`](brand/tokens.json) | tokens canoniques, préfixe `--sid-` |
 | [`brand/brand-book.pdf`](brand/brand-book.pdf) | brand book v2, généré par [`brand/build-brand-book.js`](brand/build-brand-book.js) |
 | [`brand/logo.svg`](brand/logo.svg) | le mark vectoriel |
+| [`research/`](research/README.md) | la recherche d'entreprise, problème avant solution, chaque chiffre noté A, B ou C |
 
 ## Positionnement courant
+
+En cours de réexamen depuis le 24 août 2026. La recherche documentaire de
+[`research/problem-landscape.md`](research/problem-landscape.md) ne valide pas
+encore la thèse sécurité comme déclencheur d'achat, et le report des obligations
+haut risque de l'AI Act au 2 décembre 2027 retire l'échéance réglementaire qui
+la soutenait. Ce qui suit reste la version v2.0 jusqu'à l'étape 1 de la
+recherche.
 
 Master line : **Build agents you can actually let act.**
 Descriptor : **The agent platform with boundaries built in.**

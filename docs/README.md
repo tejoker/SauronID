@@ -17,6 +17,15 @@ la référence : vérité produit, système de design, marque, positionnement
 - [product-truth.md](company-brain/product-truth.md)
 - [website-brief.md](company-brain/website-brief.md)
 
+## `company-brain/research/`
+
+la recherche d'entreprise, dans l'ordre : problème avant solution, preuves notées A, B ou C
+
+- [README.md](company-brain/research/README.md)
+- [problem-landscape.md](company-brain/research/problem-landscape.md)
+- [copilot-vs-agent.md](company-brain/research/copilot-vs-agent.md)
+- [sources.md](company-brain/research/sources.md)
+
 ## `architecture/`
 
 pile technique, carte des routes, DSL de politiques, multi-tenancy, modèle de confidentialité
