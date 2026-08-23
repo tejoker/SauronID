@@ -118,7 +118,7 @@ In dependency order (sizes: S/M/L):
    `usage.rs`, `egress_gateway.rs`.
 3. **[M] TOCTOU parity** — every atomic-consume must run inside
    `txn_serializable_pg` (SERIALIZABLE + 40001 retry), verified under
-   contention; extend `redteam/src/scenarios/postgres-toctou-race.ts` beyond
+   contention; extend `redteam/src/scenarios/protocol/postgres-toctou-race.ts` beyond
    the current handful of endpoints.
 4. **[S] Migration runner** — wire `sqlx::migrate!` (or a runner script) with a
    version table so deploys are reproducible; today Postgres migrations are

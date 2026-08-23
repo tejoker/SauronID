@@ -117,7 +117,7 @@ hackeurope-24/
 ├── redteam/                 # Adversarial test suite
 │   ├── package.json
 │   └── src/
-│       ├── scenarios/       # 40 attack scenario files
+│       ├── scenarios/       # 41 scenarios in 8 family folders + runners/ + lib/
 │       ├── benchmarks/
 │       └── llm-runner.ts    # Tavily-driven autonomous fuzzer
 ├── migrations/postgres/     # SQL schema migrations
@@ -1392,20 +1392,17 @@ redteam/
     ├── real-agent-stress.ts      # Concurrent load + attack
     ├── core-api.ts               # Wrapped HTTP client
     ├── ristretto.ts              # Ristretto-group helper
-    ├── scenarios/
-    │   ├── empirical-suite.ts    # 16-attack hardened suite
-    │   ├── invalid-ajwt.ts
-    │   ├── jti-replay.ts
-    │   ├── call-sig-binding.ts
-    │   ├── postgres-toctou-race.ts
-    │   ├── delegated-policy.ts
-    │   ├── parent-empty-scope-denied.ts
-    │   ├── pop-required-on-verify.ts
-    │   ├── revoked-agent.ts
-    │   ├── tavily-redteam.ts
-    │   ├── autonomous-policy.ts
-    │   ├── delegation-scope-denied.ts
-    │   └── ... ~40 total
+    ├── scenarios/                # 41 scenarios, grouped by attack family
+    │   ├── tenant/               # 13 cross-tenant isolation probes
+    │   ├── binding/              # 7 leash-bypass probes
+    │   ├── protocol/             # 6 A-JWT / PoP / nonce / TOCTOU probes
+    │   ├── policy/               # 4 delegation and autonomous-policy probes
+    │   ├── transparent/          # 4 STARK receipt-integrity probes
+    │   ├── replay/               # 3 replay probes
+    │   ├── egress/               # 2 egress and TEE-revocation probes
+    │   ├── suites/               # empirical-suite.ts (16 attacks), tavily-redteam.ts (18 probes)
+    │   ├── runners/              # 7 per-category meta-runners + _meta_runner.ts
+    │   └── lib/                  # _s12_lib.ts, _transparent_lib.ts
     └── benchmarks/
         └── competitive.ts        # Performance benchmarks
 ```

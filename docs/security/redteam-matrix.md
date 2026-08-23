@@ -6,7 +6,7 @@ The existing `docs/planning/empirical-comparison.md` keeps the A1-A16 invariant 
 
 | ID | Category | Description | Expected | Status |
 |---|---|---|---|---|
-| B1 | binding-bypass | Agent imports tool directly, skips `bind()`. | SDK does not block (gap); server `/v1/policy/evaluate` denies. | dynamic — `redteam/src/scenarios/binding-direct-tool-call.ts` |
+| B1 | binding-bypass | Agent imports tool directly, skips `bind()`. | SDK does not block (gap); server `/v1/policy/evaluate` denies. | dynamic — `redteam/src/scenarios/binding/binding-direct-tool-call.ts` |
 | B2 | binding-bypass | Agent invokes `bind()` before `cache.load()` (fork-and-go). | `PolicyNotLoadedError` thrown. | dynamic — `binding-stale-cache.ts` |
 | B3 | binding-bypass | Agent fakes local spend tracker. | Server-side spend ledger refuses via `/v1/policy/evaluate` (closes S3 cross-check). | dynamic — `binding-bumped-budget.ts` |
 | B4 | binding-bypass | `classifyAction` lies (PII → "public"). | SDK allows (trusted classifier); server denies on re-eval. | dynamic — `binding-classifier-lie.ts` |
@@ -16,7 +16,7 @@ The existing `docs/planning/empirical-comparison.md` keeps the A1-A16 invariant 
 | P3 | proof-integrity | Well-formed Succinct receipt carrying an empty seal. | Never stored: fail-closed when no guest image ID is pinned, else the seal is verified and rejected. | dynamic — `transparent-forged-seal.ts` |
 | P4 | proof-integrity | Submit with no admin credential, and with a wrong one. | Both 401/403 before the body is evaluated; a control probe with the real key must get a different status. | dynamic — `transparent-admin-gate.ts` |
 | P5 | protocol-abuse | 18 protocol probes: JWT alg=none/confusion, DPoP replay + nonce reuse, request smuggling, HMAC timing, time skew, CORS, folded-header injection, path traversal, oversized body, header explosion, SQL meta-chars, concurrent nonce, SHA-256 length extension, duplicate JSON keys, PoP key reuse. | All blocked, none escaped. | dynamic — `tavily-redteam.ts` (runs without `TAVILY_API_KEY`; the key only swaps static payloads for search-derived ones) |
-| R1 | replay | Replay A-JWT JTI. | Second call rejected (UNIQUE `ajwt_used_jtis`). | source-review — full path in `redteam/src/scenarios/jti-replay.ts` (existing); S12 anchor in `replay-ajwt-jti.ts` |
+| R1 | replay | Replay A-JWT JTI. | Second call rejected (UNIQUE `ajwt_used_jtis`). | source-review — full path in `redteam/src/scenarios/protocol/jti-replay.ts` (existing); S12 anchor in `replay-ajwt-jti.ts` |
 | R2 | replay | Replay per-call nonce. | UNIQUE`(agent_id, nonce)` on `agent_call_nonces` rejects. | source-review — full path in `call-sig-binding.ts` (existing); S12 anchor in `replay-call-nonce.ts` |
 | R4 | replay | POST `/v1/agents/:id/spend` twice with same body. | Two distinct `log_id`s by design (server doesn't dedup; documented). | dynamic — `replay-spend-record.ts` |
 | T1 | cross-tenant | Random-UUID probe on `/v1/policy/{id}`. | Uniform 404 (no existence leak). | dynamic — `tenant-list-leak.ts` |
@@ -74,19 +74,19 @@ Each scenario is a standalone Node script after `npm run build`:
 cd redteam
 npm run build
 SAURON_CORE_URL=http://127.0.0.1:3001 SAURON_ADMIN_KEY=... \
-  node dist/scenarios/binding-classifier-lie.js
+  node dist/scenarios/binding/binding-classifier-lie.js
 ```
 
 Per-category aggregate:
 
 ```bash
-node dist/scenarios/run-all-proof-integrity.js
-node dist/scenarios/run-all-protocol-abuse.js
-node dist/scenarios/run-all-binding-bypass.js
-node dist/scenarios/run-all-replay.js
-node dist/scenarios/run-all-cross-tenant.js
-node dist/scenarios/run-all-egress-privacy.js
-node dist/scenarios/run-all-tenant-isolation.js
+node dist/scenarios/runners/run-all-proof-integrity.js
+node dist/scenarios/runners/run-all-protocol-abuse.js
+node dist/scenarios/runners/run-all-binding-bypass.js
+node dist/scenarios/runners/run-all-replay.js
+node dist/scenarios/runners/run-all-cross-tenant.js
+node dist/scenarios/runners/run-all-egress-privacy.js
+node dist/scenarios/runners/run-all-tenant-isolation.js
 ```
 
 Each scenario emits a single JSON object on stdout matching `ScenarioResult` from `_s12_lib.ts`:

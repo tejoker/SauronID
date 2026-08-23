@@ -188,7 +188,7 @@ jobs:
           done
           curl -sf http://127.0.0.1:3001/health >/dev/null || { echo "core never came up"; kill "$CORE_PID"; exit 1; }
           npm ci
-          npx tsx src/scenarios/empirical-suite.ts
+          npx tsx src/scenarios/suites/empirical-suite.ts
           # S12 category scenarios, every category, against the same core.
           # These are the files that rotted: nine of them drove routes that had
           # been archived, were wired into no suite, and each counted a rejection
@@ -204,7 +204,7 @@ jobs:
           npm run build
           for cat in proof-integrity protocol-abuse binding-bypass cross-tenant egress-privacy replay tenant-isolation; do
             echo "::group::redteam category $cat"
-            if ! SAURON_REDTEAM_STRICT=1 node "dist/scenarios/run-all-$cat.js" > "redteam-$cat.json"; then
+            if ! SAURON_REDTEAM_STRICT=1 node "dist/scenarios/runners/run-all-$cat.js" > "redteam-$cat.json"; then
               echo "::endgroup::"
               echo "Redteam category '$cat' failed:"
               cat "redteam-$cat.json"

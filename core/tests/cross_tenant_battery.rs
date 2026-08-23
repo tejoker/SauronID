@@ -1,7 +1,7 @@
 //! Sprint 3 — cross-tenant battery smoke test.
 //!
 //! Rationale: the 12 standalone TypeScript scenarios in
-//! `redteam/src/scenarios/tenant-*.ts` run via the existing
+//! `redteam/src/scenarios/tenant/*.ts` run via the existing
 //! `redteam` runner. Wiring a Rust integration test that spawns the
 //! full HTTP server PLUS the node subprocess for every scenario would
 //! add 30+ seconds to `cargo test` and pull in a network dep just to
@@ -22,7 +22,7 @@
 //!      returns None across tenants.
 //!
 //! Run the full 15-scenario battery via:
-//!   cd redteam && node dist/scenarios/run-all-tenant-isolation.js
+//!   cd redteam && node dist/scenarios/runners/run-all-tenant-isolation.js
 
 // Tests assert DB state / status after handler calls, not the Json bodies.
 #![allow(unused_must_use)]

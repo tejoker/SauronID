@@ -134,8 +134,8 @@ This doc complements `docs/security/threat-model.md`. The threat model says *wha
 
 ## What a pentester should hammer first
 
-1. Replay / freshness boundaries (covered by `redteam/src/scenarios/replay-*.ts`).
-2. Cross-tenant leakage of any of the primitives above (`redteam/src/scenarios/tenant-*.ts`).
-3. ZK proof acceptance under malformed / cross-vk / cross-tenant inputs (`redteam/src/scenarios/proof-*.ts`).
+1. Replay / freshness boundaries (covered by `redteam/src/scenarios/replay/`).
+2. Cross-tenant leakage of any of the primitives above (`redteam/src/scenarios/tenant/`).
+3. ZK proof acceptance under malformed / cross-vk / cross-tenant inputs (`redteam/src/scenarios/transparent/`).
 4. Constant-time guarantees of HMAC compare paths (manual / `hyperfine`-style timing).
 5. Bitcoin / Solana anchor proofs round-tripped against an external verifier (`ots verify`, `solana getTransaction`).

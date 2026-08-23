@@ -15,7 +15,7 @@ A deployed AI agent acts on behalf of a human or system. The attacker's goals ar
 
 ## 16-attack matrix
 
-Run live: `SAURON_REQUIRE_CALL_SIG=1 ./scripts/dev/quickstart.sh` (or directly `node dist/scenarios/empirical-suite.js`).
+Run live: `SAURON_REQUIRE_CALL_SIG=1 ./scripts/dev/quickstart.sh` (or directly `node dist/scenarios/suites/empirical-suite.js`).
 The checked-in result is dated evidence only. For a release, regenerate it from
 the tagged commit in fail-closed CI; all 16 scenarios must be dynamic and pass
 with zero skips.
@@ -142,7 +142,7 @@ SAURON_URL=http://localhost:3001 bash seed.sh
 cd ../redteam
 SAURON_REQUIRE_CALL_SIG=1 \
 SAURON_CORE_URL=http://127.0.0.1:3001 \
-node dist/scenarios/empirical-suite.js
+node dist/scenarios/suites/empirical-suite.js
 
 # Load benchmark (configuration and reproducible runner)
 cd loadtest

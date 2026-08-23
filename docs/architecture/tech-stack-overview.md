@@ -316,7 +316,7 @@ The cryptography stack is built on audited, narrowly scoped Rust crates.
 | End-to-end | 11 shell scripts covering payment, consent, KYA, delegation flows |
 | Adversarial | Custom redteam harness with 40 scenario files + Tavily-driven autonomous attack fuzzer |
 
-**Empirical suite:** [redteam/src/scenarios/empirical-suite.ts](../../redteam/src/scenarios/empirical-suite.ts) runs 16 concrete attack scenarios (A1–A10 dynamic, A11–A16 source-review) covering JWT replay, body mutation, nonce reuse, delegation bypass, revocation bypass, and config drift. All 16 pass in fail-closed mode (`SAURON_REQUIRE_CALL_SIG=1`). See [redteam-matrix.md](../security/redteam-matrix.md).
+**Empirical suite:** [redteam/src/scenarios/suites/empirical-suite.ts](../../redteam/src/scenarios/suites/empirical-suite.ts) runs 16 concrete attack scenarios (A1–A10 dynamic, A11–A16 source-review) covering JWT replay, body mutation, nonce reuse, delegation bypass, revocation bypass, and config drift. All 16 pass in fail-closed mode (`SAURON_REQUIRE_CALL_SIG=1`). See [redteam-matrix.md](../security/redteam-matrix.md).
 
 ---
 

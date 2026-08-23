@@ -304,7 +304,7 @@ Run the full 15-scenario battery via:
 cd redteam && npm run build
 SAURON_CORE_URL=http://127.0.0.1:3001 \
   SAURON_ADMIN_KEY=$ADMIN_KEY \
-  node dist/scenarios/run-all-tenant-isolation.js
+  node dist/scenarios/runners/run-all-tenant-isolation.js
 ```
 
 The runner emits one aggregated JSON envelope and exits non-zero on
@@ -312,7 +312,7 @@ any scenario that diverges from documented threat-model behaviour.
 
 ## Fixed 2026-08-19: `spend_ledger` was not tenant-scoped
 
-Found 2026-08-18 by running `redteam/dist/scenarios/run-all-tenant-isolation.js`,
+Found 2026-08-18 by running `redteam/dist/scenarios/runners/run-all-tenant-isolation.js`,
 which nothing in the Makefile or CI had ever run.
 
 `spend_ledger`'s primary key is `(policy_id, agent_id, period_start)` on both

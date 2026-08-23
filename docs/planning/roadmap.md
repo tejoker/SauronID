@@ -125,7 +125,7 @@ before flipping the next table.
   `ajwt_support::consume_call_nonce`, `risk::check_and_increment`) wrap their
   existing SQL in `BEGIN IMMEDIATE` so call sites that still hold a
   `MutexGuard<Connection>` get the same isolation guarantee.
-- `redteam/src/scenarios/postgres-toctou-race.ts` — N=50 concurrent
+- `redteam/src/scenarios/protocol/postgres-toctou-race.ts` — N=50 concurrent
   `/agent/payment/authorize` calls reusing one nonce; asserts exactly 1 winner
   + 49 x HTTP 409. Skips unless `SAURON_DB_BACKEND=postgres`.
 - `.github/workflows/test.yml` two jobs:

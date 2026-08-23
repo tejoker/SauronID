@@ -148,7 +148,7 @@ cd "$ROOT/redteam"
 
 if [[ "$STRICT" = "1" ]]; then
     step "Run 16-attack empirical suite (fail-closed)"
-    if node dist/scenarios/empirical-suite.js > /tmp/sauron-empirical.log 2>&1; then
+    if node dist/scenarios/suites/empirical-suite.js > /tmp/sauron-empirical.log 2>&1; then
         grep "empirical:" /tmp/sauron-empirical.log
         ok "empirical PASS"
     else
@@ -168,7 +168,7 @@ fi
 
 if [[ "$SKIP_TAVILY" != "1" ]]; then
     step "Run 18-attack Tavily red-team"
-    if node dist/scenarios/tavily-redteam.js > /tmp/sauron-tavily.log 2>&1; then
+    if node dist/scenarios/suites/tavily-redteam.js > /tmp/sauron-tavily.log 2>&1; then
         grep "tavily redteam:" /tmp/sauron-tavily.log
         ok "Tavily PASS"
     else

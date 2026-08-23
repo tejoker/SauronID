@@ -66,7 +66,7 @@ What SDK does NOT enforce (needs server cross-check):
 - Tampered `BudgetTracker` — in-process counter is mutable. Defence: Sprint 7 server-side spend ledger (planned).
 - Stale cache after server-side revoke — SDK keeps last good copy on refresh failure. Defence: explicit eviction on revocation feed (future).
 
-See `redteam/src/scenarios/policy-bypass.ts` for the live empirical demonstration of each gap.
+See `redteam/src/scenarios/binding/policy-bypass.ts` for the live empirical demonstration of each gap.
 
 ## Latency budget
 

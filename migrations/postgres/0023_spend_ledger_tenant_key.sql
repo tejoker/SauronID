@@ -14,7 +14,7 @@
 --   * the owning tenant absorbed the other's spend and its agents were denied
 --     for money they never spent — cross-tenant denial of service.
 --
--- Reproduced by redteam/src/scenarios/tenant-spend-ledger-race.ts: two tenants,
+-- Reproduced by redteam/src/scenarios/tenant/tenant-spend-ledger-race.ts: two tenants,
 -- ten spends each on one (agent_id, policy_id), produced 20 correctly-split
 -- spend_log rows and a SINGLE spend_ledger row holding 1010.0 under tenant A.
 -- docs/compliance/multi-tenancy-audit.md carries the full write-up.

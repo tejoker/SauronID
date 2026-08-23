@@ -53,7 +53,7 @@ Every protected request must include `x-sauron-agent-config-digest` matching the
 3. The agent runtime computes the same digest from its actual loaded config and sends it on every protected call.
 4. If an attacker (or careless operator) flips the system prompt without first calling `POST /agent/{id}/checksum/update`, the runtime's computed digest no longer matches the server's stored value. Every call to a protected endpoint rejects with 401 `agent runtime config digest does not match registered checksum (config drift…)`.
 
-**Empirical proof:** test A16 in `redteam/dist/scenarios/empirical-suite.js` registers an LLM agent, then sends a payment-authorize call with a mismatched digest header. Server returns 401 with `drift` in the body. Verified 16/16 in enforce mode.
+**Empirical proof:** test A16 in `redteam/dist/scenarios/suites/empirical-suite.js` registers an LLM agent, then sends a payment-authorize call with a mismatched digest header. Server returns 401 with `drift` in the body. Verified 16/16 in enforce mode.
 
 **Honesty assumption:** the runtime computes its digest from its actual config. A compromised host can lie — that's gap 3, mitigated by hardware-backed key + attestation (below).
 

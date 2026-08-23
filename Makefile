@@ -54,14 +54,14 @@ empirical:  ## Run 16-attack empirical suite against an already-running server
 	SAURON_REQUIRE_CALL_SIG=1 \
 	  SAURON_CORE_URL=http://127.0.0.1:3001 \
 	  SAURON_ADMIN_KEY=$${SAURON_ADMIN_KEY:-super_secret_hackathon_key} \
-	  node redteam/dist/scenarios/empirical-suite.js
+	  node redteam/dist/scenarios/suites/empirical-suite.js
 
 redteam-suites:  ## Run the six run-all-* scenario aggregators (needs a running server)
-	@# These 54 scenarios existed and NOTHING ran them, so they rotted quietly:
+	@# These scenarios existed and NOTHING ran them, so they rotted quietly:
 	@# three carried a policy YAML the parser had stopped accepting, and one hid a
 	@# real cross-tenant spend_ledger collision for as long as it went unrun.
 	@# Wiring them is the fix that keeps them honest.
-	@for f in redteam/dist/scenarios/run-all-*.js; do \
+	@for f in redteam/dist/scenarios/runners/run-all-*.js; do \
 	  echo "── $$f"; \
 	  SAURON_CORE_URL=$${SAURON_CORE_URL:-http://127.0.0.1:3001} \
 	  SAURON_ADMIN_KEY=$${SAURON_ADMIN_KEY:-super_secret_hackathon_key} \
@@ -71,7 +71,7 @@ redteam-suites:  ## Run the six run-all-* scenario aggregators (needs a running 
 redteam:  ## Run Tavily-driven autonomous red-team agent (15 attacks; needs running server)
 	SAURON_CORE_URL=http://127.0.0.1:3001 \
 	  SAURON_ADMIN_KEY=$${SAURON_ADMIN_KEY:-super_secret_hackathon_key} \
-	  node redteam/dist/scenarios/tavily-redteam.js
+	  node redteam/dist/scenarios/suites/tavily-redteam.js
 
 verify: build  ## cargo test + invariants + empirical (full release gate)
 	cd core && cargo fmt --check

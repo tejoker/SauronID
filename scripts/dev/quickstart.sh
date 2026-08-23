@@ -195,7 +195,7 @@ ok "seeded 10 clients + 10 users"
 cd "$ROOT/redteam"
 if [ "$ENFORCE_MODE" = "1" ]; then
     step "Run 16-attack empirical suite (fail-closed mode)"
-    if node dist/scenarios/empirical-suite.js > /tmp/sauron-empirical.log 2>&1; then
+    if node dist/scenarios/suites/empirical-suite.js > /tmp/sauron-empirical.log 2>&1; then
         grep "empirical:" /tmp/sauron-empirical.log
         ok "empirical 16/16"
     else

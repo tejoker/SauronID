@@ -75,7 +75,7 @@ For every SUT and every attack class we record:
 
 | Axis | What | Unit |
 |---|---|---|
-| **A. Attack-coverage** | of the 16 attacks in `redteam/src/scenarios/empirical-suite.ts`, how many does the SUT block out-of-the-box without us writing extra middleware. `N/A` is honest — see §3. | count out of 16 |
+| **A. Attack-coverage** | of the 16 attacks in `redteam/src/scenarios/suites/empirical-suite.ts`, how many does the SUT block out-of-the-box without us writing extra middleware. `N/A` is honest — see §3. | count out of 16 |
 | **B. Latency** | p50 / p95 / p99 latency of the legitimate signed request path at `conc = 1, 10, 100`, n = 1000 requests after a 200-request warm-up. | ms |
 | **C. Throughput** | sustained RPS where p99 stays under 50 ms over a 30 s window, found by binary search on `conc`. | req/s |
 | **D. Integration LoC** | lines of application code an integrator writes to (a) sign a request on the client and (b) verify it on the server. Counted via `wc -l` over a vendored sample, comments and blank lines stripped. Server-side framework boilerplate (Express `app.listen`, etc.) NOT counted. | LoC |
@@ -112,7 +112,7 @@ Axis A is the security-correctness story. Axis B/C is the perf story. Axis D/E i
 
 ## 3. Attack-coverage matrix (axis A) — measured, not asserted
 
-Same 16 attacks as `redteam/src/scenarios/empirical-suite.ts`. For each, we will run a probe against the SUT and record `blocked` / `allowed` / `N/A`. `N/A` means the SUT does not claim to defend against this class — that is honesty, not a loss.
+Same 16 attacks as `redteam/src/scenarios/suites/empirical-suite.ts`. For each, we will run a probe against the SUT and record `blocked` / `allowed` / `N/A`. `N/A` means the SUT does not claim to defend against this class — that is honesty, not a loss.
 
 | ID | Attack | SauronID | DPoP | HTTP Msg Sigs | AWS STS+SigV4 | Auth0 |
 |----|--------|----------|------|---------------|---------------|-------|
@@ -158,7 +158,7 @@ Each cell is `p50 / p95 / p99` in ms. SauronID rows hit `/agent/egress/log` (gat
 | AWS STS AssumeRole (us-east-1) | TODO — requires AWS_* env, deferred 2026-05-15 | TODO | TODO |
 | Auth0 /oauth/token (eu-west free tier) | TODO — requires AUTH0_* env, see §7 (follow-up 2026-05-15) | N/A (rate cap) | N/A |
 
-Footer — measured 2026-05-15 on `Linux DESKTOP-RLTKLJS 6.6.114.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Mon Dec  1` (AMD Ryzen 7 7735HS, 14 vCPU visible, 14 GB RAM, Node 20.20.0, sauron-core release build, SQLite WAL, loopback). Raw JSON: `redteam/benchmarks/results-{sauron,dpop}-c{1,10,100}-2026-05-15T16-2*.json` and `redteam/benchmarks/results-http-sig-c{1,10,100}-2026-05-15T17-02-*.json`.
+Footer — measured 2026-05-15 on `Linux DESKTOP-RLTKLJS 6.6.114.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Mon Dec  1` (AMD Ryzen 7 7735HS, 14 vCPU visible, 14 GB RAM, Node 20.20.0, sauron-core release build, SQLite WAL, loopback). Raw JSON: `redteam/benchmarks/results/results-{sauron,dpop}-c{1,10,100}-2026-05-15T16-2*.json` and `redteam/benchmarks/results/results-http-sig-c{1,10,100}-2026-05-15T17-02-*.json`.
 
 ### 4.2 Throughput, n = 1000 requests, requests/sec = N / elapsed
 
@@ -302,7 +302,7 @@ AUTH0_DOMAIN=... AUTH0_CLIENT_ID=... AUTH0_CLIENT_SECRET=... \
 node dist/benchmarks/competitive.js --report
 ```
 
-Output is written to `redteam/benchmarks/results-<sut>-<timestamp>.json`. The `--report` step reads all of those, fills the templates in §4 of this doc, and writes `redteam/benchmarks/results-summary.md`.
+Output is written to `redteam/benchmarks/results/results-<sut>-<timestamp>.json`. The `--report` step reads all of those, fills the templates in §4 of this doc, and writes `redteam/benchmarks/results-summary.md`.
 
 ---
 

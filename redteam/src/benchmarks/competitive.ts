@@ -24,7 +24,7 @@
  *                                       --conc=<int> --n=<int>
  *   node dist/benchmarks/competitive.js --report
  *
- * Output: writes `benchmarks/results-<target>-<ts>.json` to redteam/.
+ * Output: writes `benchmarks/results/results-<target>-<ts>.json` to redteam/.
  */
 
 import { execFileSync } from "child_process";
@@ -1162,10 +1162,13 @@ function getJson<T = any>(url: string): Promise<{ status: number; body: T }> {
 // ─── report assembly ─────────────────────────────────────────────────────
 
 function reportSummary(): void {
+    // Run JSONs live in benchmarks/results/; the summary this function writes
+    // sits one level up, so a re-run never reads its own output back in.
     const dir = resolve(__dirname, "..", "..", "benchmarks");
+    const runsDir = resolve(dir, "results");
     try {
-        const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-        const rows: BenchResult[] = files.map((f) => JSON.parse(readFileSync(resolve(dir, f), "utf8")));
+        const files = readdirSync(runsDir).filter((f) => f.endsWith(".json"));
+        const rows: BenchResult[] = files.map((f) => JSON.parse(readFileSync(resolve(runsDir, f), "utf8")));
         rows.sort((a, b) => a.target.localeCompare(b.target) || a.conc - b.conc);
 
         const lines: string[] = [];
@@ -1248,7 +1251,7 @@ async function main(): Promise<void> {
     console.log(`p50=${result.p50_ms.toFixed(2)}ms p95=${result.p95_ms.toFixed(2)}ms p99=${result.p99_ms.toFixed(2)}ms`);
     console.log(`rps=${result.rps.toFixed(1)} errors=${result.errors} rejected=${result.rejected}`);
 
-    const outDir = resolve(__dirname, "..", "..", "benchmarks");
+    const outDir = resolve(__dirname, "..", "..", "benchmarks", "results");
     try {
         mkdirSync(outDir, { recursive: true });
     } catch {
