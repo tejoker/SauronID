@@ -60,7 +60,7 @@ not replace backups or redundant storage.
 Production startup fails when a required wrapped secret cannot be resolved.
 Keep the service stopped rather than substituting development defaults. For
 Vault Transit, recover Vault availability or rotate/rewrap following
-`docs/security/key-rotation.md`. The AWS KMS adapter is not implemented and must not be
+[`key-rotation.md`](../security/key-rotation.md). The AWS KMS adapter is not implemented and must not be
 configured or cited as a recovery path.
 
 For an admin-key compromise, add a fresh random key to `SAURON_ADMIN_KEYS`,
@@ -103,7 +103,7 @@ source requires a new reviewed image ID and release assessment, not a ceremony.
 ## Postgres and multi-region
 
 There is no supported recovery procedure because there is no complete Postgres
-runtime path. `docs/operations/postgres-port-status.md` is the implementation inventory.
+runtime path. [`postgres-port-status.md`](postgres-port-status.md) is the implementation inventory.
 Do not deploy the partial backend as HA, promise automatic failover, or claim
 multi-region recovery until every load-bearing table is ported and destructive
 failover/restore tests pass.

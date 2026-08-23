@@ -129,7 +129,7 @@ silently returning global rows.
 1. **Cohort publishing is cross-tenant.** DP cohort aggregates are
    computed across all tenants; the privacy budget is operator-global. A
    tenant cannot extract from cohort outputs which other tenants
-   contributed. This is documented in `docs/architecture/privacy-model.md`.
+   contributed. This is documented in [`privacy-model.md`](privacy-model.md).
 2. **`users` is shared across tenants.** Two tenants can both reference
    the same `key_image_hex`. Access control is enforced on the
    tenant-scoped *registrations* (which client + which tenant), not on

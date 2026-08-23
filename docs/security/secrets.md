@@ -1,8 +1,8 @@
 # SauronID secret management
 
 Operator-facing guide for the four root secrets that bootstrap a SauronID
-deployment. Companion to `docs/operations/operations.md` (deployment knobs) and
-`docs/security/key-rotation.md` (in-flight rotation).
+deployment. Companion to [`operations.md`](../operations/operations.md) (deployment knobs) and
+[`key-rotation.md`](key-rotation.md) (in-flight rotation).
 
 For a fresh local production-shaped set, run
 `scripts/ops/rotate-local-secrets.sh`. It atomically replaces the ignored
@@ -131,7 +131,7 @@ The S6 implementation uses a long-lived static token. For real production:
   `auth/kubernetes/login` for a Vault token. Renew on TTL.
 
 These need a `VaultTokenSource` abstraction in `secret_provider.rs`. Tracked
-in `docs/planning/roadmap.md` under "Vault token lifecycle" — not shipped in S6.
+in [`roadmap.md`](../planning/roadmap.md) under "Vault token lifecycle" — not shipped in S6.
 
 ### Rotating the wrapping key
 
@@ -142,7 +142,7 @@ compliance posture (NIST SP 800-57 suggests 1-2 years for an HSM-protected
 HMAC key wrapper).
 
 The **underlying** secrets (`SAURON_TOKEN_SECRET` etc.) are a separate concern
-— rotating them invalidates outstanding tokens. See `docs/security/key-rotation.md`.
+— rotating them invalidates outstanding tokens. See [`key-rotation.md`](key-rotation.md).
 
 ## AWS KMS (planned — Phase 1B / S26)
 
@@ -155,7 +155,7 @@ stub that returns `BackendUnavailable`. To finish the adapter:
    the workload, return plaintext bytes.
 3. Document the IAM policy in this file.
 
-Tracked under "S26 — AWS KMS adapter" in `docs/planning/roadmap.md`.
+Tracked under "S26 — AWS KMS adapter" in [`roadmap.md`](../planning/roadmap.md).
 
 ## HSM / FIPS-validated path (future)
 

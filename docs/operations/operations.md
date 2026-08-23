@@ -255,7 +255,7 @@ The current implementation uses a **static token** (`SAURON_VAULT_TOKEN`). For p
 - **AppRole** — bootstrapped via a wrapped `secret_id`; ideal for VM / VM-like deployments.
 - **Kubernetes auth** — service-account JWT exchanged for a Vault token at startup; ideal for the k8s manifests under `deploy/`.
 
-Neither is wired in this sprint. Upgrade path: implement a `VaultTokenSource` trait in `secret_provider.rs` with `Static`, `AppRole`, and `Kubernetes` variants; refresh tokens on the existing decrypt path. Tracked under "Vault token lifecycle" in `docs/planning/roadmap.md`.
+Neither is wired in this sprint. Upgrade path: implement a `VaultTokenSource` trait in `secret_provider.rs` with `Static`, `AppRole`, and `Kubernetes` variants; refresh tokens on the existing decrypt path. Tracked under "Vault token lifecycle" in [`roadmap.md`](../planning/roadmap.md).
 
 #### Past states
 
@@ -396,7 +396,7 @@ Mitigation: split admin keys across multiple operators; maintain at least 2 acti
 
 SauronID ships dual storage backends: `sqlite` (default; `r2d2 + rusqlite` pool, single-node) and `postgres` (opt-in; `sqlx::PgPool`, real replication). Switch with `SAURON_DB_BACKEND`.
 
-Postgres backend recommended for production; SQLite default acceptable for dev/staging. See `docs/planning/roadmap.md` Plan 2 for migration progress — M1 (serializable transaction helper + `agent_call_nonces` / `ajwt_used_jtis` / `risk_rate_counters` ported, race-tested in CI) shipped 2026-05-15. Remaining tables (M2-M4) are still SQLite-only; production deployments that touch those tables must keep `SAURON_ACCEPT_SINGLE_NODE_SQLITE=1`.
+Postgres backend recommended for production; SQLite default acceptable for dev/staging. See [`roadmap.md`](../planning/roadmap.md) Plan 2 for migration progress — M1 (serializable transaction helper + `agent_call_nonces` / `ajwt_used_jtis` / `risk_rate_counters` ported, race-tested in CI) shipped 2026-05-15. Remaining tables (M2-M4) are still SQLite-only; production deployments that touch those tables must keep `SAURON_ACCEPT_SINGLE_NODE_SQLITE=1`.
 
 #### Local Postgres dev
 

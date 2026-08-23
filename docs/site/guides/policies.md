@@ -4,7 +4,7 @@ The Policy DSL is a declarative YAML/JSON document describing what an agent
 may do: tool allowlist, budget cap, rate limit, time window, data scope,
 required signatures. This page is the operational bridge — upload, bind,
 evaluate, enforce. The full language reference lives in
-[`docs/architecture/policy-dsl.md`](https://github.com/tejoker/SauronID/blob/main/docs/architecture/policy-dsl.md).
+[[`policy-dsl.md`](../../architecture/policy-dsl.md)](https://github.com/tejoker/SauronID/blob/main/docs/architecture/policy-dsl.md).
 
 ## Write
 
@@ -80,7 +80,7 @@ the process.
 
 ## Full reference
 
-- Language: `docs/architecture/policy-dsl.md` (repo)
+- Language: [`policy-dsl.md`](../../architecture/policy-dsl.md) (repo)
 - JSON schema for IDE autocomplete: `schemas/policy.schema.json`
-- Framework adapters: `docs/integration/sdk-llm-adapters.md` (repo) and the
+- Framework adapters: [`sdk-llm-adapters.md`](../../integration/sdk-llm-adapters.md) (repo) and the
   `examples/` tree.

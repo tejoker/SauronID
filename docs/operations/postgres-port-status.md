@@ -2,7 +2,7 @@
 
 This is the single source of truth for how far the Postgres backend actually
 goes. It supersedes the "ported module" counts scattered in
-`core/src/repository.rs` doc comments, `docs/architecture/tech-stack-overview.md`, and
+`core/src/repository.rs` doc comments, [`tech-stack-overview.md`](../architecture/tech-stack-overview.md), and
 `core/tests/postgres_backend_drift.sh`, which disagree with each other.
 
 ## Summary
@@ -124,7 +124,7 @@ In dependency order (sizes: S/M/L):
    version table so deploys are reproducible; today Postgres migrations are
    applied by hand with `psql -f`.
 5. **[S] Multi-tenant PG scoping** — finish the policy-binding-handler Postgres
-   path deferred in `docs/compliance/multi-tenancy-audit.md` so PG matches SQLite's full
+   path deferred in [`multi-tenancy-audit.md`](../compliance/multi-tenancy-audit.md) so PG matches SQLite's full
    tenant scoping.
 6. **[S->M] Backup/restore** — a drilled `pg_basebackup` + WAL-archiving (or
    managed-service) runbook and encryption-at-rest posture; today only

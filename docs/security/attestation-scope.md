@@ -49,7 +49,7 @@ runs inside a Nitro Enclave, generates an ephemeral Ed25519 keypair whose privat
 half never leaves, binds `user_data = sha256(public_key || parent_nonce)` so an
 old document cannot be replayed against a fresh registration, and serves the
 document over vsock. `archive/removed-2026-08/hardware-attestation/deploy-nitro/` has the EIF build and operator workflow;
-`docs/operations/tee-deployment.md` has the narrative.
+[`tee-deployment.md`](../operations/tee-deployment.md) has the narrative.
 
 Two things about that scaffolding matter for planning:
 

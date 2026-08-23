@@ -5,7 +5,7 @@
 > is not compiled in, so `nitro-enclave` emits a placeholder document and now
 > refuses to start without `SAURON_NITRO_ALLOW_STUB=1`. What is scoped here also
 > attests an *agent's* enclave-held key rather than the gateway itself — see
-> `docs/security/attestation-scope.md` for the gap that matters to a customer ("which
+> [`attestation-scope.md`](../security/attestation-scope.md) for the gap that matters to a customer ("which
 > gateway binary is running") and what closing it costs.
 
 This document covers the deployment topology and operator checklist for
@@ -249,4 +249,4 @@ behind an admin-only handler.
 | `archive/removed-2026-08/hardware-attestation/cbor.rs`                | Hand-rolled CBOR decoder + COSE_Sign1 parser + AWS chain verifier. |
 | `core/src/attestation.rs::verify_nitro_enclave` | Dispatches between dev JSON and CBOR paths.      |
 | `archive/removed-2026-08/hardware-attestation/nitro_attestation.rs`             | End-to-end tests with synthesised CBOR fixtures.    |
-| `docs/operations/tee-deployment.md`                      | This document.                                       |
+| [`tee-deployment.md`](tee-deployment.md)                      | This document.                                       |

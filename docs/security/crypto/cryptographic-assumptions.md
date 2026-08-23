@@ -2,7 +2,7 @@
 
 Per-primitive ledger: what we assume, where used, security margin, what breaks if assumption fails. Pentest readers should treat this as the truth table for every "is X really secure?" question. Write-up style is terse on purpose — each row maps one primitive to one citable code path.
 
-This doc complements `docs/security/threat-model.md`. The threat model says *what* attacks we resist; this doc says *why the math holds*, and where the cliff is if the math does not.
+This doc complements [`threat-model.md`](../threat-model.md). The threat model says *what* attacks we resist; this doc says *why the math holds*, and where the cliff is if the math does not.
 
 ---
 
@@ -47,7 +47,7 @@ This doc complements `docs/security/threat-model.md`. The threat model says *wha
 | Used for | Tamper-evident anchoring of agent-action merkle roots (`core/src/bitcoin_anchor.rs`). |
 | Expected margin | Inherits Bitcoin's. Confirmation latency ≈ 1 hour for the upgraded full attestation; calendar receipts arrive in seconds. |
 | If broken | After-the-fact rewrite of the agent-action audit log becomes feasible. Until then, every receipt-id leaf is bound to a Bitcoin block timestamp. |
-| Operator note | Calendar downtime ≠ broken security, just delayed upgrade. See `docs/operations/disaster-recovery.md` §Bitcoin-OTS-calendar-unavailable. |
+| Operator note | Calendar downtime ≠ broken security, just delayed upgrade. See [`disaster-recovery.md`](../../operations/disaster-recovery.md) §Bitcoin-OTS-calendar-unavailable. |
 
 ## 5. Solana Memo anchoring
 
@@ -57,7 +57,7 @@ This doc complements `docs/security/threat-model.md`. The threat model says *wha
 | Source | Yakovenko 2018; current Solana mainnet validator set. |
 | Used for | Low-latency confirmation of agent-action merkle roots in parallel to Bitcoin OTS (`core/src/solana_anchor.rs`). Finalized ≈ 30 s. |
 | If broken | Solana-side audit log becomes mutable, but the Bitcoin-side anchor still holds. Defence-in-depth: tampering requires forging *both* chains, which is the design intent. |
-| Cost note | Memo writes cost SOL; budget envelope documented in `docs/operations/operations.md`. |
+| Cost note | Memo writes cost SOL; budget envelope documented in [`operations.md`](../../operations/operations.md). |
 
 ## 6. Legacy OPRF on the Ristretto255 group
 
@@ -68,7 +68,7 @@ This doc complements `docs/security/threat-model.md`. The threat model says *wha
 | Expected margin | ≈ 128-bit. |
 | Used for | Development/migration compatibility only. Production startup quarantines the unauthenticated legacy OPRF. Passwordless Ed25519 challenge/response is the production user-auth path; use a reviewed OPAQUE service only if passwords become a requirement. |
 | If broken | An attacker recovering the OPRF scalar can deterministically derive every per-tenant key-image from any input — effectively cross-link all users on the system. |
-| Operator note | `SAURON_OPRF_SEED` is loaded with the same envelope-encryption pipeline as `SAURON_JWT_SECRET` (`core/src/state.rs:170-254`, `core/src/secret_provider.rs`). Rotation = breaking change; see `docs/security/key-rotation.md`. |
+| Operator note | `SAURON_OPRF_SEED` is loaded with the same envelope-encryption pipeline as `SAURON_JWT_SECRET` (`core/src/state.rs:170-254`, `core/src/secret_provider.rs`). Rotation = breaking change; see [`key-rotation.md`](../key-rotation.md). |
 
 ## 7. SHA-256 Merkle trees
 

@@ -2,7 +2,7 @@
 
 Legal request lands. Operator opens this doc. Covers: what *can* be revealed without harming other tenants, what *cannot* be revealed, the process to follow, and the crypto unlinkability story that bounds what is even possible to reveal.
 
-Cross-references: `docs/security/threat-model.md`, `docs/security/key-rotation.md`, `docs/operations/disaster-recovery.md` §9 (GDPR-wipe is the inverse procedure).
+Cross-references: [`threat-model.md`](../security/threat-model.md), [`key-rotation.md`](../security/key-rotation.md), [`disaster-recovery.md`](../operations/disaster-recovery.md) §9 (GDPR-wipe is the inverse procedure).
 
 ---
 
@@ -33,7 +33,7 @@ These artefacts let the requester reconstruct *what the specified tenant's agent
 | `SAURON_JWT_SECRET` | Same. Reveals would let the requester forge A-JWTs for any agent of any tenant. |
 | `SAURON_TOKEN_SECRET` | Same. Reveals would let the requester forge session HMACs. |
 | `SAURON_OPRF_SEED` | Same. Reveals would let the requester deterministically derive every user's key-image across every tenant — a global de-anonymisation primitive. |
-| ZK trapdoor / toxic waste | Should not exist if ceremony was honest (`zkp/ceremony/README.md`). If it does, see `docs/operations/disaster-recovery.md` §8. Not a server-side artefact. |
+| ZK trapdoor / toxic waste | Should not exist if ceremony was honest (`zkp/ceremony/README.md`). If it does, see [`disaster-recovery.md`](../operations/disaster-recovery.md) §8. Not a server-side artefact. |
 | Agent PoP private keys | Never server-side. Only public keys + attestations. |
 | Pre-image of merkle hashes if the underlying receipt was deleted | Once a receipt's leaf hash is on Bitcoin (via OTS) the leaf is immutable, but if the pre-image was deleted (e.g., GDPR wipe), the leaf is just a hash — the original content cannot be recovered. The anchor immutability *prevents* us from un-publishing the hash, not from forgetting the pre-image. This is by design. |
 | Cross-tenant statistical inferences from aggregated cohort numbers | `archive/removed-2026-08/cohort-stats-compliance/dp/*` applies k-anonymity (`k_anonymity::suppress`) and Laplace / Gaussian DP noise. Per-period ε budget caps de-anonymisation. See "Privacy bound" section below. |
@@ -78,7 +78,7 @@ OPRF + ring identity is the bedrock of "the operator can't *link* on its own."
 **Practical consequence.** A subpoena for "all activity by John Doe" is unanswerable unless John Doe cooperates or another party (e.g., a merchant) hands over a receipt that ties John to a key-image. The operator does not hold the link.
 
 **Operator caveat.** This holds only if:
-- The OPRF seed has not leaked (§4 of `docs/security/key-rotation.md`).
+- The OPRF seed has not leaked (§4 of [`key-rotation.md`](../security/key-rotation.md)).
 - The operator has not been coerced into running a "log every blinded request with its IP" sidecar. Server logs are intentionally minimal.
 - The user's own key-image storage has not been compromised on the user side.
 
@@ -102,7 +102,7 @@ When a subpoena requests "aggregated user count for cohort Y":
 |---|---|
 | Bitcoin block contents | Public. We cannot un-publish a merkle root from a Bitcoin block. A subpoena demanding we "remove the on-chain anchor" is uncomplyable. |
 | Solana memo contents | Public. Same. |
-| Anchor timing / batching cadence | Public. The batching interval (`SAURON_ACTION_ANCHOR_INTERVAL_SECS`) is operator config and is documented in `docs/operations/operations.md`. |
+| Anchor timing / batching cadence | Public. The batching interval (`SAURON_ACTION_ANCHOR_INTERVAL_SECS`) is operator config and is documented in [`operations.md`](../operations/operations.md). |
 
 The on-chain anchors are *hashes only* — there is no pre-image leakage from the anchor itself. A requester walking Bitcoin / Solana sees `sauronid:v1:<32-byte-hex>` and nothing else.
 

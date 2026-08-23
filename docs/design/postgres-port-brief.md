@@ -158,7 +158,7 @@ Then, all of:
 - [ ] The 16-attack empirical suite green with `SAURON_DB_BACKEND=postgres`:
       `SAURON_REQUIRE_CALL_SIG=1 ./scripts/dev/quickstart.sh`
 - [ ] Update `EXPECTED_PINNED` in `postgres_dispatch_coverage.rs` and the
-      figures in `docs/operations/production-readiness.md` in the same commit
+      figures in [`production-readiness.md`](../operations/production-readiness.md) in the same commit
 - [ ] Drop `SAURON_ACCEPT_SINGLE_NODE_SQLITE` from the Postgres path in
       `assert_production_sqlite_acknowledged()` — that gate exists only because
       of this gap

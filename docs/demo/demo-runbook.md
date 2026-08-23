@@ -186,7 +186,7 @@ python3 scripts/demo_real_agent.py --core https://core.<domain> --admin-key ... 
   takes ~1 h — the dashboard shows the honest pending/confirmed states.
 - **Trust model**: PoP keys are server-derived today, so the operator of the
   core is trusted. Hardware-rooted PoP (AWS Nitro / TPM2) is roadmap; see
-  `docs/security/threat-model.md` and `docs/operations/tee-deployment.md`.
+  [`threat-model.md`](../security/threat-model.md) and [`tee-deployment.md`](../operations/tee-deployment.md).
 
 ## Teardown
 

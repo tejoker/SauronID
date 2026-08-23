@@ -178,7 +178,7 @@ first, full confidence-suite on Postgres, then production.
 ### M5 — Decommission single-node-SQLite acknowledgement (DEFERRED, target Q3 2026)
 
 Remove the `SAURON_ACCEPT_SINGLE_NODE_SQLITE` requirement from the production
-profile in `docs/operations/operations.md`, archive the SQLite backend behind a
+profile in [`operations.md`](../operations/operations.md), archive the SQLite backend behind a
 `#[cfg(feature = "legacy-sqlite")]` flag, switch default features to
 `["postgres"]`.
 
@@ -186,7 +186,7 @@ profile in `docs/operations/operations.md`, archive the SQLite backend behind a
 deprecation announcement, and at least one minor-version cycle before flip.
 Doing this hot would strand existing dev installs.
 
-See `docs/operations/operations.md` for backend env vars + the "Phase 3" porting pattern.
+See [`operations.md`](../operations/operations.md) for backend env vars + the "Phase 3" porting pattern.
 
 ## Plan 3 — Anchor path simplification (shipped 2026-05-15)
 
@@ -206,7 +206,7 @@ No outstanding milestones for this plan.
 
 ## Plan 4 — Hardware-attestation breadth (SGX / SEV / Nitro / Apple)
 
-See `docs/security/threat-model.md`. Same shape as Plan 1: M1 parses, M2 verifies, M3
+See [`threat-model.md`](../security/threat-model.md). Same shape as Plan 1: M1 parses, M2 verifies, M3
 binds the PoP key. Each kind shipped independently. No active milestones in
 flight; queued behind Plan 1 M3.
 

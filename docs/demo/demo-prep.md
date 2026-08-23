@@ -86,7 +86,7 @@ or Docker on the VM — just Caddy (and Node only if you enable the dashboard).
    cp core.env.example core.env   # secrets + flags (see §4); DATABASE_PATH preset
    cp site.env.example site.env   # domains (see §3) + dashboard basic-auth + ENABLE_DASHBOARD
    ```
-5. **(Optional) Solana** — see §5 / `docs/demo/demo-anchoring.md`. Default is off
+5. **(Optional) Solana** — see §5 / [`demo-anchoring.md`](demo-anchoring.md). Default is off
    (Bitcoin OTS only, free).
 6. **Deploy:** `scripts/demo/democtl.sh deploy-native` (runs `vm-setup.sh`:
    installs Caddy, lays out `/opt/sauronid`, starts the `sauronid-core` systemd
@@ -144,7 +144,7 @@ caddy hash-password --plaintext 'pick-a-password'   # or: docker run --rm caddy 
 
 ## 5. Anchoring — Bitcoin works out of the box; Solana optional
 
-Full detail + the verified Bitcoin proof: **`docs/demo/demo-anchoring.md`**.
+Full detail + the verified Bitcoin proof: **[`demo-anchoring.md`](demo-anchoring.md)**.
 
 - **Bitcoin (OpenTimestamps): already working, free, no key.** Leave
   `SAURON_BITCOIN_ANCHOR_PROVIDER=opentimestamps`. The dashboard `/anchors` page
@@ -152,7 +152,7 @@ Full detail + the verified Bitcoin proof: **`docs/demo/demo-anchoring.md`**.
   block proof ~1 h later). This alone proves the anchor story.
 - **Solana: optional.** Free on devnet but the faucet is currently gated; set
   `SAURON_SOLANA_ENABLED=0` to skip, or do the 2-minute web-faucet step in
-  `docs/demo/demo-anchoring.md` if you want the on-chain memo too.
+  [`demo-anchoring.md`](demo-anchoring.md) if you want the on-chain memo too.
 
 ---
 

@@ -75,7 +75,7 @@ agent process is hostile and the network path is attacker-influenced.
 - The egress capability gateway: SSRF, DNS rebinding, redirect handling,
   credential brokerage, one-use capability reuse. `core/src/egress_gateway.rs`.
 - Multi-tenancy: cross-tenant read, write, enumeration and rate-limit
-  interference. `docs/compliance/multi-tenancy-audit.md` states the intended boundary and
+  interference. [`multi-tenancy-audit.md`](../../compliance/multi-tenancy-audit.md) states the intended boundary and
   its known gaps — treat that document as a claim to falsify.
 - Admin surface: static key versus JWT with `tnt` allowlist, the cross-tenant
   super-admin escape, and the dashboard session.
@@ -92,10 +92,10 @@ that a stated control does not hold is a finding.
 - 16 modelled attacks with a runnable scenario each, results and provenance in
   `redteam/empirical-results.json`; the suite is `redteam/`.
 - A 9-scenario invariant suite (`redteam/src/index.ts`).
-- Threat model with an explicit out-of-scope section: `docs/security/threat-model.md`.
-- Self-declared production boundary: `docs/operations/production-readiness.md`.
+- Threat model with an explicit out-of-scope section: [`threat-model.md`](../threat-model.md).
+- Self-declared production boundary: [`production-readiness.md`](../../operations/production-readiness.md).
 - Reproducible RISC Zero guest image IDs, verifiable from source.
-- `docs/security/crypto/crypto-review-attestation.md` is an **internal** artifact with an
+- [`crypto-review-attestation.md`](../crypto/crypto-review-attestation.md) is an **internal** artifact with an
   unfilled reviewer placeholder. It is not an independent audit and must not be
   read as one.
 

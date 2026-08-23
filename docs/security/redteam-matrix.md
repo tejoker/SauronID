@@ -2,7 +2,7 @@
 
 Sprint-12 redteam scenarios indexed by ID, category, attack description, expected outcome, and runtime status (dynamic vs source-review). Aim: ≥ 80% dynamic.
 
-The existing `docs/planning/empirical-comparison.md` keeps the A1-A16 invariant matrix vs other vendors; this doc tracks the S12 binding-bypass / proof-integrity / protocol-abuse / replay / cross-tenant / egress+privacy scenarios.
+The existing [`empirical-comparison.md`](../planning/empirical-comparison.md) keeps the A1-A16 invariant matrix vs other vendors; this doc tracks the S12 binding-bypass / proof-integrity / protocol-abuse / replay / cross-tenant / egress+privacy scenarios.
 
 | ID | Category | Description | Expected | Status |
 |---|---|---|---|---|

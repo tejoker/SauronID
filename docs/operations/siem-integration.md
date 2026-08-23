@@ -81,4 +81,4 @@ A push integration makes the authorization boundary depend on the
 availability and credentials of an external log endpoint, and a compromised
 core could be induced to exfiltrate through it. File-plus-scrape keeps the
 core's egress surface at zero while giving the SIEM an identical event
-stream. See `docs/security/threat-model.md` for the full rationale.
+stream. See [`threat-model.md`](../security/threat-model.md) for the full rationale.

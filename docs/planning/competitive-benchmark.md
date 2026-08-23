@@ -18,7 +18,7 @@ the earlier run did not capture it:
 | 2026-08-20 | postgres | 100 | 64 ms | 2197.8 |
 
 Same harness, same operation. The 2026-05-15 rows are almost certainly SQLite — the
-default, and the tier `docs/operations/load-test.md` measures at 636 rps with a monotonically
+default, and the tier [`load-test.md`](../operations/load-test.md) measures at 636 rps with a monotonically
 drifting tail — so quoting them as "SauronID throughput" understates the product by
 about 7x and imports a 2.1-second p99 that the PostgreSQL tier does not have. Those
 rows are labelled `unrecorded` rather than deleted: they are real measurements of
@@ -32,7 +32,7 @@ hash-chained receipt and evaluates policy, while both reference servers are
 in-process Node handlers that verify a signature and return. The comparison is
 useful for the cost of the guarantees, not as a like-for-like.
 
-This file exists because the qualitative table in `docs/planning/empirical-comparison.md` (Yes / No / Partial) is not defensible at a YC technical-partner level. They will ask for numbers and a re-runnable harness. This document defines exactly what we measure, against whom, how, and how we report losses without hiding them.
+This file exists because the qualitative table in [`empirical-comparison.md`](empirical-comparison.md) (Yes / No / Partial) is not defensible at a YC technical-partner level. They will ask for numbers and a re-runnable harness. This document defines exactly what we measure, against whom, how, and how we report losses without hiding them.
 
 ---
 
@@ -181,7 +181,7 @@ Footer — measured 2026-05-15 on `Linux DESKTOP-RLTKLJS 6.6.114.1-microsoft-sta
 We measured. We lost some cells. We are not hiding them.
 
 - **conc=1, p99.** DPoP p99 = 4 ms, HTTP-Sig p99 = 2 ms, SauronID p99 = 75 ms. The Δ is the SQLite WAL fsync tail on the per-call atomic nonce consume (one INSERT into `call_nonces`) plus the audit-log INSERT in the handler. DPoP's nonce store in the harness is an in-memory `Set` and pays zero disk cost — same for our http-sig in-memory `Set`. A real DPoP or RFC 9421 deployment with durable replay protection would pay the same tail. We accept the cost for fail-closed binding.
-- **conc=1, RPS.** HTTP-Sig 998, DPoP 677, SauronID 244 (4.1× gap vs http-sig, 2.8× vs DPoP). One request = one nonce-row INSERT + one egress-log INSERT, each fsync-bounded by SQLite's WAL. Postgres swap (`SAURON_DB_BACKEND=postgres`, see `docs/operations/operations.md` Phase 3) lifts that ceiling. The fair comparison is "DPoP/RFC 9421 with a persistent nonce store" which pays the same per-call write cost SauronID already pays.
+- **conc=1, RPS.** HTTP-Sig 998, DPoP 677, SauronID 244 (4.1× gap vs http-sig, 2.8× vs DPoP). One request = one nonce-row INSERT + one egress-log INSERT, each fsync-bounded by SQLite's WAL. Postgres swap (`SAURON_DB_BACKEND=postgres`, see [`operations.md`](../operations/operations.md) Phase 3) lifts that ceiling. The fair comparison is "DPoP/RFC 9421 with a persistent nonce store" which pays the same per-call write cost SauronID already pays.
 - **conc=100, p95/p99.** SauronID p95 = 2087 ms, p99 = 2100 ms. DPoP holds 159 / 189; HTTP-Sig holds 157 / 175. Head-of-line blocking on the SQLite single-writer queue: 100 concurrent INSERTs against one WAL file → batch wait. SauronID's p50 = 50 ms in the same column beats both peers (DPoP 77, HTTP-Sig 68) because the per-request hot path itself is fast — only the contention tail hurts. Concrete next step: re-run with `SAURON_DB_BACKEND=postgres`; the harness is backend-agnostic.
 - **HTTP-Sig vs DPoP parity.** As expected, the two stateless-verify-only stacks come out within noise of each other (HTTP-Sig 1/2/2 vs DPoP 1/2/4 at conc=1; HTTP-Sig 68/157/175 vs DPoP 77/159/189 at conc=100). Both do `Ed25519 verify(canonical-bytes)` on the request thread with an in-memory `Set` replay store; the small HTTP-Sig win is the slightly cheaper canonicalisation (line-oriented string concat vs JWT base64url decode of two JSON blobs). The headline read: **stateless verify with no DB sits around 1 k RPS on this hardware regardless of which spec you pick.** SauronID's lower numbers are the cost of the durable nonce + audit-log writes, not the per-call crypto.
 
@@ -225,7 +225,7 @@ This section anticipates the YC partner asking "what if you lose on metric X?". 
 | **HTTP Msg Sigs handles A5 better than us** | low | RFC 9421 does handle body integrity natively. If our LoC count or our latency is worse on this single attack, the honest answer is "yes, on a pure body-integrity workload RFC 9421 is the right primitive; we use the same primitive internally for our call-sig and add the rest of the stack on top." |
 | **A YC partner asks "why not just contribute SauronID's missing pieces to DPoP?"** | high | "Three of the missing pieces are out-of-scope for the DPoP RFC by construction — intent leash, audit anchor, config drift. The IETF process for adding those is a 3-year horizon. Productising them in a self-hostable binary lets buyers use them this quarter." |
 
-If a result moves into the **"SauronID loses on a metric we claim to win"** bucket, we MUST update the README and `docs/planning/empirical-comparison.md` *before* the pitch, not after.
+If a result moves into the **"SauronID loses on a metric we claim to win"** bucket, we MUST update the README and [`empirical-comparison.md`](empirical-comparison.md) *before* the pitch, not after.
 
 ---
 

@@ -2,7 +2,7 @@
 
 Four findings from the 2026-08-13 audit, in the order they should be worked.
 Sequenced by dependency, not by severity: item 1 gates the HA claim and is a
-prerequisite for the gateway-attestation work in `docs/security/attestation-scope.md`,
+prerequisite for the gateway-attestation work in [`attestation-scope.md`](../security/attestation-scope.md),
 while items 2-4 are packaging and disclosure that cost hours and buy
 disproportionate credibility in a security review.
 
@@ -109,7 +109,7 @@ root *is* set. The placeholder cannot pass.
 ### Why it was still a problem
 
 `deploy/nitro/` ships a Dockerfile, an operator `run.sh` and a README, and
-`docs/operations/tee-deployment.md` runs 244 lines. That reads as a supported deployment
+[`tee-deployment.md`](../operations/tee-deployment.md) runs 244 lines. That reads as a supported deployment
 mode. An operator following it end to end reaches a stub and finds out late; a
 salesperson saying "we support Nitro enclaves" would be technically defensible
 and practically false. Unbacked capability claims are what a security review is
@@ -129,7 +129,7 @@ has been exercised on real Nitro hardware.
 Days, not weeks, for the agent-key path: add the dependency, replace
 `request_attestation_document`, test on a real Nitro instance. Gateway
 self-attestation is a different project — it needs item 1 finished first, since
-an enclave cannot own a local SQLite file. See `docs/security/attestation-scope.md`.
+an enclave cannot own a local SQLite file. See [`attestation-scope.md`](../security/attestation-scope.md).
 
 ---
 
