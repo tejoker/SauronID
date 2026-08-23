@@ -2,6 +2,7 @@
 //! carry. `use super::*` still reaches the parent module's private items.
 
 use super::*;
+use axum::http::StatusCode;
 
 /// Serialises the env mutation below — `set_var` is process-wide and cargo
 /// runs tests in this binary on parallel threads.
