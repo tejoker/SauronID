@@ -46,7 +46,7 @@ export default function RootLayout({
         STORY: An operator understands in seconds they can build an agent, give it real capabilities, define exactly what it may do, and safely let it act — then joins early access.
         FIRST VIEWPORT: Headline left with two CTAs and trust line; right, a launcher window showing one agent, its job, its tools and three visible boundaries.
         FORM: Checkpoint-path structure — the home is organized along one continuous rail whose five checkpoints ARE the product grammar (Intent, Capabilities, Boundaries, Run, Proof); index 5 of a 6-structure shortlist, chosen by external roll. World stays brand-pinned (brand system v2). Motion: the path draws and checkpoints light on first view; the run demo animates; nothing else moves.
-        FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and docs/design/design-system.md
+        FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and docs/company-brain/design-system.md
         */}
         <a className="skip-link" href="#main">
           Skip to content

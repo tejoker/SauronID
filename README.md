@@ -350,7 +350,7 @@ A branded Next.js console at `dashboard/` reads **only live data from the runnin
 | **Policies** (`/policies`) | Policy invariants bound to agents, with an evaluation endpoint |
 | **Settings** (`/settings`) | Tenant + core-connection settings |
 
-Visual grammar and component rules are in [`docs/design/design-system.md`](docs/design/design-system.md): light-first canvas (`#f7faff`), `#0054f3` for the one actionable thing, `#000d35` only where the product proves something. The applied values live with the code that imports them — [`site/styles/tokens.css`](site/styles/tokens.css) for the site, [`dashboard/app/globals.css`](dashboard/app/globals.css) for the console, which still ships the May 2026 dark palette and is not yet realigned.
+Visual identity is in [`docs/company-brain/`](docs/company-brain/): light-first canvas (`cloud-50 #f7faff`), `signal-600 #0054f3` for the one actionable thing, `midnight-950 #000d35` only where the product proves something. Canonical tokens: [`brand/tokens.css`](docs/company-brain/brand/tokens.css). Brand book: [`brand/brand-book.pdf`](docs/company-brain/brand/brand-book.pdf). The console still ships the May 2026 dark palette and is not yet realigned.
 
 ## End-to-end simulation
 
@@ -487,9 +487,11 @@ scripts/demo/          Live-demo driver (democtl.sh) + real LLM agent-runner (ag
 scripts/               Python simulation + audit utilities (simulate_real_actions.py, solana_audit.py, ...)
 deploy/                docker-compose (dev/prod/postgres), Helm chart, Terraform module,
                        AND a no-Docker native/systemd path (deploy/native/) + Solana setup
-docs/                  Technical only, five folders: architecture/, security/,
-                       integration/, design/, and the docs site source (site/).
-                       See docs/README.md.
+docs/                  One folder per domain: architecture/, security/, operations/,
+                       compliance/, planning/, integration/, demo/, zk/, sales/,
+                       docs site source (docs/site/). See docs/README.md.
+docs/company-brain/    The reference point: product truth, design system, brand
+                       guidelines, logo and brand book
 
 archive/removed-2026-08/  The four subsystems that were not agent constraint: KYC consent,
                           hardware attestation, Groth16 ZKP, cohort stats + compliance.
@@ -498,6 +500,14 @@ archive/removed-2026-08/  The four subsystems that were not agent constraint: KY
                           the working tree; it lives at the archive/banking-2025 git tag.)
 ```
 
+## Company brain: where the product thinking lives
+
+The product decisions live in [`docs/company-brain/`](docs/company-brain/README.md),
+written one file at a time and in order: a quantified problem, then the solution
+that answers it, then the product, the features, the market, the business model,
+the pricing. Each file states the framework it applies (MIT's 24 Steps, Jobs to
+be Done, 7 Powers, Five Forces, Sequoia's business plan template). Every figure
+carries its source and a quality grade.
 
 | Phase | Fichiers | État |
 |---|---|---|
@@ -516,6 +526,7 @@ Comment travailler dans ce dépôt et quoi lire avant quoi : [`CLAUDE.md`](CLAUD
 
 - Core service: [`core/`](core/) — Rust, axum, ~50k lines under `core/src` (recount with `find core/src -name '*.rs' -print0 | xargs -0 wc -l`).
 - Mandate Console: [`dashboard/`](dashboard/) — Next.js + Chart.js, dark branded UI reading live core data only.
+- Company brain: [`docs/company-brain/`](docs/company-brain/README.md). Why the product exists: problems, solution, product, features, market, business model, pricing. Every product claim is decided there first.
 - TypeScript client: [`sdk/typescript/`](sdk/typescript/) — `signCall`, `register`, `popKeys`.
 - Python client: [`sdk/python/sauronid_client/`](sdk/python/sauronid_client/) — LangChain + OpenAI + Anthropic adapters.
 - Empirical attack suite: [`redteam/`](redteam/) — 9 invariant scenarios + 16-attack empirical suite + 18-attack Tavily fuzzer.
@@ -526,6 +537,7 @@ Comment travailler dans ce dépôt et quoi lire avant quoi : [`CLAUDE.md`](CLAUD
 - Transparent proofs: [`transparent-zk/`](transparent-zk/) — both guests, the customer verifier, and [`verify.sh`](transparent-zk/verify.sh), which reproduces the published image IDs in a pinned container.
 - Release verification: [`docs/security/verifying-what-you-run.md`](docs/security/verifying-what-you-run.md) — the procedure to hand a customer who cannot read this source.
 - Deployment: [`deploy/README.md`](deploy/README.md) — every scenario, every env var.
+- Why the product exists: [`docs/company-brain/`](docs/company-brain/README.md) — problems, solution, product, features, positioning, pricing, in that order. Every product claim is decided there first.
 - Design system: [`docs/design/design-system.md`](docs/design/design-system.md) — the reference to read before touching any interface.
 - Threat model: [`docs/security/threat-model.md`](docs/security/threat-model.md) — what we protect against, what we don't.
 - Attack suite: [`redteam/`](redteam/) — the 16 modelled attacks, each with a runnable scenario.
