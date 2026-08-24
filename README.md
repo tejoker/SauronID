@@ -470,7 +470,6 @@ sdk/go/                Go SDK (same signed-call flow)
 sdk/mcp-server/        MCP server exposing the leash to any MCP client
 examples/              Runnable examples, one folder per framework/use-case
 redteam/               16-attack empirical suite + 18-attack Tavily fuzzer + competitive benchmark
-contracts/             Solana Anchor program (sauron_ledger)
 migrations/postgres/   Postgres schema
 schemas/               Shared JSON schemas + OpenAPI spec (schemas/openapi.yaml)
 transparent-zk/        RISC Zero guests (stats + action-policy), journal types, customer
@@ -531,7 +530,6 @@ Comment travailler dans ce dépôt et quoi lire avant quoi : [`CLAUDE.md`](CLAUD
 - Simulation + audit scripts: [`scripts/`](scripts/) — Python utilities; dev orchestration shells under [`scripts/dev/`](scripts/dev/).
 - Deploy config: [`deploy/`](deploy/) — docker-compose (dev/prod/postgres) **or** no-Docker native/systemd ([`deploy/native/`](deploy/native/): `vm-setup.sh`, `sauronid-core.service`, `sauronid-dashboard.service`, Caddyfiles).
 - Live-demo driver: [`scripts/demo/democtl.sh`](scripts/demo/) — build-native / deploy-native / runner / status; pairs with the real LLM agent-runner (`agent_runner.py`) behind the Console.
-- Custom Solana program: [`contracts/sauron_ledger/`](contracts/sauron_ledger/) — Anchor program (optional; default uses Solana Memo).
 - Transparent proofs: [`transparent-zk/`](transparent-zk/) — both guests, the customer verifier, and [`verify.sh`](transparent-zk/verify.sh), which reproduces the published image IDs in a pinned container.
 - Release verification: [`docs/security/verifying-what-you-run.md`](docs/security/verifying-what-you-run.md) — the procedure to hand a customer who cannot read this source.
 - Deployment: [`deploy/README.md`](deploy/README.md) — every scenario, every env var.

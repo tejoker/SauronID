@@ -27,7 +27,7 @@ OPRF code remain development compatibility surfaces, quarantined in production.
 | Client SDKs | TypeScript, Python, and Go | Call signing, passwordless auth, policy/capability integration, stats submission |
 | Frontend | Next.js (App Router) + React 19 + Tailwind | Operator dashboard, policy authoring, cohort views |
 | Transparent proofs | RISC Zero zkVM native STARK (`risc0-zkvm` 3.0.5) | Ceremony-free stats and action-policy claims over complete anchored batches |
-| On-chain anchoring | Bitcoin (OpenTimestamps) + Solana (Memo Program, optional custom Anchor program) | Public, tamper-evident timestamping |
+| On-chain anchoring | Bitcoin (OpenTimestamps) + Solana (Memo Program) | Public, tamper-evident timestamping |
 | Privacy primitives | none in the tree: the DP module and the custom Paillier HE were archived or deleted in 2026-08 | The cohort-publication surface they served did not constrain an agent |
 | Hardware attestation | Optional Ed25519/TPM2/Nitro evidence | Separate deployment assurance tier, not required by authorization or STARK proofs |
 | Cryptography | curve25519-dalek, ed25519-dalek, ring, sha2, hmac, subtle | Signatures, hashes, constant-time comparisons |
@@ -208,7 +208,7 @@ OpenTimestamps is the Bitcoin anchoring backend.
 
 **Trade-off:** Bitcoin block confirmation takes approximately one hour; OpenTimestamps upgrades are polled in the background.
 
-### Solana via Memo Program (default) + optional custom Anchor program
+### Solana via Memo Program
 
 Solana provides a second anchor with fast confirmation.
 
@@ -216,8 +216,6 @@ Solana provides a second anchor with fast confirmation.
 - Sub-second finality for near-real-time anchoring.
 - The Memo Program is a built-in, free system program that records arbitrary bytes on-chain — no deployed program required.
 - Solana Explorer renders Memo transactions in a way that makes externally verifying an anchor trivial.
-
-The repository also includes an optional custom [Anchor program](../../contracts/sauron_ledger/) (Solana smart contract) for operators who want richer on-chain semantics. Default deployment uses the Memo path.
 
 **Alternatives considered:**
 - Ethereum L1 — too expensive per transaction.

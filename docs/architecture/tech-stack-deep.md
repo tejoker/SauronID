@@ -27,7 +27,7 @@ Audience: engineers joining the project, security auditors, anyone considering f
 4. [Cryptographic protocols](#4-cryptographic-protocols)
 5. [Audit chain and Merkle tree](#5-audit-chain-and-merkle-tree)
 6. [Bitcoin anchoring (OpenTimestamps)](#6-bitcoin-anchoring-opentimestamps)
-7. [Solana anchoring (Memo + custom Anchor program)](#7-solana-anchoring-memo--custom-anchor-program)
+7. [Solana anchoring (Memo Program)](#7-solana-anchoring-memo-program)
 8. [Policy DSL: parser, compiler, evaluator](#8-policy-dsl-parser-compiler-evaluator)
 9. [Multi-tenancy model](#9-multi-tenancy-model)
 10-13. [Archived subsystems (differential privacy, Paillier, hardware attestation, Groth16)](#10-13-archived-subsystems-differential-privacy-paillier-hardware-attestation-groth16)
@@ -61,7 +61,7 @@ hackeurope-24/
 │   │   ├── audit/                  # Audit reports + selective disclosure
 │   │   ├── aggregation/            # Customer-side stat submission
 │   │   ├── bitcoin_anchor.rs       # OpenTimestamps client
-│   │   ├── solana_anchor.rs        # Solana Memo / Anchor program client
+│   │   ├── solana_anchor.rs        # Solana Memo-program client (optional)
 │   │   ├── db.rs                   # Database connection + backend selection
 │   │   ├── identity.rs             # Operator + user identity
 │   │   ├── merkle.rs               # Merkle tree primitives
@@ -103,8 +103,6 @@ hackeurope-24/
 │   ├── types/               # Shared statement types
 │   └── verifier/            # Receipt verification
 ├── archive/removed-2026-08/ # Subsystems removed in the 2026-08 pass
-├── contracts/
-│   └── sauron_ledger/       # Solana Anchor program (Rust)
 ├── dashboard/               # Next.js 16 frontend
 │   ├── package.json
 │   ├── app/                 # App Router pages + API routes
@@ -140,7 +138,6 @@ hackeurope-24/
 | Node.js | 20.x LTS | Required by Next.js 16 and the SDK |
 | Python | 3.9 | Lower bound declared in pyproject.toml |
 | PostgreSQL | 14+ | If using Postgres backend |
-| Solana CLI | 1.18+ | For Anchor program deployment (optional) |
 | anchor-cli | 0.30+ | For Solana program build |
 
 ### System libraries
@@ -526,7 +523,7 @@ Selection via `SAURON_OTS_PROVIDER=http|mock`.
 
 ---
 
-## 7. Solana anchoring (Memo + custom Anchor program)
+## 7. Solana anchoring (Memo Program)
 
 ### 7.1 Default path: Memo Program
 
@@ -554,39 +551,24 @@ rpc_client.send_and_confirm_transaction(&tx)?;
 
 **Cost:** ~0.000005 SOL (~$0.0007) per anchor at current prices.
 
-### 7.2 Optional path: custom Anchor program
+### 7.2 There is no custom program
 
-For operators wanting richer on-chain semantics (queryable root state, on-chain admin actions), the repository ships a Solana Anchor program at [contracts/sauron_ledger/](../../contracts/sauron_ledger/).
+A Solana Anchor program used to sit at `contracts/sauron_ledger/`, offered here
+as an optional path for operators wanting queryable on-chain root state. It is
+removed, at the tag `archive/sauron-ledger-2024`.
 
-**Program ID:** declared in `contracts/sauron_ledger/programs/sauron_ledger/src/lib.rs`.
+Two reasons, and the second is why the option was never real. Its own header
+described it as anchoring the merkle root of **KYC** commitments — it was the
+2024 contract, carried through the pivot unchanged, and KYC was archived in
+2026-08 because SauronID binds agents rather than human identities. And nothing
+outside that directory ever referenced its program ID, its `update_root`
+instruction or its `sauron_state` PDA: `solana_anchor.rs` has always gone
+through the Memo program. No CI job built it, and `Anchor.toml` declared devnet
+against a personal wallet.
 
-**State:**
-
-```rust
-#[account]
-pub struct LedgerState {
-    pub authority: Pubkey,
-    pub current_root: [u8; 32],
-    pub counter: u64,
-    pub last_updated_slot: u64,
-}
-```
-
-**Instructions:**
-
-- `initialize` — creates the ledger PDA, sets the authority.
-- `update_root` — only the authority can call; commits a new root and increments the counter.
-- `query_root` — read-only RPC for clients.
-
-**Build:**
-
-```bash
-cd contracts/sauron_ledger
-anchor build
-anchor deploy --provider.cluster devnet
-```
-
-**When to use:** when SauronID is the operator of record for a regulated process and on-chain queryability of the current root is required (e.g., for smart-contract integrations).
+The commitment lives in the merkle root, not on the chain. Solana's job here is
+durable timestamping, which the Memo program does with no deploy step on devnet
+or mainnet.
 
 ### 7.3 RPC configuration
 

@@ -47,7 +47,7 @@ Everything else
 ---------------
 
     examples/, redteam/, scripts/, deploy/, docs/, schemas/, site/,
-    contracts/, migrations/, release/, archive/
+    migrations/, release/, archive/
 
 Supporting material for the above. Not separately licensed: treat it as
 Apache-2.0 where it accompanies an Apache-2.0 component, and as BUSL-1.1 where
