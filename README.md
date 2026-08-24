@@ -487,11 +487,9 @@ scripts/demo/          Live-demo driver (democtl.sh) + real LLM agent-runner (ag
 scripts/               Python simulation + audit utilities (simulate_real_actions.py, solana_audit.py, ...)
 deploy/                docker-compose (dev/prod/postgres), Helm chart, Terraform module,
                        AND a no-Docker native/systemd path (deploy/native/) + Solana setup
-docs/                  One folder per domain: architecture/, security/, operations/,
-                       compliance/, planning/, integration/, demo/, zk/, sales/,
-                       docs site source (docs/site/). See docs/README.md.
-docs/company-brain/    The reference point: product truth, design system, brand
-                       guidelines, logo and brand book
+docs/                  Six folders, one role each: company-brain/ (why the product
+                       exists), architecture/, security/, integration/, design/,
+                       and the docs site source (site/). See docs/README.md.
 
 archive/removed-2026-08/  The four subsystems that were not agent constraint: KYC consent,
                           hardware attestation, Groth16 ZKP, cohort stats + compliance.

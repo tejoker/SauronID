@@ -102,7 +102,9 @@ du company brain, qui décidera ce qu'on connecte et dans quel ordre.
 Les sous-systèmes retirés en août 2026 (confidentialité différentielle et
 statistiques de cohorte, attestation matérielle, Groth16) sont dans
 [`archive/removed-2026-08/`](../archive/removed-2026-08/), conception et code
-ensemble.
+ensemble. `tee-deployment.md` a rejoint `attestation-scope.md` dans
+`hardware-attestation/` : quatre fichiers de ce dossier le citent, un document
+de sous-système suit son code.
 
 Les dossiers `demo/`, `operations/`, `planning/`, `sales/`, `compliance/` et
 `web/` ont été supprimés le 23 août 2026 : des fichiers écrits avant que le

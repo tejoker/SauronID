@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exported; the invariant suite's `jti_replay_blocked` now calls `/agent/verify`,
   which is where the jti is actually spent. **16/16 empirical and 9/9 invariant
   scenarios pass after the removal.**
-- `core/tests/run_confidence_suite.sh` no longer invokes the KYA
+- `core/tests/run_confidence_suite.sh` (since removed) no longer invoked the KYA
   delegated/autonomous/matrix/jti scripts or the restart phase. Those scripts
   only ever drove `/kyc/*`, and they had already been untracked in `10e0d67` —
   so on a clean checkout the confidence suite was calling files that were not
@@ -108,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - **The PostgreSQL tier is measured.** Runs C and D in
-  [docs/operations/load-test.md](docs/operations/load-test.md): **2,274 rps sustained over 900 s, 0
+  the load-test record (since removed from `docs/`): **2,274 rps sustained over 900 s, 0
   errors across 2,046,979 requests**, with p99 flat at 15.9 ms -> 18.3 ms. The
   same workload on SQLite manages 636 rps and drifts p99 **monotonically
   105.7 ms -> 301.5 ms** with ~5.2 s max spikes. The load harness gained a
@@ -265,7 +265,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs site source (`docs/site/`): concepts, per-language quickstarts, payments/egress/policies/SIEM guides, API reference
 - Runnable examples (`examples/`), one folder per framework and use case
 - Dashboard: getting-started wizard (`/welcome`), copy-as-curl API explorer (`/explorer`), French locale + switcher, keyboard-navigable tenant switcher, skip-to-content link, tokenized login page
-- SIEM integration guide (`docs/operations/siem-integration.md`)
+- SIEM integration guide (since folded into `docs/site/guides/siem.md`)
 - Community files: LICENSE (Apache-2.0), CONTRIBUTING, SECURITY policy, issue/PR templates
 - Release workflow publishing container images to GHCR and packages to npm/PyPI on version tags
 - Static landing page (`site/`)
