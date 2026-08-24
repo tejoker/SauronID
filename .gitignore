@@ -51,6 +51,12 @@ zkp/circuits/build/**/*.wasm
 !zkp/circuits/build/keys/
 !zkp/circuits/build/keys/*.dev.vkey.json
 
+# Renamed to sdk/ in the 2026-08 restructure. Anything appearing under the old
+# path in an existing checkout is stale build output — egg-info, dist wheels,
+# __pycache__, and the agent-action-tool binary whose ignore rule moved to
+# sdk/python/.gitignore with the rename, leaving this path unguarded.
+clients/
+
 # ── Python ────────────────────────────────────────────────────────────────────
 **/__pycache__/
 **/*.py[cod]
