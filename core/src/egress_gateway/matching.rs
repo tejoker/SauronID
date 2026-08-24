@@ -29,7 +29,7 @@ pub(crate) fn agent_intent(
 
 /// A matched allowlist entry: the request is permitted, and optionally names a
 /// server-held credential to inject (the agent never holds it — see
-/// docs/design/credential-broker.md).
+/// docs/architecture/credential-broker.md).
 pub(crate) struct EgressMatch {
     pub(crate) inject_credential: Option<String>,
     pub(crate) request_body_allowed: bool,

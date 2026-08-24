@@ -32,7 +32,7 @@ use crate::db::DbHandle;
 ///
 /// Cohorts are global (NOT tenant-scoped). The operator runs the
 /// publication; individual tenants opt in by being included in
-/// `tenant_ids`. See `docs/architecture/privacy-model.md` for the lifecycle.
+/// `tenant_ids`. See `privacy-model.md` for the lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CohortDefinition {

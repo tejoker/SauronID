@@ -8,7 +8,7 @@
 #
 # NOTE: table-set parity is necessary but not sufficient. It does NOT prove
 # column/index parity, nor that application code actually routes a table's
-# writes to the selected backend. See docs/operations/postgres-port-status.md for the
+# writes to the selected backend. See docs/architecture/postgres-port-status.md for the
 # code-routing coverage, which is the real gap.
 set -euo pipefail
 cd "$(dirname "$0")/../.."

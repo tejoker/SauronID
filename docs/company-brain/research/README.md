@@ -14,7 +14,7 @@ précédente ait produit une preuve écrite.
 
 | # | Étape | Fichier | État |
 |---|---|---|---|
-| 0 | Recherche documentaire : qu'est-ce qui est mesuré, par qui, avec quelle méthode | [`problem-landscape.md`](problem-landscape.md), [`copilot-vs-agent.md`](copilot-vs-agent.md), [`sources.md`](sources.md) | fait, 24 août 2026 |
+| 0 | Recherche documentaire : qu'est-ce qui est mesuré, par qui, avec quelle méthode | [`problem-landscape.md`](problem-landscape.md), [`copilot-vs-agent.md`](copilot-vs-agent.md), [`use-cases.md`](use-cases.md), [`sources.md`](sources.md) | fait, 24 août 2026 |
 | 1 | Formulation du problème : le job à faire, qui le ressent, ce qu'il coûte | à écrire | à faire |
 | 2 | Découverte client : entretiens, pas de pitch, transcripts conservés | à écrire | à faire |
 | 3 | Beachhead market, persona, use case complet | à écrire | à faire |
@@ -57,5 +57,5 @@ Ces deux fichiers datent d'avant la recherche ci-dessous et affirment un
 positionnement qu'elle ne valide pas encore. À reprendre après l'étape 1, pas
 avant.
 
-- [`../market-positioning-fr.md`](../market-positioning-fr.md), v2.0 août 2026.
-- [`../product-truth.md`](../product-truth.md), v2.0 août 2026.
+- [`../market-positioning-fr.md`](../raw/market-positioning-fr.md), v2.0 août 2026.
+- [`../product-truth.md`](../raw/product-truth.md), v2.0 août 2026.

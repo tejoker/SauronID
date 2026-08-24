@@ -167,27 +167,29 @@ Chart.js renders the audit and cohort charts.
 
 ## Zero-knowledge proofs
 
-### Circom + circomlib + Groth16
+### RISC Zero zkVM (`risc0-zkvm` 3.0.5, pinned)
 
-Zero-knowledge circuits are written in Circom and compiled to Groth16 proving systems.
+The only proof system in the tree. The guest in `transparent-zk/` recomputes a
+statement over the agent-action log inside the zkVM; the core verifies the
+receipt at the wire boundary. The verifier is compiled without prover or Bonsai
+features and with dev mode disabled, and it rejects Groth16 and Fake receipt
+variants: only native Succinct STARK receipts are accepted.
 
-**Why Circom:**
-- Most mature ZK DSL with the largest auditing and tooling ecosystem.
-- circomlib provides battle-tested Poseidon, EdDSA, Merkle, and comparator components.
-- Generated verifiers compile to Rust, Solidity, and JavaScript.
+**Why RISC Zero:**
+- No trusted setup, so no per-circuit ceremony to run or to explain to a customer.
+- The statement is ordinary Rust, not a circuit DSL, so it stays reviewable.
+- The guest image ID is reproducible from source, which is what makes the claim checkable.
 
-**Why Groth16:**
-- Smallest proof size (constant ~200 bytes) and fastest verification.
-- Trade-off: per-circuit trusted setup ceremony required.
+**Trade-off:** proofs are larger and verification slower than Groth16. That is
+acceptable because verification happens server-side on batch finalization, not
+on the hot path.
 
-**Alternatives considered:**
-- PLONK / UltraPLONK — universal trusted setup, slightly slower verification. Considered for v2.
-- STARK (RISC Zero, SP1) — no trusted setup, larger proofs. Planned for Tier 3 (dynamic queries).
-- Noir / Halo2 — promising but smaller ecosystem in 2026.
+Guest, methods and verifier: [`transparent-zk/`](../../transparent-zk/).
 
-### Circuits shipped
-
-`MerkleInclusion`, `CredentialVerification`, `ActionRangeProof`, `ActionTimeWindow`, `ActionSetMembership`, `StatsHonestComputation`, and others. All circuits live in [zkp/circuits/](../../archive/removed-2026-08/groth16-zkp/zkp/circuits/). See [zk-action-logs.md](../zk/zk-action-logs.md) for the action-log selective-disclosure design.
+**Archived 2026-08:** the Circom + circomlib + Groth16 circuit set and the
+`/v1/proofs/action-log/verify` route were removed. Groth16 verification had
+always been development-only, and production refused it. Code and rationale:
+[`archive/removed-2026-08/groth16-zkp/`](../../archive/removed-2026-08/groth16-zkp/).
 
 ---
 
@@ -226,57 +228,31 @@ The repository also includes an optional custom [Anchor program](../../contracts
 
 ## Privacy primitives
 
-### Differential Privacy (custom Rust implementation)
+**Archived 2026-08.** The differential-privacy cohort-stats surface (Laplace and
+Gaussian mechanisms, basic and Rényi composition, k-anonymity suppression,
+per-cohort epsilon budgets) published cross-tenant benchmark statistics and did
+not constrain an agent, so it was removed with the rest of the cohort and
+compliance surface. The custom Paillier module had already been deleted in
+`baafc77`: it used the non-constant-time `num-bigint`, sat behind a default-off
+flag, and had no reachable caller.
 
-DP noise is added to aggregate metrics before they are published in cohort views.
-
-**Why custom Rust:**
-- The mathematics is small enough to implement in-house with high confidence.
-- Avoids pulling in a heavy Python-based DP framework.
-- Implements Laplace and Gaussian mechanisms, basic and Rényi composition, k-anonymity suppression, and epsilon-budget tracking per cohort.
-
-**Caveat:** the implementation is unaudited as of this writing. Third-party cryptographer review is required before regulated-customer deployment. See [privacy-model.md](privacy-model.md).
-
-### Paillier homomorphic encryption (removed in `baafc77`)
-
-The module below no longer exists in the tree. It is kept on record because the
-tradeoff it encodes will resurface when aggregation needs HE again.
-
-Additive homomorphic encryption supported privacy-preserving aggregation where customers submit encrypted contributions and the server computes the sum without ever decrypting individual values.
-
-**Why Paillier:**
-- Additive homomorphism is sufficient for sum-based aggregates.
-- Conceptually simple, well-studied since 1999.
-- Avoids the complexity and performance cost of BFV / BGV / CKKS for a demo-grade module.
-
-**Why it was removed:** the implementation used `num-bigint`, which is not constant-time, and shipped behind an `SAURON_ENABLE_UNAUDITED_PAILLIER` flag that was off by default. An unaudited custom HE stack with no reachable caller was a liability, not a feature.
-
-**Alternatives:**
-- BFV / BGV (via Microsoft SEAL or OpenFHE) — production-grade lattice-based HE. Planned for Tier 2.
-- ElGamal — multiplicatively homomorphic; doesn't fit sum-of-stats.
+Code, tradeoffs and the design rationale for both:
+[`archive/removed-2026-08/cohort-stats-compliance/`](../../archive/removed-2026-08/cohort-stats-compliance/).
 
 ---
 
 ## Hardware attestation
 
-The attestation layer accepts and verifies execution-environment proofs from multiple hardware platforms.
+**Archived 2026-08.** The multi-vendor inbound attestation layer (Nitro, TPM2,
+and the planned SGX / SEV-SNP / CCA / Apple backends) verified somebody else's
+hardware without constraining what an agent could do, so it was removed along
+with its `webpki` / `pem` / `serde_cbor` dependencies. What survives in the tree
+is `core/src/attestation/ed25519_self.rs`, a software-only operator-signed
+backend used in development.
 
-**Backends recognized:**
-- `ed25519_self` — software-only, operator-signed. Used as default in development.
-- AWS Nitro Enclave — production-targeted, easiest cloud integration. Parser shipped, verifier in progress.
-- TPM2 — local hardware root. CBOR parser and cert-chain walker shipped, verifier in progress.
-- Intel SGX — DCAP-style quote parsing. Planned.
-- AMD SEV-SNP — Confidential VM attestation. Planned.
-- ARM CCA — Realm attestation. Planned.
-- Apple Secure Enclave — for mobile clients. Planned.
-
-**Why multi-vendor:**
-- Different customers trust different hardware vendors (EU sovereignty, regulator preference).
-- Single-vendor lock-in is a sales blocker for compliance-sensitive deals.
-
-**Dependencies:** `ring`, `webpki`, `pem` (certificate-chain validation), `serde_cbor` (Nitro attestation document parsing).
-
-See [tee-deployment.md](../operations/tee-deployment.md).
+Code, the vendor-by-vendor state at removal, and the customer-facing gap this
+leaves on an instance SauronID operates:
+[`archive/removed-2026-08/hardware-attestation/`](../../archive/removed-2026-08/hardware-attestation/).
 
 ---
 
@@ -293,13 +269,13 @@ The cryptography stack is built on audited, narrowly scoped Rust crates.
 | Constant-time comparison | `subtle` 2.6 | Timing-attack resistance |
 | JWT | `jsonwebtoken` 9.3 | A-JWT issuance and verification |
 | Random | `rand` 0.8 | Nonces, ephemeral keys |
-| Argon2 | `argon2` 0.5 | Password hashing (operator console) |
-| X.509 / WebPKI | `webpki` 0.22, `ring` 0.17 | Attestation cert-chain validation |
+| HKDF | `hkdf` 0.12 | Ring-pseudonym and per-tenant key derivation |
+| TLS | `rustls` 0.23 + `tokio-postgres-rustls` 0.14 (ring provider) | Encrypted link to Postgres from the blocking pool |
 | Base58 | `bs58` 0.5 | Solana address encoding |
 
 **Why these specific crates:**
 - The `dalek` family is the most-audited Ed25519/Curve25519 implementation in Rust.
-- `ring` is BoringSSL-derived and used in production by AWS, Cloudflare, and others.
+- `rustls` with the `ring` provider keeps the whole tree on one TLS stack and keeps a system OpenSSL out of the runtime image.
 - `subtle` enforces constant-time semantics at the type level.
 - `jsonwebtoken` is the de-facto standard JWT crate.
 

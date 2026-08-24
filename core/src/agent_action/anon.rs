@@ -187,7 +187,7 @@ pub fn validate_anon_action(
     //     It does not prove one agent is in all of them — distinguishing that
     //     from two co-signing members would require linking two LSAG key images
     //     to one master key, which is exactly the cross-ring correlation the
-    //     pseudonym design prevents. See `docs/design/anonymous-ring-policy.md`.
+    //     pseudonym design prevents. See `docs/architecture/anonymous-ring-policy.md`.
     let mut ring_versions = vec![format!("ring:{}:v{}", env.ring_id, version)];
     for (ring_id, sig) in env.also_ring_ids.iter().zip(&proof.also_ring_signatures) {
         let (also_rule, also_version) = crate::rings::get_ring(db, &env.tenant_id, ring_id)

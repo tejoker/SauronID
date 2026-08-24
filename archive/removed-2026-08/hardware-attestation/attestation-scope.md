@@ -4,7 +4,7 @@
 > below was archived in 2026-08: it verified somebody else's hardware and did not
 > constrain an agent. Only `core/src/attestation/ed25519_self.rs` survives in the
 > tree. Code and rationale:
-> [`archive/removed-2026-08/hardware-attestation/`](../../archive/removed-2026-08/hardware-attestation/).
+> [`archive/removed-2026-08/hardware-attestation/`](./).
 > The gap analysis below is still the plan of record if the outbound direction is
 > ever built.
 
@@ -49,7 +49,7 @@ runs inside a Nitro Enclave, generates an ephemeral Ed25519 keypair whose privat
 half never leaves, binds `user_data = sha256(public_key || parent_nonce)` so an
 old document cannot be replayed against a fresh registration, and serves the
 document over vsock. `archive/removed-2026-08/hardware-attestation/deploy-nitro/` has the EIF build and operator workflow;
-[`tee-deployment.md`](../operations/tee-deployment.md) has the narrative.
+the Nitro deployment notes archived beside this file has the narrative.
 
 Two things about that scaffolding matter for planning:
 

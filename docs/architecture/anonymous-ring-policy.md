@@ -156,7 +156,7 @@ pseudonyms.
   or 0).
 - **Honesty boundary:** counts are host/gateway-reported (same class as `config_digest`).
   Tamper-evident via signed records + anchor. Authoritative only when an in-path inference
-  gateway counts them (see [`blackbox-encrypted-inference.md`](../ideas/blackbox-encrypted-inference.md)).
+  gateway counts them.
 
 ## Phasing
 

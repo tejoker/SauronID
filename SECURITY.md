@@ -43,5 +43,5 @@ are all in scope.
 - Security CI on every push: cargo-audit, cargo-deny, gitleaks, trivy, plus a
   weekly dependency audit and CycloneDX SBOM generation
 
-A public audit report and a bug bounty program are planned once the external
-cryptography review concludes (see `docs/security/crypto/crypto-review-attestation.md`).
+A public audit report and a bug bounty program are planned once an external
+cryptography review concludes. None has been completed to date.

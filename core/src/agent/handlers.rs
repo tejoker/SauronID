@@ -427,17 +427,13 @@ pub async fn register_agent(
         )
             .into());
     }
-    // ── M1 of TPM2-bound PoP key roadmap (docs/planning/roadmap.md Plan 1) ────────
-    //
-    // 1. ServerDerived PoP: refuse in production unless explicitly opted in.
-    //    The default-on behaviour is now opt-out — operators must set
-    //    SAURON_ALLOW_SERVER_DERIVED_POP=1 OR run with ENV=development.
-    //    Previously the server silently derived a PoP key from `jwt_secret`,
-    //    making operator compromise = full agent impersonation. M1 makes the
-    //    trust assumption explicit; M2 ships a TPM2-rooted alternative.
-    //
-    //    operator advertises this kind. The server stores them verbatim;
-    //    verification is M2.
+    // ServerDerived PoP: refuse in production unless explicitly opted in.
+    // Operators must set SAURON_ALLOW_SERVER_DERIVED_POP=1 or run with
+    // ENV=development. Previously the server silently derived a PoP key from
+    // `jwt_secret`, making operator compromise equal full agent impersonation.
+    // The TPM2-rooted alternative that used to follow this gate was cancelled
+    // with the hardware-attestation track in 2026-08; refusing the kind in
+    // production is the mitigation. See docs/planning/roadmap.md Plan 1.
     if matches!(
         kind_parsed,
         crate::attestation::AttestationKind::ServerDerived

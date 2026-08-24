@@ -126,20 +126,20 @@ silently returning global rows.
 
 ## Deliberate operator-level sharing
 
-1. **Cohort publishing is cross-tenant.** DP cohort aggregates are
-   computed across all tenants; the privacy budget is operator-global. A
-   tenant cannot extract from cohort outputs which other tenants
-   contributed. This is documented in [`privacy-model.md`](privacy-model.md).
-2. **`users` is shared across tenants.** Two tenants can both reference
+1. **`users` is shared across tenants.** Two tenants can both reference
    the same `key_image_hex`. Access control is enforced on the
    tenant-scoped *registrations* (which client + which tenant), not on
    the identity row itself. A tenant has NO way to enumerate users that
    only belong to other tenants — its registration list filters by
    `tenant_id`.
-3. **Background tasks operate operator-global.** The anchor batcher, GC,
+2. **Background tasks operate operator-global.** The anchor batcher, GC,
    OTS upgrader, and Solana confirmer iterate across all tenants in one
    pass. They emit receipts/anchors per-tenant where applicable (writing
    the correct `tenant_id`) but DO NOT spawn per-tenant tasks.
+
+The cross-tenant DP cohort publishing that used to head this list was archived
+in 2026-08 with the rest of the cohort-stats surface:
+[`archive/removed-2026-08/cohort-stats-compliance/`](../../archive/removed-2026-08/cohort-stats-compliance/).
 
 ## Cross-tenant test surface
 

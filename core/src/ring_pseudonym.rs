@@ -1,6 +1,6 @@
 //! Per-ring stealth pseudonyms with an operator trapdoor.
 //!
-//! Implements the derivation from `docs/design/anonymous-ring-policy.md` (the
+//! Implements the derivation from `docs/architecture/anonymous-ring-policy.md` (the
 //! "ring = rule, agent subscribes to many rings" model). Goal: an agent acts
 //! under a ring (= a rule) by proving anonymous membership, such that relying
 //! parties / auditors / other tenants / DB-readers cannot learn which agent

@@ -745,7 +745,7 @@ pub fn init_schema(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_agent ON agent_action_receipts(agent_id, created_at);
 
         -- Phase 2 of the anonymous ring-policy redesign
-        -- (docs/design/anonymous-ring-policy.md). A ring is a RULE; agents
+        -- (docs/architecture/anonymous-ring-policy.md). A ring is a RULE; agents
         -- subscribe to many rings. `rule_json` carries allowed_actions +
         -- allowed_config_digests + per-ring budgets. Members are per-ring stealth
         -- pseudonym points (ring_pseudonym.rs) — NEVER master keys — so a
@@ -992,7 +992,7 @@ pub fn init_schema(conn: &Connection) {
 
         -- Sprint 8: operator-managed cohort definitions for DP-published
         -- cross-tenant benchmarks. Global (NOT tenant-scoped) — see
-        -- docs/architecture/privacy-model.md "Publication pipeline".
+        -- archive/removed-2026-08/cohort-stats-compliance/privacy-model.md "Publication pipeline".
         CREATE TABLE IF NOT EXISTS cohort_definitions (
             cohort_id              TEXT PRIMARY KEY,
             label                  TEXT NOT NULL,
@@ -1011,7 +1011,7 @@ pub fn init_schema(conn: &Connection) {
         -- budget for the current regulatory cycle and refuses publication
         -- when the budget is exhausted. Operators rotate (reset) the
         -- budget per regulatory cycle through POST /v1/cohort/:id/budget/rotate.
-        -- See docs/architecture/privacy-model.md § "Inter-period ε budget tracking".
+        -- See archive/removed-2026-08/cohort-stats-compliance/privacy-model.md § "Inter-period ε budget tracking".
         CREATE TABLE IF NOT EXISTS dp_budget_ledger (
             cohort_id     TEXT NOT NULL,
             metric_id     TEXT NOT NULL,

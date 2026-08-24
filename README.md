@@ -63,7 +63,7 @@ agent without SDK work), and the [docs site](docs/site/).
 
 | Console — your agents | Getting started | API explorer |
 |---|---|---|
-| [![Console home listing registered agents with their per-agent call counts](docs/img/dashboard-overview.png)](docs/img/dashboard-overview.png) | [![Four-step guided setup showing the active operator and tenant](docs/img/dashboard-welcome.png)](docs/img/dashboard-welcome.png) | [![API explorer listing admin and read endpoints with copy-as-curl buttons](docs/img/dashboard-explorer.png)](docs/img/dashboard-explorer.png) |
+| [![Console home listing registered agents with their per-agent call counts](docs/site/img/dashboard-overview.png)](docs/site/img/dashboard-overview.png) | [![Four-step guided setup showing the active operator and tenant](docs/site/img/dashboard-welcome.png)](docs/site/img/dashboard-welcome.png) | [![API explorer listing admin and read endpoints with copy-as-curl buttons](docs/site/img/dashboard-explorer.png)](docs/site/img/dashboard-explorer.png) |
 
 Captured from the `docker compose up` evaluation stack above with
 `npm run screenshots` in [`dashboard/`](dashboard/) — real data from the seeded
@@ -165,7 +165,7 @@ What none of that establishes: that an instance **somebody else operates** runs
 the image it claims to. Self-hosting closes that gap because you start the
 process; a managed instance needs hardware attestation of the gateway, which is
 scoped but not built — see
-[`docs/security/attestation-scope.md`](docs/security/attestation-scope.md). A self-reported version
+[`attestation-scope.md`](archive/removed-2026-08/hardware-attestation/attestation-scope.md). A self-reported version
 string is not evidence and is deliberately not offered as one.
 
 ## What ships, what's partial, what doesn't yet exist
@@ -243,7 +243,7 @@ Honest table. Re-verifiable from the source.
   acceptance of the single-node topology; on Postgres that gate does not apply.
 
   **What that does and does not buy you.** Measured, single host, in
-  [docs/operations/load-test.md](docs/operations/load-test.md): PostgreSQL sustains **2,274 rps over
+  the load harness in `redteam/`: PostgreSQL sustains **2,274 rps over
   15 minutes with 0 errors across 2.05M requests**, and its p99 stays flat
   (15.9 ms → 18.3 ms). The same workload on SQLite manages 636 rps with p99
   drifting **monotonically 105.7 ms → 301.5 ms** and ~5.2 s max spikes, because
@@ -258,7 +258,7 @@ Honest table. Re-verifiable from the source.
   one every `lock()` site uses — so budget `SAURON_PG_POOL_SIZE +
   SAURON_DB_POOL_SIZE` connections against the server's `max_connections`.
   Database TLS is driven by `sslmode`; see
-  [docs/operations/operations.md](docs/operations/operations.md#database-tls).
+  `deploy/README.md`.
 - **OpenTimestamps confirmation latency**: receipts are submitted instantly to public calendars; **Bitcoin block inclusion takes ~1 hour**. Solana memo finalisation is ~30 s. Dashboard surfaces three honest states per batch (ADR-001): Solana-confirmed (≤30 s), BTC-pending (≤1 h), Dually anchored. No single false "anchored" summary — both chains are reported independently on `/admin/anchor/batches` and the `/proofs` console page. Operators with stricter timing pick the Solana path or run their own calendar.
 - **No human-identity surface**: the bank-KYC ingest, the end-user consent routes, the credential issuer and the legacy Groth16 circuits are archived under [`archive/removed-2026-08/`](archive/removed-2026-08/). SauronID binds agents, not humans. No sanctions/PEP screening is shipped and none is stubbed.
 - **External key custody**: production secret resolution and external partner-key
@@ -334,7 +334,7 @@ For a full local demo (core + analytics shim + branded Next.js dashboard) in one
 # dashboard → http://127.0.0.1:3000   (Mandate Console, reads the core directly)
 ```
 
-To deploy, pick your scenario in [`deploy/README.md`](deploy/README.md): root `docker compose up` (evaluation), [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) (production, fail-closed pins), a **Helm chart** ([`deploy/helm/sauronid/`](deploy/helm/sauronid/)) and **Terraform module** ([`deploy/terraform/`](deploy/terraform/)) for Kubernetes, or the **no-Docker native/systemd** path in [`deploy/native/`](deploy/native/) (Caddy auto-TLS + `sauronid-core` / `sauronid-dashboard` units). The [`scripts/demo/democtl.sh`](scripts/demo/) driver wraps the native path (`build-native` → `deploy-native` → `runner` → `status`) and brings up the real LLM agent behind the Console. Full guide: [docs/operations/operations.md](docs/operations/operations.md).
+To deploy, pick your scenario in [`deploy/README.md`](deploy/README.md): root `docker compose up` (evaluation), [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) (production, fail-closed pins), a **Helm chart** ([`deploy/helm/sauronid/`](deploy/helm/sauronid/)) and **Terraform module** ([`deploy/terraform/`](deploy/terraform/)) for Kubernetes, or the **no-Docker native/systemd** path in [`deploy/native/`](deploy/native/) (Caddy auto-TLS + `sauronid-core` / `sauronid-dashboard` units). The [`scripts/demo/democtl.sh`](scripts/demo/) driver wraps the native path (`build-native` → `deploy-native` → `runner` → `status`) and brings up the real LLM agent behind the Console. Full guide: [`deploy/README.md`](deploy/README.md).
 
 ## Mandate Console — the web dashboard
 
@@ -414,7 +414,7 @@ For TypeScript: [`sdk/typescript/src/`](sdk/typescript/src/).
 
 ## Empirical proof
 
-Every claim above has a runnable test. See [docs/planning/empirical-comparison.md](docs/planning/empirical-comparison.md) for:
+Every claim above has a runnable test. See the suite in [`redteam/`](redteam/) for:
 
 - 16 concrete attacks against AI-agent binding systems.
 - A release-gated result in fail-closed mode: all 16 scenarios must execute
@@ -500,11 +500,33 @@ archive/removed-2026-08/  The four subsystems that were not agent constraint: KY
                           the working tree; it lives at the archive/banking-2025 git tag.)
 ```
 
+## Company brain: where the product thinking lives
+
+The product decisions live in [`docs/company-brain/`](docs/company-brain/README.md),
+written one file at a time and in order: a quantified problem, then the solution
+that answers it, then the product, the features, the market, the business model,
+the pricing. Each file states the framework it applies (MIT's 24 Steps, Jobs to
+be Done, 7 Powers, Five Forces, Sequoia's business plan template). Every figure
+carries its source and a quality grade.
+
+| Phase | Fichiers | État |
+|---|---|---|
+| `0x` le socle | 01 problèmes, 02 solution, 03 produit, 04 features | complet |
+| `1x` le marché | 10 segment cible, 11 positionnement, 12 concurrents, 13 unfair advantage | 10 et 11 écrits, 12 et 13 à écrire |
+| `2x` l'entreprise | 20 business model, 21 pricing, 22 unit economics | à écrire |
+| `3x` l'exécution | 30 playbook, 31 hypothèses, 32 investisseurs | à écrire |
+
+Cette table se met à jour à chaque fichier validé. Ce que le dépôt sait faire
+aujourd'hui est décrit plus haut dans « What ships, what's partial, what doesn't
+yet exist » et n'attend pas le company brain pour être vrai.
+
+Comment travailler dans ce dépôt et quoi lire avant quoi : [`CLAUDE.md`](CLAUDE.md).
+
 ## Critical files
 
 - Core service: [`core/`](core/) — Rust, axum, ~50k lines under `core/src` (recount with `find core/src -name '*.rs' -print0 | xargs -0 wc -l`).
 - Mandate Console: [`dashboard/`](dashboard/) — Next.js + Chart.js, dark branded UI reading live core data only.
-- Company brain: [`docs/company-brain/`](docs/company-brain/) — product truth, design system, brand guidelines, eye logo, brand book.
+- Company brain: [`docs/company-brain/`](docs/company-brain/README.md). Why the product exists: problems, solution, product, features, market, business model, pricing. Every product claim is decided there first.
 - TypeScript client: [`sdk/typescript/`](sdk/typescript/) — `signCall`, `register`, `popKeys`.
 - Python client: [`sdk/python/sauronid_client/`](sdk/python/sauronid_client/) — LangChain + OpenAI + Anthropic adapters.
 - Empirical attack suite: [`redteam/`](redteam/) — 9 invariant scenarios + 16-attack empirical suite + 18-attack Tavily fuzzer.
@@ -514,15 +536,17 @@ archive/removed-2026-08/  The four subsystems that were not agent constraint: KY
 - Custom Solana program: [`contracts/sauron_ledger/`](contracts/sauron_ledger/) — Anchor program (optional; default uses Solana Memo).
 - Transparent proofs: [`transparent-zk/`](transparent-zk/) — both guests, the customer verifier, and [`verify.sh`](transparent-zk/verify.sh), which reproduces the published image IDs in a pinned container.
 - Release verification: [`docs/security/verifying-what-you-run.md`](docs/security/verifying-what-you-run.md) — the procedure to hand a customer who cannot read this source.
-- Operations: [`docs/operations/operations.md`](docs/operations/operations.md) — every env var, every deploy step.
+- Deployment: [`deploy/README.md`](deploy/README.md) — every scenario, every env var.
+- Why the product exists: [`docs/company-brain/`](docs/company-brain/README.md) — problems, solution, product, features, positioning, pricing, in that order. Every product claim is decided there first.
+- Design system: [`docs/design/design-system.md`](docs/design/design-system.md) — the reference to read before touching any interface.
 - Threat model: [`docs/security/threat-model.md`](docs/security/threat-model.md) — what we protect against, what we don't.
-- Empirical comparison: [`docs/planning/empirical-comparison.md`](docs/planning/empirical-comparison.md) — vs DPoP / GNAP / MCP / Auth0 / AWS / Cloudflare.
+- Attack suite: [`redteam/`](redteam/) — the 16 modelled attacks, each with a runnable scenario.
 
 ## Production deployment checklist
 
 ```bash
 # Deploy behind a TLS-terminating reverse proxy. The core binds plain HTTP.
-# See docs/operations/operations.md "TLS termination" for requirements.
+# Terminate TLS in front of the core; never expose this port directly.
 ENV=production
 SAURON_ADMIN_KEY=$(openssl rand -hex 32)
 SAURON_TOKEN_SECRET=$(openssl rand -hex 32)
@@ -536,11 +560,11 @@ SAURON_SOLANA_RPC_URL=https://api.devnet.solana.com   # mainnet later
 SAURON_SOLANA_KEYPAIR_PATH=/etc/sauronid/sol-key.json
 SAURON_VAULT_TRANSIT_ENABLED=1                   # secret_provider abstraction; init-path wiring is roadmap (see Partial)
 SAURON_REQUIRE_AGENT_TYPE=1                      # legacy fallback rejected
-SAURON_DB_BACKEND=postgres                       # for ported modules
+SAURON_DB_BACKEND=postgres                       # see docs/architecture/postgres-port-status.md
 DATABASE_URL=postgres://...
 ```
 
-Full guide: [docs/operations/operations.md](docs/operations/operations.md).
+Full guide: [`deploy/README.md`](deploy/README.md).
 
 ## Repo provenance
 
@@ -554,9 +578,9 @@ Read before you deploy; these are the documents a security review starts from.
 - [Trust boundaries and impossibility results](docs/security/crypto/crypto-migration-boundary.md) — the canonical boundary doc.
 - [Security policy](SECURITY.md) — how to report a vulnerability, response targets, what is out of scope.
 - [Red-team matrix](docs/security/redteam-matrix.md) and the runnable [16-attack suite](redteam/).
-- [SIEM integration](docs/operations/siem-integration.md) — shipping the hash-chained audit trail into your stack is a config, not a project.
+- [SIEM integration](docs/site/guides/siem.md) — shipping the hash-chained audit trail into your stack is a config, not a project.
 - CI publishes CycloneDX SBOMs on every release and runs cargo-audit, cargo-deny, gitleaks, and trivy on every push ([workflows](.github/workflows/)).
-- A public audit report and bug bounty are planned once the external crypto review lands ([current attestation](docs/security/crypto/crypto-review-attestation.md)).
+- A public audit report and bug bounty are planned once an external cryptography review lands. No such review has been completed, and no internal document is offered as a substitute.
 
 ## Contributing / development
 

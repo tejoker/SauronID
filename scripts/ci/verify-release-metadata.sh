@@ -30,7 +30,7 @@ tool=$(jq -er '.version' packaging/npm-agent-action-tool/package.json)
 [[ "$tool" == "$(jq -er '.components.agent_action_tool_npm' "$manifest")" ]] || { echo "tool version drift" >&2; exit 1; }
 # PostgreSQL became a supported topology once `DbHandle::lock()` started
 # dispatching (every call site, not a subset) and the tier was measured — see
-# Runs C and D in docs/operations/load-test.md. The allowlist stays an allowlist: a topology
+# Runs load profiles C and D. The allowlist stays an allowlist: a topology
 # string nobody has run a soak against must not reach a release.
 case "$(jq -er '.supported_topology' "$manifest")" in
   single-node-sqlite|single-node-sqlite-or-postgres) ;;

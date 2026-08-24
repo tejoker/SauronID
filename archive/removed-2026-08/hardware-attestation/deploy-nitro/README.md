@@ -12,7 +12,7 @@
 > nothing.
 >
 > Two further things this directory does **not** yet do, both scoped in
-> `docs/security/attestation-scope.md`:
+> `../attestation-scope.md`:
 >
 > - what it attests is an **agent's** enclave-held key, not the SauronID gateway
 >   itself, so it does not answer "which gateway binary is running";
@@ -34,7 +34,7 @@ core API.
 | `run.sh`             | Operator workflow: build EIF, run enclave, fetch doc     |
 | `README.md`          | This file — pre-reqs, build, run, validate               |
 
-See also `docs/operations/tee-deployment.md` for the broader hardware-attestation story
+See also `the archived Nitro notes` for the broader hardware-attestation story
 and `core/src/attestation/nitro.rs` for the verifier code paths.
 
 ## Pre-requisites

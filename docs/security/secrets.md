@@ -1,7 +1,7 @@
 # SauronID secret management
 
 Operator-facing guide for the four root secrets that bootstrap a SauronID
-deployment. Companion to [`operations.md`](../operations/operations.md) (deployment knobs) and
+deployment. Companion to [`deploy/README.md`](../../deploy/README.md) (deployment knobs) and
 [`key-rotation.md`](key-rotation.md) (in-flight rotation).
 
 For a fresh local production-shaped set, run
@@ -131,7 +131,7 @@ The S6 implementation uses a long-lived static token. For real production:
   `auth/kubernetes/login` for a Vault token. Renew on TTL.
 
 These need a `VaultTokenSource` abstraction in `secret_provider.rs`. Tracked
-in [`roadmap.md`](../planning/roadmap.md) under "Vault token lifecycle" — not shipped in S6.
+under "Vault token lifecycle": not shipped in S6.
 
 ### Rotating the wrapping key
 
@@ -155,7 +155,7 @@ stub that returns `BackendUnavailable`. To finish the adapter:
    the workload, return plaintext bytes.
 3. Document the IAM policy in this file.
 
-Tracked under "S26 — AWS KMS adapter" in [`roadmap.md`](../planning/roadmap.md).
+Tracked as the AWS KMS adapter, not shipped.
 
 ## HSM / FIPS-validated path (future)
 

@@ -14,6 +14,9 @@ Notes A, B, C définies dans [`README.md`](README.md).
 | Stanford HAI, *AI Index Report 2026*, chapitre 4 Économie | PDF de 6,2 Mo téléchargé, texte extrait, sections adoption, agents, productivité lues | enquête d'adoption corporate, plus recension de 7 études micro et de travaux macro | problèmes 1, 2, copilote/agent |
 | Commission européenne, AI Omnibus et calendrier de l'AI Act | pages officielles digital-strategy.ec.europa.eu | texte réglementaire | section réglementaire |
 | OWASP, Top 10 for LLM Applications | classement, rang de l'injection de prompt | consensus de projet ouvert | problème 7 |
+| Eurostat, *Use of artificial intelligence in enterprises*, données 2025 | page Statistics Explained lue à la source | enquête officielle, entreprises de 10 salariés ou plus dans l'UE | cas d'usage, segment cible |
+| DGFiP et economie.gouv.fr, réforme de la facturation électronique | pages officielles et guide pratique, calendrier et obligations | texte réglementaire et documentation administrative | segment cible, raison d'acheter maintenant |
+| Stanford HAI, *AI Index 2026*, chapitre 4, sections 4.3.4 à 4.3.8 | texte extrait du PDF, passages adoption par fonction et agents lus | enquête McKinsey reprise et commentée par le AI Index | cas d'usage |
 
 Études recensées par le AI Index et citées nommément : Reimers et Waldfogel
 2026, Shen et Tamkin 2025, Becker et al. 2025 (METR), Brynjolfsson et al. 2025,
@@ -53,6 +56,11 @@ mémoire, et pour être vérifiés ou abandonnés.
 | 116% de ROI Copilot, 14 à 26 minutes gagnées par jour | Forrester Total Economic Impact | étude commanditée par Microsoft, non consultée |
 | Mécanique du dérapage de coûts : 10 à 20 appels modèle par tâche, 5 à 30 fois plus de tokens qu'un chatbot | attribué à Gartner, mars 2026 | non vérifié |
 | Données trouvées en PDF, tableurs et CRM anciens illisibles par les modèles | littérature de conseil | affirmation plausible, aucune mesure |
+| 70 à 90% de réduction du temps de traitement d'une facture | éditeurs de solutions d'automatisation | argument de vente, aucun rapport primaire |
+| 70% des demandes de support de niveau 1 traitées de bout en bout | éditeurs de CRM | argument de vente |
+| Retour sur investissement en 3 à 6 mois sur les cas à fort volume | éditeurs et blogs sectoriels | aucune méthode publiée |
+| 131 agences d'implémentation IA recensées, segment services à +46% par an | annuaire privé et cabinets d'études | ne mesure pas une population, à ne pas citer comme taille de marché |
+| 7 031 ETI, 164 000 PME, 312 grandes entreprises en France (données 2023) | INSEE, Focus n° 372 | chiffres repris d'une synthèse, publication non lue à la source. À revérifier avant tout usage externe |
 
 ## Sources cherchées et non trouvées
 

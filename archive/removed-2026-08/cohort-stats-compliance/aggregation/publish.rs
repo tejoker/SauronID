@@ -21,7 +21,7 @@
 //! normalised to a [0, 1] fixed-point range — which is what
 //! `customer_stats.claimed_value` is after dividing by 1000). Operators that
 //! submit unbounded metrics MUST clip / normalise upstream — see
-//! `docs/architecture/privacy-model.md` § "Publication pipeline".
+//! `privacy-model.md` § "Publication pipeline".
 //!
 //! As a defence-in-depth measure (cryptographic-review finding F-2), the
 //! publication pipeline clamps every per-tenant value to `[0, 1]` before

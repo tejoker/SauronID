@@ -3,10 +3,10 @@
 > **ARCHIVED SUBSYSTEM.** The differential-privacy cohort surface this document
 > describes was archived in 2026-08 — it published benchmark statistics and did
 > not constrain an agent. Code and rationale:
-> [`archive/removed-2026-08/cohort-stats-compliance/`](../../archive/removed-2026-08/cohort-stats-compliance/).
+> [`archive/removed-2026-08/cohort-stats-compliance/`](./).
 > The privacy properties of the surviving surfaces (anonymous ring policy,
 > pseudonym derivation, receipt disclosure modes) are in
-> [`threat-model.md`](../security/threat-model.md).
+> [`threat-model.md`](../../../docs/security/threat-model.md).
 
 Cross-customer benchmark publication uses differential privacy. This doc lays
 out the formal guarantees, the mechanisms shipped, composition strategy, and

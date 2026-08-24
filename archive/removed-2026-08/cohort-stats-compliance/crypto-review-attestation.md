@@ -5,7 +5,7 @@
 > commercial assurance and must never be presented as third-party
 > certification. The custom Paillier path is quarantined in production. Current
 > release claims and required independent work are in
-> [`production-readiness.md`](../../operations/production-readiness.md).
+> the release gate.
 
 **Date of original review:** 2026-05-25
 **Date of remediation addendum:** 2026-05-25

@@ -1,5 +1,5 @@
 //! In-path agent egress gateway.
-//! See `docs/design/agent-egress-gateway.md`.
+//! See `docs/architecture/agent-egress-gateway.md`.
 //!
 //! `POST /agent/egress/proxy` is the mandatory outbound path: the agent hands
 //! SauronID the request it wants to make, SauronID verifies the bound identity

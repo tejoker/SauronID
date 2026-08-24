@@ -1,13 +1,14 @@
 # Technical Stack — Deep Reference
 
-> **Migration note (2026-07):** this long reference contains historical
-> Circom/Groth16, custom Paillier, OPRF, voluntary-egress and mandatory-hardware
-> design material. The Paillier and differential-privacy subsystems were deleted
-> or archived in 2026-08; the other paths are development compatibility only and
-> are quarantined in production. The current security contract is
+> **Scope note (2026-08):** the Circom/Groth16, Paillier, differential-privacy
+> and hardware-attestation material that used to sit in sections 10 to 13 was
+> removed from the tree and now lives in
+> [`archive/removed-2026-08/`](../../archive/removed-2026-08/). The OPRF and
+> voluntary-egress paths that remain described below are development
+> compatibility only and are quarantined in production. The current security
+> contract is
 > [`crypto-migration-boundary.md`](../security/crypto/crypto-migration-boundary.md), the current
 > proof implementation is [`../transparent-zk/`](../../transparent-zk/), and the
-> commercial gate is [`production-readiness.md`](../operations/production-readiness.md).
 > Treat any conflicting section below as historical until it is fully rewritten.
 
 This document is the full technical reference for the SauronID codebase. It describes every component at a level of detail sufficient to reimplement the system from scratch.
@@ -29,10 +30,7 @@ Audience: engineers joining the project, security auditors, anyone considering f
 7. [Solana anchoring (Memo + custom Anchor program)](#7-solana-anchoring-memo--custom-anchor-program)
 8. [Policy DSL: parser, compiler, evaluator](#8-policy-dsl-parser-compiler-evaluator)
 9. [Multi-tenancy model](#9-multi-tenancy-model)
-10. [Differential privacy implementation](#10-differential-privacy-implementation)
-11. [Removed homomorphic encryption (Paillier)](#11-removed-homomorphic-encryption-paillier)
-12. [Hardware attestation backends](#12-hardware-attestation-backends)
-13. [Legacy zero-knowledge pipeline](#13-legacy-zero-knowledge-pipeline-circom--groth16-development-only)
+10-13. [Archived subsystems (differential privacy, Paillier, hardware attestation, Groth16)](#10-13-archived-subsystems-differential-privacy-paillier-hardware-attestation-groth16)
 14. [Database schemas and migrations](#14-database-schemas-and-migrations)
 15. [TypeScript SDK internals](#15-typescript-sdk-internals)
 16. [Python SDK and LLM adapters](#16-python-sdk-and-llm-adapters)
@@ -59,15 +57,13 @@ hackeurope-24/
 │   │   ├── agent_action_anchor.rs  # Anchor batch builder
 │   │   ├── agent_checksum.rs       # Cryptographic agent config digest
 │   │   ├── ajwt_support.rs         # A-JWT issuance and verification
-│   │   ├── attestation/            # Hardware attestation (multi-vendor)
+│   │   ├── attestation/            # ed25519_self, software-only operator-signed
 │   │   ├── audit/                  # Audit reports + selective disclosure
 │   │   ├── aggregation/            # Customer-side stat submission
 │   │   ├── bitcoin_anchor.rs       # OpenTimestamps client
 │   │   ├── solana_anchor.rs        # Solana Memo / Anchor program client
-│   │   ├── compliance.rs           # Jurisdiction enforcement
 │   │   ├── db.rs                   # Database connection + backend selection
 │   │   ├── identity.rs             # Operator + user identity
-│   │   ├── issuer_runtime.rs       # ZKP credential issuance
 │   │   ├── merkle.rs               # Merkle tree primitives
 │   │   ├── middleware/             # tower middleware: tenancy, auth, rate
 │   │   ├── oprf.rs                 # Oblivious PRF (legacy human-key)
@@ -81,7 +77,8 @@ hackeurope-24/
 │   │   ├── sites.rs                # Site registration
 │   │   ├── state.rs                # Shared application state
 │   │   ├── tenancy/                # Multi-tenant routing
-│   │   └── zk_verifier.rs          # Groth16 verifier integration
+│   │   ├── transparent_proof.rs    # RISC Zero receipt verification
+│   │   └── egress_gateway/          # In-path outbound call gateway
 │   └── tests/                      # Cargo integration tests (~2.8k LOC)
 ├── sdk/typescript/                 # TypeScript SDK (Node)
 │   ├── package.json
@@ -100,13 +97,12 @@ hackeurope-24/
 │       ├── client.py
 │       ├── enforcement.py   # Outbound request enforcement wrapper
 │       └── adapters/        # LangChain, OpenAI, Anthropic
-├── zkp/                     # ZK SDK + circuits
-│   ├── package.json
-│   ├── circuits/            # Circom source
-│   ├── sdk/                 # TS prover/verifier SDK
-│   ├── issuer/              # ZK credential issuer
-│   ├── acquirer-sdk/        # Customer-side proof generator
-│   └── scripts/             # Circuit compile / audit scripts
+├── transparent-zk/          # RISC Zero guest, methods and verifier
+│   ├── guest/               # Statement recomputed inside the zkVM
+│   ├── methods/             # Guest build + image IDs
+│   ├── types/               # Shared statement types
+│   └── verifier/            # Receipt verification
+├── archive/removed-2026-08/ # Subsystems removed in the 2026-08 pass
 ├── contracts/
 │   └── sauron_ledger/       # Solana Anchor program (Rust)
 ├── dashboard/               # Next.js 16 frontend
@@ -143,8 +139,6 @@ hackeurope-24/
 | Rust | 1.75 (edition 2021) | Required by axum 0.8 and sqlx 0.8 |
 | Node.js | 20.x LTS | Required by Next.js 16 and the SDK |
 | Python | 3.9 | Lower bound declared in pyproject.toml |
-| Circom | 2.1.x | Compiles `.circom` source to R1CS |
-| snarkjs | latest | Trusted setup + Groth16 prover |
 | PostgreSQL | 14+ | If using Postgres backend |
 | Solana CLI | 1.18+ | For Anchor program deployment (optional) |
 | anchor-cli | 0.30+ | For Solana program build |
@@ -198,10 +192,11 @@ routes.rs
   │              ├── bitcoin_anchor.rs
   │              └── solana_anchor.rs
   ├── policy/ ── policy/ast.rs, parser.rs, compiler.rs, evaluator.rs, invariants/*
-  ├── attestation/
-  ├── aggregation/ ── dp/, he/, zk_verifier.rs
+  ├── attestation/ ── ed25519_self.rs
+  ├── aggregation/ ── submission.rs, store.rs (transparent stat submission)
+  ├── transparent_proof.rs (RISC Zero receipt verification)
+  ├── egress_gateway/
   ├── audit/
-  ├── compliance.rs
   ├── tenancy/
   └── db.rs ── repository.rs
 ```
@@ -216,7 +211,7 @@ routes.rs
 - `policy_store: Arc<RwLock<HashMap<AgentId, CompiledPolicy>>>` — hot policy cache
 - `nonce_store: Arc<NonceStore>` — replay protection
 - `anchor_queue: Arc<AnchorQueue>` — pending actions to anchor
-- `attestation_verifiers: Arc<AttestationRegistry>` — registry of attestation backends
+- `attestation_verifiers: Arc<AttestationRegistry>` — registry of attestation backends (`ed25519_self` only since the 2026-08 pass)
 - `secret_provider: Arc<dyn SecretProvider>` — key material accessor (env-var or Vault)
 - `runtime_mode: RuntimeMode` — `Advisory` or `Strict` (controls enforcement)
 
@@ -811,302 +806,24 @@ See [multi-tenancy.md](multi-tenancy.md) for the full design.
 
 ---
 
-## 10. Differential privacy implementation (archived)
-
-> The DP module was archived in 2026-08 with the cohort-statistics surface it
-> served: it published benchmark statistics and did not constrain an agent.
-> Code and rationale: [`archive/removed-2026-08/cohort-stats-compliance/dp/`](../../archive/removed-2026-08/cohort-stats-compliance/dp/).
-> Nothing below ships today. The section is kept for the mechanism choices and
-> their known limits.
-
-### 10.1 Mechanisms
-
-| Mechanism | File | Use |
-|---|---|---|
-| Laplace | `dp/laplace.rs` | Bounded-sensitivity numeric queries (sum, count, mean) |
-| Gaussian | `dp/gaussian.rs` | Tighter accountant; used with Rényi DP composition |
-| Exponential | `dp/exponential.rs` | Categorical selection (private histogram modes) |
-
-### 10.2 Sampling
-
-Noise is drawn from `rand::rngs::OsRng` (cryptographically secure OS entropy). The Laplace sampler uses the standard `sgn(U) * b * ln(1 - 2|U|)` transformation where `U ~ Uniform(-0.5, 0.5)`.
-
-**Guarantee boundary:** the floating-point inverse-CDF sampler is documented as
-approximately `(ε, δ≈2⁻⁵²)` rather than pure `(ε,0)` DP. Do not market a pure-DP
-guarantee; use a reviewed discrete/snapping mechanism if pure DP is required.
-
-### 10.3 Composition
-
-`dp/composition.rs` implements:
-
-- **Basic composition:** total ε is the sum of per-query ε.
-- **Advanced composition:** Dwork et al.'s √(2k ln(1/δ')) ε + kε² bound.
-- **Rényi DP composition:** preferred for tight accounting with Gaussian.
-
-### 10.4 Budget ledger
-
-`dp/budget.rs` maintains an `epsilon_budget` table:
-
-```sql
-CREATE TABLE epsilon_budget (
-    tenant_id    TEXT NOT NULL,
-    cohort_id    TEXT NOT NULL,
-    period       TEXT NOT NULL,   -- e.g., '2026-W21'
-    epsilon_spent REAL NOT NULL DEFAULT 0,
-    epsilon_cap  REAL NOT NULL,
-    PRIMARY KEY (tenant_id, cohort_id, period)
-);
-```
-
-Every published query consumes ε from the matching cohort budget. Once exhausted, no further publications for that cohort in that period are allowed.
-
-### 10.5 k-anonymity
-
-`dp/k_anonymity.rs` enforces a minimum cohort size (`SAURON_DP_K_THRESHOLD`, default 10). Cohorts with fewer participants are suppressed entirely from publication, regardless of DP noise.
-
-This protects against re-identification when N is small and DP noise is insufficient.
-
-### 10.6 Status
-
-The DP module compiles, passes property-based tests, and is integrated into the cohort publication path. The mathematical correctness has not been independently audited and is labeled `NEEDS_CRYPTO_REVIEW` for any production use involving regulated data.
-
-See [privacy-model.md](privacy-model.md).
-
----
-
-## 11. Removed homomorphic encryption (Paillier)
-
-`core/src/he/` was deleted in commit `baafc77` along with `he_aggregator`,
-`he_store` and migration `0010_he_aggregations.sql`. Nothing below ships today.
-The section is kept so the design rationale and its known weaknesses stay on
-record.
-
-### 11.1 Why Paillier
-
-The aggregation use case requires summing customer-submitted ciphertexts without decrypting individual values. Paillier is additively homomorphic: `Enc(a) * Enc(b) = Enc(a + b)` (multiplication in ciphertext space, addition in plaintext space). Sum-of-stats requires nothing beyond addition.
-
-### 11.2 Key generation
-
-Standard Paillier key generation:
-- Sample two random ~1024-bit primes `p` and `q`.
-- Compute `n = p * q`.
-- `λ = lcm(p-1, q-1)`.
-- Choose generator `g = n + 1`.
-- Public key: `(n, g)`. Secret key: `λ`.
-
-Implementation uses `num-bigint` for arbitrary-precision arithmetic. **`num-bigint` is not constant-time.** Side-channel resistance is therefore not guaranteed.
-
-### 11.3 Encryption
-
-```
-c = (1 + m*n) * r^n mod n²
-```
-
-where `r` is a freshly sampled random in `[1, n)` coprime with `n`.
-
-### 11.4 Homomorphic addition
-
-```
-c_sum = c_1 * c_2 * ... * c_k mod n²
-```
-
-### 11.5 Decryption
-
-```
-m = L(c^λ mod n²) * μ mod n
-```
-
-where `L(x) = (x - 1) / n` and `μ = (L(g^λ mod n²))^(-1) mod n`.
-
-### 11.6 Storage
-
-`he_aggregations` table:
-
-```sql
-CREATE TABLE he_aggregations (
-    aggregation_id UUID PRIMARY KEY,
-    tenant_id      TEXT NOT NULL,
-    cohort_id      TEXT NOT NULL,
-    period         TEXT NOT NULL,
-    pubkey_n       BYTEA NOT NULL,
-    accumulated_ciphertext BYTEA NOT NULL,
-    contribution_count INTEGER NOT NULL,
-    sealed          BOOLEAN DEFAULT FALSE
-);
-```
-
-Customers submit `Enc(stat_value)`. The server multiplies into the accumulator. Once sealed (no more contributions accepted), threshold decryption (planned) produces the aggregate.
-
-### 11.7 Status
-
-The module is labeled `NEEDS_CRYPTO_REVIEW`. Suitable for demo, research, and internal benchmarks. Not suitable for production secret aggregation without:
-- Constant-time modular exponentiation.
-- Resistance to chosen-ciphertext attacks (Paillier IS-CPA, not IND-CCA; use a CCA-secure variant like Camenisch-Shoup for production).
-- Threshold key generation (currently single-key).
-
----
-
-## 12. Hardware attestation backends
-
-`core/src/attestation/` is a vendor-neutral attestation framework.
-
-### 12.1 Trait
-
-```rust
-pub trait AttestationVerifier: Send + Sync {
-    fn vendor(&self) -> AttestationVendor;
-    fn verify(&self, doc: &[u8], expected_measurements: &Measurements) -> Result<AttestationResult, AttestationError>;
-}
-```
-
-### 12.2 Backends
-
-| Backend | File | Status |
-|---|---|---|
-| Ed25519 self-signed | `attestation/ed25519_self.rs` | **Production** |
-| AWS Nitro Enclave | `attestation/nitro.rs` | CBOR parser shipped; full verifier in progress |
-| TPM2 quote | `attestation/tpm2.rs` | Parser + cert-chain walker shipped; verifier stubbed |
-| Intel SGX DCAP | `attestation/sgx.rs` | Stub |
-| AMD SEV-SNP | `attestation/sev_snp.rs` | Stub |
-| ARM CCA | `attestation/arm_cca.rs` | Stub |
-| Apple Secure Enclave | `attestation/apple.rs` | Stub |
-
-### 12.3 AWS Nitro (deepest pipeline)
-
-Nitro attestation documents are CBOR-encoded COSE_Sign1 structures. Parsing:
-
-1. Decode the outer CBOR via `serde_cbor`.
-2. Verify the COSE_Sign1 signature with the certificate carried in the document.
-3. Walk the certificate chain to the AWS Nitro Root CA (bundled in `schemas/external-crypto/`).
-4. Extract Platform Configuration Registers (PCR0–PCR15).
-5. Compare extracted PCRs against `expected_measurements` (PCR0 = binary hash, PCR1 = kernel, PCR2 = bootloader, etc.).
-
-The verifier returns:
-
-```rust
-struct AttestationResult {
-    vendor: AttestationVendor,
-    binary_hash: [u8; 48],         // PCR0 for Nitro
-    nonce_echoed: Vec<u8>,         // server-supplied nonce in the document
-    pcrs: Vec<(u8, Vec<u8>)>,      // all PCRs
-    issued_at: chrono::DateTime<Utc>,
-    verified_at: chrono::DateTime<Utc>,
-}
-```
-
-### 12.4 Selection at runtime
-
-The `AttestationRegistry` (in `AppState`) holds one verifier per vendor. The request includes `Attestation-Vendor` header indicating which verifier to use. Unknown vendors return `NotImplemented`.
-
-### 12.5 Expected measurements
-
-For each agent, the operator publishes (off-chain) the expected `Measurements` for the agent's binary build. The attestation verifier rejects any document whose measurements don't match.
-
-See [tee-deployment.md](../operations/tee-deployment.md).
-
----
-
-## 13. Legacy zero-knowledge pipeline (Circom + Groth16; development only)
-
-The production proof path is the ceremony-free RISC Zero STARK implementation
-in [`../transparent-zk/`](../../transparent-zk/). This section documents only the
-refused-by-default compatibility implementation.
-
-### 13.1 Circuit source
-
-Circuits are written in Circom (target version 2.1.x) and live in [zkp/circuits/](../../archive/removed-2026-08/groth16-zkp/zkp/circuits/):
-
-| Circuit | Purpose |
-|---|---|
-| `MerkleInclusion.circom` | Prove a leaf is in a Merkle tree given root |
-| `CredentialVerification.circom` | Prove holder of a signed credential without revealing it |
-| `ActionRangeProof.circom` | Prove a field of a committed action is in `[a, b]` |
-| `ActionTimeWindow.circom` | Prove an action's timestamp is in a time window |
-| `ActionSetMembership.circom` | Prove an action's field is in an allowlist |
-| `StatsHonestComputation.circom` | Prove an aggregate stat was honestly derived from a committed log |
-| `AgeVerification.circom` | Legacy KYC circuit (slated for removal) |
-| `PaymentNonMembershipSMT.circom` | Legacy banking circuit (slated for removal) |
-
-### 13.2 Compilation
-
-Driven by `zkp/scripts/compile.sh`:
-
-```bash
-#!/bin/bash
-for circuit in zkp/circuits/*.circom; do
-    name=$(basename "$circuit" .circom)
-    circom "$circuit" --r1cs --wasm --sym -o zkp/circuits/build/
-    npx snarkjs groth16 setup zkp/circuits/build/"$name".r1cs ptau/powersOfTau28_hez_final_15.ptau zkp/circuits/build/"$name"_0000.zkey
-done
-```
-
-Outputs (per circuit):
-- `.r1cs` — constraint system
-- `.wasm` — witness generator
-- `.sym` — debug symbol table
-- `_0000.zkey` — initial proving key (requires phase-2 ceremony to be production-ready)
-
-### 13.3 Trusted setup
-
-Groth16 requires a per-circuit trusted setup ("phase 2"). The repository expects the universal Powers of Tau file (`powersOfTau28_hez_final_15.ptau`) to be present. Phase-2 contributions are collected via:
-
-```bash
-npx snarkjs zkey contribute build/"$name"_0000.zkey build/"$name"_0001.zkey --name="Contributor 1" -v
-```
-
-After multiple contributions, the final `.zkey` is committed to the repo along with its hash. The verification key is exported:
-
-```bash
-npx snarkjs zkey export verificationkey build/"$name"_final.zkey build/"$name"_vkey.json
-```
-
-**Current status:** circuits are designed but the trusted-setup ceremony has not been run. Verification keys are not in the repo. The feature is gated by `SAURON_DISABLE_ZKP=1` and is currently disabled by default in production builds.
-
-### 13.4 Prover (TypeScript SDK)
-
-`zkp/sdk/src/prover.ts` wraps `snarkjs`:
-
-```typescript
-export async function prove(circuit: string, inputs: object): Promise<Proof> {
-    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-        inputs,
-        `zkp/circuits/build/${circuit}.wasm`,
-        `zkp/circuits/build/${circuit}_final.zkey`
-    );
-    return { proof, publicSignals };
-}
-```
-
-### 13.5 Verifier (Rust core)
-
-`archive/removed-2026-08/groth16-zkp/zk_verifier.rs` loads a pinned verification key and invokes
-`snarkjs groth16 verify` with proof-size and timeout limits. Groth16 defaults
-off in production; production uses the pinned native `Succinct`
-STARK verifier in `core/src/transparent_proof.rs`.
-
-```rust
-pub fn verify_proof(
-    circuit: &str,
-    proof: &[u8],
-    public_inputs: &[Fr],
-) -> Result<bool, ZkError>;
-```
-
-The verifier accepts proofs at `/v1/proofs/action-log/verify` and stores accepted proofs alongside the merkle root they reference.
-
-### 13.6 Selective disclosure model
-
-For an action log with root `R`, a customer can prove statements like:
-
-- "No action committed in `R` called domain `competitor.com`" (via `ActionSetNonMembership`)
-- "Sum of `amount` fields over actions in `R` is at most `100`" (via `StatsHonestComputation` with a sum-bound output)
-- "Every action in `R` had timestamp in `[t1, t2]`" (via batch `ActionTimeWindow`)
-
-These proofs reveal nothing about individual actions beyond the proven statement.
-
-See [zk-action-logs.md](../zk/zk-action-logs.md).
-
----
+## 10-13. Archived subsystems (differential privacy, Paillier, hardware attestation, Groth16)
+
+Four subsystems documented at length in earlier revisions of this file are gone
+from the tree. They are kept out of the running text because a deep reference
+whose job is "enough detail to rebuild the system" should describe the system
+that exists.
+
+| Subsystem | Removed | Why | Where the design and code went |
+|---|---|---|---|
+| Differential privacy (Laplace/Gaussian, Rényi composition, k-anonymity, epsilon ledger) | 2026-08 | Published cross-tenant benchmark statistics; constrained no agent | [`cohort-stats-compliance/`](../../archive/removed-2026-08/cohort-stats-compliance/) |
+| Paillier homomorphic encryption | `baafc77` | Non-constant-time `num-bigint`, default-off flag, no reachable caller | [`cohort-stats-compliance/`](../../archive/removed-2026-08/cohort-stats-compliance/) |
+| Hardware attestation backends (Nitro, TPM2, planned SGX / SEV-SNP / CCA / Apple) | 2026-08 | Verified somebody else's hardware; constrained no agent. `core/src/attestation/ed25519_self.rs` survives | [`hardware-attestation/`](../../archive/removed-2026-08/hardware-attestation/) |
+| Circom + Groth16 proof pipeline and `/v1/proofs/action-log/verify` | 2026-08 | Verification was development-only; production already refused it | [`groth16-zkp/`](../../archive/removed-2026-08/groth16-zkp/) |
+
+The proof system that ships today is RISC Zero: the guest lives in
+[`transparent-zk/`](../../transparent-zk/), the core verifies Succinct STARK
+receipts only, and the anti-cheat model is
+[`transparent-zk/`](../../transparent-zk/).
 
 ## 14. Database schemas and migrations
 
@@ -1645,22 +1362,7 @@ export SAURON_SOLANA_KEYPAIR_PATH=/tmp/operator.json
 
 Restart core. Within `SAURON_ANCHOR_INTERVAL` seconds, the first batch will anchor.
 
-### 21.11 (Optional) Compile ZK circuits
-
-```bash
-cd zkp
-npm install
-bash scripts/compile.sh
-# Phase-2 ceremony required for production; for testing, the initial zkey works
-```
-
-Set `SAURON_DISABLE_ZKP=0` and restart core.
-
-### 21.12 (Optional) AWS Nitro deployment
-
-See [tee-deployment.md](../operations/tee-deployment.md) for the full Nitro enclave deployment guide, including the enclave image build, attestation document collection, and PCR-based deployment verification.
-
-### 21.13 Verify the live system
+### 21.11 Verify the live system
 
 Open the dashboard at `http://localhost:3000`. The overview should show:
 - 1 active agent.

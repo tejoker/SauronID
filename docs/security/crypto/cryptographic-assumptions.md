@@ -47,7 +47,7 @@ This doc complements [`threat-model.md`](../threat-model.md). The threat model s
 | Used for | Tamper-evident anchoring of agent-action merkle roots (`core/src/bitcoin_anchor.rs`). |
 | Expected margin | Inherits Bitcoin's. Confirmation latency ≈ 1 hour for the upgraded full attestation; calendar receipts arrive in seconds. |
 | If broken | After-the-fact rewrite of the agent-action audit log becomes feasible. Until then, every receipt-id leaf is bound to a Bitcoin block timestamp. |
-| Operator note | Calendar downtime ≠ broken security, just delayed upgrade. See [`disaster-recovery.md`](../../operations/disaster-recovery.md) §Bitcoin-OTS-calendar-unavailable. |
+| Operator note | Calendar downtime ≠ broken security, just delayed upgrade. See [`key-rotation.md`](../key-rotation.md) §Bitcoin-OTS-calendar-unavailable. |
 
 ## 5. Solana Memo anchoring
 
@@ -57,7 +57,7 @@ This doc complements [`threat-model.md`](../threat-model.md). The threat model s
 | Source | Yakovenko 2018; current Solana mainnet validator set. |
 | Used for | Low-latency confirmation of agent-action merkle roots in parallel to Bitcoin OTS (`core/src/solana_anchor.rs`). Finalized ≈ 30 s. |
 | If broken | Solana-side audit log becomes mutable, but the Bitcoin-side anchor still holds. Defence-in-depth: tampering requires forging *both* chains, which is the design intent. |
-| Cost note | Memo writes cost SOL; budget envelope documented in [`operations.md`](../../operations/operations.md). |
+| Cost note | Memo writes cost SOL; budget envelope documented in [`secrets.md`](../secrets.md). |
 
 ## 6. Legacy OPRF on the Ristretto255 group
 

@@ -141,7 +141,7 @@ export function keyImage(secret: bigint, publicPoint: Point): Point {
  *
  * Note the `"|"` between the shared point and the ring id. It is in
  * `ring_offset()` in the core but missing from the formula in that module's own
- * doc comment and in docs/design/anonymous-ring-policy.md. Omitting it derives a
+ * doc comment and in docs/architecture/anonymous-ring-policy.md. Omitting it derives a
  * pseudonym that is simply not in the ring — which is how it was found here.
  */
 export function derivePseudonym(

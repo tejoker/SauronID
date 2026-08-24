@@ -100,8 +100,9 @@ the image it claims to be. If you self-host, that gap does not exist — you
 started the process from a digest you verified. If you use a managed instance,
 a self-reported version string is not evidence, and we do not present one as
 such; closing it properly requires hardware attestation of the running gateway.
-See [`attestation-scope.md`](attestation-scope.md) for exactly what that entails and its current
-state.
+That work was scoped and then archived in 2026-08 without being built; the
+scope and the vendor-by-vendor state at removal are in
+[`archive/removed-2026-08/hardware-attestation/attestation-scope.md`](../../archive/removed-2026-08/hardware-attestation/attestation-scope.md).
 
 We would rather tell you where the boundary is than let you discover it during a
 review.

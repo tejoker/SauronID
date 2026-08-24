@@ -230,6 +230,6 @@ echo "  Logs:        /tmp/sauron-quickstart.log"
 echo
 echo "  Next:"
 echo "    • run a Python adapter: see sdk/python/sauronid_client/README.md"
-echo "    • verify an audit anchor: docs/planning/empirical-comparison.md"
-echo "    • production deploy: docs/operations/operations.md"
+echo "    • verify an audit anchor: redteam/"
+echo "    • production deploy: deploy/README.md"
 echo

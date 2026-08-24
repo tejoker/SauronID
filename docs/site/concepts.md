@@ -1,12 +1,13 @@
 # SauronID in 5 minutes
 
-SauronID is a leash for AI agents. It does not make an agent good; it makes
-an agent *accountable*. Every agent gets a cryptographic identity bound to a
-human owner, every call it makes is signed, every consequential action is
-checked against a policy on the server, and every decision leaves a
-tamper-evident receipt.
+SauronID is how you let an agent act. You state the job, the model and tools it
+may use, and the actions, budgets and approvals it gets; the server holds the
+agent to that. It does not make an agent good, it makes an agent *accountable*:
+every agent has a cryptographic identity bound to a human owner, every call it
+makes is signed, every consequential action is checked against a policy on the
+server, and every decision leaves a tamper-evident receipt.
 
-## The leash model
+## The four mechanisms
 
 Four mechanisms, layered:
 
