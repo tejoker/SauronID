@@ -2,7 +2,7 @@
 
 Status: **implemented for HTTP egress; deployment enforcement required.** The
 one-use capability and forward-proxy path described below ships in
-`core/src/egress_gateway.rs`. A deny-by-default CNI/firewall boundary is still
+`core/src/egress_gateway/`. A deny-by-default CNI/firewall boundary is still
 required because application code cannot stop a hostile process from opening
 its own socket. This design closed threat-model **Gap 2** for protected traffic
 while reusing SauronID's existing binding, policy and anchor stack.
@@ -51,7 +51,7 @@ no body inspection. Pick per deployment:
 
 | Step | Reuse |
 |---|---|
-| per-call sig verify | `core/src/agent.rs` `require_call_signature` / `VerifiedCallSig` |
+| per-call sig verify | `core/src/agent/call_sig.rs` `require_call_signature` / `VerifiedCallSig` |
 | intent allowlist | `intent_json.egress_allowlist` (already the documented Gap-2 field) |
 | policy eval | `core/src/policy/` DSL evaluator |
 | audit trail | `agent_egress_log` table + the existing anchor batch (BTC/Solana) |
@@ -91,7 +91,7 @@ being configured to route through it). State it; don't oversell "un-bypassable."
 
 ## Phasing
 
-1. **DONE** — `POST /agent/egress/proxy` (`core/src/egress_gateway.rs`), per-call-sig
+1. **DONE** — `POST /agent/egress/proxy` (`core/src/egress_gateway/proxy.rs`), per-call-sig
    gate, host allowlist, anchored egress log via shared `record_egress` (also used
    by the legacy `/agent/egress/log`). Behind `SAURON_EGRESS_GATEWAY`.
 2. **DONE** — arg-level allowlist (entries may be `{host, methods?, path_prefix?}`,
@@ -103,7 +103,7 @@ being configured to route through it). State it; don't oversell "un-bypassable."
    NOT done: it overlaps the existing intent/policy layer; method+path constraints
    cover the practical need. `ponytail:` regex redaction is coarse (blanket, not
    per-target); NER + per-target rules are Phase 2.1 if a real miss shows up.
-2.5. **DONE — SSRF / abuse hardening** (`core/src/egress_gateway.rs`):
+2.5. **DONE — SSRF / abuse hardening** (`core/src/egress_gateway/guards.rs`):
    - **Resolved-IP vetting + DNS pinning**: the target host is resolved and every
      resolved address is checked against `is_blocked_ip` (loopback, RFC-1918
      private, `169.254/16` link-local incl. the `169.254.169.254` cloud-metadata

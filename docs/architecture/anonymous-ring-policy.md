@@ -167,7 +167,7 @@ pseudonyms.
    operator trapdoor loader, `subscribe`/`revoke` (derive-and-store / re-derive-and-delete,
    no stored agent→ring link), `/admin/rings*` handlers gated by `SAURON_ANON_RINGS`.
    **DONE** (10 unit tests). Live action path untouched.
-3. **Anonymous action path** (`core/src/agent_action.rs`) — `AnonActionEnvelope`
+3. **Anonymous action path** (`core/src/agent_action/anon.rs`) — `AnonActionEnvelope`
    (no agent_id / human_key_image; carries `ring_id` + `config_digest`),
    `validate_anon_action` (rule eval → anonymous ring verify against the live
    member set → single-use on `key_image|nonce` → identity-less receipt), and the

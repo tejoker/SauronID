@@ -41,7 +41,7 @@ agent capability it was never mandated:
   audience, body digest, timestamp, one-use nonce, A-JWT jti and the agent's
   runtime config digest. Applied as default-deny middleware across `/agent/*`;
   the exempt set is a written constant. `core/src/crypto_protocol.rs`,
-  `core/src/agent.rs`.
+  `core/src/agent/call_sig.rs`.
 - **Owner-signed mandates** — the human owner signs the grant, so the operator
   cannot mint or widen authority for an agent it hosts. Canonical payload
   construction and its parsing are the interesting part.
@@ -73,7 +73,8 @@ agent process is hostile and the network path is attacker-influenced.
 - Bypass the gateway at the network layer — the whole product depends on the
   agent workload having no other egress route. `deploy/kubernetes/agent-network-isolation.yaml`.
 - The egress capability gateway: SSRF, DNS rebinding, redirect handling,
-  credential brokerage, one-use capability reuse. `core/src/egress_gateway.rs`.
+  credential brokerage, one-use capability reuse. `core/src/egress_gateway/`
+  (`guards.rs`, `capability.rs`, `proxy.rs`).
 - Multi-tenancy: cross-tenant read, write, enumeration and rate-limit
   interference. [`multi-tenancy.md`](../../architecture/multi-tenancy.md) states the intended boundary and
   its known gaps — treat that document as a claim to falsify.

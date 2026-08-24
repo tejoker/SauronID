@@ -153,7 +153,7 @@ impl IntoResponse for AppError {
 /// Hint returned whenever a request loses a race for the database.
 const CONTENTION_FIX: &str =
     "the database was busy with another write; retry after a short delay. If this is \
-     frequent, the single-writer SQLite tier is saturated — see docs/operations/production-readiness.md";
+     frequent, the single-writer SQLite tier is saturated — see docs/architecture/postgres-port-status.md";
 
 /// True when a database error message describes write contention rather than a
 /// fault.

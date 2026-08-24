@@ -14,7 +14,7 @@ This doc complements [`threat-model.md`](../threat-model.md). The threat model s
 | Source | RFC 8032; Bernstein et al. 2011. |
 | Key size | 32 B secret scalar, 32 B public point. |
 | Expected margin | ≈ 128-bit. |
-| Used for | Agent PoP keys (`pop_public_key_b64u`, `core/src/agent.rs:1429`), A-JWT signatures (`core/src/ajwt_support.rs`), per-call DPoP-style sigs (`core/src/agent.rs:1587`), per-receipt action-envelope sigs, operator-rooted attestation (`Ed25519Self` in `core/src/attestation/mod.rs`). |
+| Used for | Agent PoP keys (`pop_public_key_b64u`, `core/src/agent/call_sig.rs`), A-JWT signatures (`core/src/ajwt_support.rs`), per-call DPoP-style sigs (`core/src/agent/call_sig.rs`), per-receipt action-envelope sigs, operator-rooted attestation (`Ed25519Self` in `core/src/attestation/mod.rs`). |
 | If broken | Any captured public key forges signatures. Every leash that depends on PoP is bypassed. Action receipts can be re-signed by an attacker holding only the public key — receipts become repudiable. Migrate to PQ signatures (Dilithium / Falcon) before this happens. |
 
 ## 2. HMAC-SHA256
@@ -23,9 +23,9 @@ This doc complements [`threat-model.md`](../threat-model.md). The threat model s
 |---|---|
 | Assumption | SHA-256 compression function is a PRF; HMAC construction inherits PRF security. |
 | Source | RFC 2104; Bellare 2006. |
-| Key size | Min 32 B in production (enforced for `SAURON_ADMIN_KEY` / `SAURON_JWT_SECRET`, see `core/src/admin.rs:99-107`). |
+| Key size | Min 32 B in production (enforced for `SAURON_ADMIN_KEY` / `SAURON_JWT_SECRET`, see `core/src/admin/auth.rs`). |
 | Expected margin | ≈ 128-bit (forgery), ≈ 256-bit (key recovery). |
-| Used for | Admin auth bearer tokens (`core/src/admin.rs::build_admin_auth_config`), session tokens, JWT signing for A-JWTs, OPRF-derived per-tenant secrets. |
+| Used for | Admin auth bearer tokens (`core/src/admin/auth.rs::build_admin_auth_config`), session tokens, JWT signing for A-JWTs, OPRF-derived per-tenant secrets. |
 | If broken | All admin / session / JWT secrets become trivially forgeable. Switch to KMAC / Blake3-MAC. |
 | Side-channels | Comparison is via `subtle::ConstantTimeEq` (no timing oracle). |
 

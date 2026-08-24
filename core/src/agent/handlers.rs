@@ -433,7 +433,7 @@ pub async fn register_agent(
     // `jwt_secret`, making operator compromise equal full agent impersonation.
     // The TPM2-rooted alternative that used to follow this gate was cancelled
     // with the hardware-attestation track in 2026-08; refusing the kind in
-    // production is the mitigation. See docs/planning/roadmap.md Plan 1.
+    // production is the mitigation. See archive/removed-2026-08/hardware-attestation/.
     if matches!(
         kind_parsed,
         crate::attestation::AttestationKind::ServerDerived

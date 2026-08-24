@@ -914,8 +914,8 @@ pub fn init_schema(conn: &Connection) {
         -- (agent, policy, period) collapsed into ONE row owned by whichever
         -- wrote first. The non-owning tenant then read 0 and its budget cap
         -- never tripped, while the owning tenant absorbed spend it never made.
-        -- `tenant-spend-ledger-race.ts` reproduces it; docs/compliance/multi-tenancy-audit.md
-        -- has the numbers.
+        -- `tenant-spend-ledger-race.ts` reproduces it; docs/architecture/multi-tenancy.md
+        -- has the table.
         CREATE TABLE IF NOT EXISTS spend_ledger (
             policy_id    TEXT NOT NULL,
             agent_id     TEXT NOT NULL,
@@ -1170,7 +1170,7 @@ pub fn init_schema(conn: &Connection) {
                     target: "sauron::db",
                     "spend_ledger rebuilt with tenant_id in the primary key; \
                      pre-existing totals were copied as-is and may over-count the \
-                     owning tenant (see docs/compliance/multi-tenancy-audit.md)"
+                     owning tenant (see docs/architecture/multi-tenancy.md)"
                 ),
                 Err(e) => {
                     let _ = conn.execute_batch("ROLLBACK;");
@@ -1274,7 +1274,9 @@ pub fn init_schema(conn: &Connection) {
         [],
     );
 
-    // M1 of TPM2-bound PoP key roadmap (docs/planning/roadmap.md Plan 1):
+    // Columns from the TPM2-bound PoP track, cancelled and archived in 2026-08
+    // (archive/removed-2026-08/hardware-attestation/). Kept because dropping a
+    // column needs a table rebuild, and nothing reads them.
     //   - attestation_pubkey_b64u — the AIK public key extracted from the
     //     hardware attestation (used as the trusted PoP key once M2 lands).
     //   - attestation_pcr_set — JSON-encoded PCR selection + canonical hash

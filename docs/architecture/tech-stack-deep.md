@@ -179,58 +179,75 @@ A single binary, `sauron-core`, exposes an HTTP API on port 3001 by default. The
 
 ### 3.2 Module organization
 
-Each Rust module in `core/src/` is self-contained where possible. Module dependencies form a DAG:
+Each Rust module in `core/src/` is self-contained where possible. Module
+dependencies form a DAG:
 
 ```
 routes.rs
-  ├── state.rs (AppState shared across handlers)
-  ├── middleware/* (tenancy, auth, rate limiting)
-  ├── ajwt_support.rs ── identity.rs
-  ├── agent.rs ── agent_checksum.rs
-  ├── agent_action.rs ── merkle.rs
+  ├── state.rs (ServerState shared across handlers)
+  ├── middleware/ ── rate_limit.rs, audit_log.rs, security_headers.rs, panic.rs
+  ├── agent/ ── ajwt.rs, call_sig.rs, handlers.rs, types.rs
+  │       └── agent_checksum.rs
+  ├── agent_action/ ── validate.rs, canonical.rs, receipts.rs, anon.rs, handlers.rs
+  │       ├── merkle.rs
   │       └── agent_action_anchor.rs
   │              ├── bitcoin_anchor.rs
   │              └── solana_anchor.rs
-  ├── policy/ ── policy/ast.rs, parser.rs, compiler.rs, evaluator.rs, invariants/*
+  ├── policy/ ── ast.rs, compiler.rs, evaluator.rs, expressions/, invariants/*
   ├── attestation/ ── ed25519_self.rs
   ├── aggregation/ ── submission.rs, store.rs (transparent stat submission)
   ├── transparent_proof.rs (RISC Zero receipt verification)
-  ├── egress_gateway/
+  ├── egress_gateway/ ── config.rs, matching.rs, guards.rs, capability.rs, proxy.rs
+  ├── rings.rs ── ring.rs, ring_pseudonym.rs, usage.rs
   ├── audit/
+  ├── admin/ ── auth.rs, agents.rs, anchors.rs, clients.rs, health.rs, keys.rs,
+  │             queries.rs, status.rs
   ├── tenancy/
-  └── db.rs ── repository.rs
+  └── db.rs ── any_db.rs, sql_translate.rs, repository.rs
 ```
 
 ### 3.3 Shared state
 
-`state.rs` exposes `AppState`, a cheaply-clonable handle (`Arc` of inner state) passed to every axum handler via the `State` extractor.
+`state.rs` exposes `ServerState`, a cheaply-clonable handle (`Arc` of inner
+state) passed to every axum handler via the `State` extractor. Its fields:
 
-`AppState` contains:
+- `db: Arc<DbHandle>` — the SQLite pool, or the blocking Postgres pool under `SAURON_DB_BACKEND=postgres`
+- `repo: repository::Repo` — the tenant-bound dual-backend access layer
+- `k: Scalar` — the server's OPRF key
+- `client_group` / `user_group` / `agent_group: ring::RingGroup` — public-key groups for partner sites, end users and delegated agents
+- `token_secret: Vec<u8>` — HMAC key for credit tokens
+- `jwt_secret: Vec<u8>` — signing key for agent A-JWTs
+- `merkle_ledger: MerkleCommitmentLedger` — the commitment ledger
+- `bitcoin_anchor: Option<Arc<BitcoinAnchorService>>` — OpenTimestamps client, present when enabled
+- `solana_anchor: Option<Arc<SolanaAnchorService>>` — Memo-program client, present when enabled
+- `policy_store: Arc<policy::PolicyStore>` — in-memory cache over the `policies` table, hydrated on startup
 
-- `db: Arc<Database>` — either SQLite pool or Postgres pool wrapped in an enum
-- `policy_store: Arc<RwLock<HashMap<AgentId, CompiledPolicy>>>` — hot policy cache
-- `nonce_store: Arc<NonceStore>` — replay protection
-- `anchor_queue: Arc<AnchorQueue>` — pending actions to anchor
-- `attestation_verifiers: Arc<AttestationRegistry>` — registry of attestation backends (`ed25519_self` only since the 2026-08 pass)
-- `secret_provider: Arc<dyn SecretProvider>` — key material accessor (env-var or Vault)
-- `runtime_mode: RuntimeMode` — `Advisory` or `Strict` (controls enforcement)
+Three things are deliberately **not** state fields. Enforcement mode is read
+from the environment at each decision point (`runtime_mode::*`), so the answer
+always comes from one function rather than a value captured at boot. Nonce
+replay state lives in the `agent_action` tables, reached through `repo`. The
+anchor queue lives in `agent_action_anchor`. There is no attestation registry:
+this build ships one attestation kind and dispatches through
+`attestation::verify_attestation`.
 
 ### 3.4 Request lifecycle
 
-For a typical signed agent action request:
+Axum applies layers outermost-last, so a request traverses the stack assembled
+in `main.rs` in this order:
 
-1. **TLS termination** — axum behind a reverse proxy (Caddy / nginx / ALB) or direct TLS via rustls.
-2. **Tenancy extraction** — `tenancy::middleware::extract_tenant_id` reads `X-Tenant-ID` header or derives from JWT.
-3. **Auth verification** — `ajwt_support::verify_ajwt` validates the A-JWT signature, expiry, JTI uniqueness.
-4. **Per-call signature check** — `call_sig::verify` validates the `X-Sauron-Call-Sig` header.
-5. **Rate limit** — `risk::check_rate_limit` consumes a token from the sliding-window bucket.
-6. **Policy evaluation** — `policy::evaluator::evaluate` checks the action against the bound policy.
-7. **Compliance screening** — `compliance::screen` checks jurisdiction allowlist.
-8. **Action recording** — `agent_action::record` appends to the action log with timestamp.
-9. **Merkle inclusion** — `merkle::insert` adds the action hash to the current Merkle tree.
-10. **Response** — return 200 with the receipt (action ID, root hash, optional anchor proof handle).
+1. **Global ingress rate limit** — `middleware::rate_limit::global_rate_limit_middleware`, per client IP. Outermost of the security stack, so an unauthenticated flood never reaches auth, tenant resolution or a handler.
+2. **Security audit log** — `middleware::audit_log`. Wraps the handler so the response status is visible and 401/403 failures are recorded.
+3. **CORS**, **panic capture** (`CatchPanicLayer`), **body limit** (64 KB default, 1 MB on agent registration), **tracing**, **response security headers**, **HTTP metrics**.
+4. **Tenant extraction** — `tenancy::extract_tenant` reads `X-Tenant-ID`, or takes the tenant from the admin JWT when `SAURON_ADMIN_JWT_HS256_SECRET` is set. The token wins; the header cannot override it.
+5. **Per-call signature, default deny** — `agent::require_call_signature_default_deny` covers the whole `/agent/*` surface. A route is only open if it is named in `agent::CALL_SIG_EXEMPT_PATHS`, so a new route is protected the moment it exists.
+6. **Handler.** A-JWT verification (`agent::ajwt::verify_ajwt_for_tenant`), per-agent risk limits (`risk`), policy evaluation (`policy::evaluator`), then the action path in `agent_action` — validate, canonicalise, record a receipt, extend the Merkle ledger — and the receipt in the response.
 
-In `Advisory` mode, steps 4–7 log violations but do not block. In `Strict` mode, any failure terminates the request with 403.
+Enforcement is not one global switch. `runtime_mode::policy_enforcement_mode()`
+returns `Enforce`, `Advisory` or `Off` and governs **policy denials only**:
+`Advisory` logs the deny and still allows the action, and is dev-only. The
+per-call signature layer has its own separate gate,
+`SAURON_REQUIRE_CALL_SIG` — an advisory signature layer and an advisory policy
+engine are two different decisions, and neither implies the other.
 
 ### 3.5 Background tasks
 
@@ -747,7 +764,7 @@ CREATE TABLE policies (
 );
 ```
 
-The hot path uses an in-memory cache (`AppState::policy_store`) keyed by `(tenant_id, agent_id)`, refreshed on policy upload.
+The hot path uses an in-memory cache (`ServerState::policy_store`) keyed by `(tenant_id, agent_id)`, refreshed on policy upload.
 
 ---
 

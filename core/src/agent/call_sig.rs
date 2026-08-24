@@ -343,8 +343,8 @@ async fn try_verify_call_sig(
              verify body_sha256 matches the exact bytes sent. If the client is correct and \
              this started when you put the core behind a reverse proxy, the proxy is almost \
              certainly rewriting the request line: target_uri is signed byte-for-byte, so \
-             collapsing //, decoding %2F, or reordering the query invalidates it — see \
-             docs/operations/operations.md 'Reverse proxy requirements'",
+             collapsing //, decoding %2F, or reordering the query invalidates it: \
+             configure the proxy to pass the request target through verbatim",
         )
     })?;
 
