@@ -249,4 +249,4 @@ behind an admin-only handler.
 | `core/src/attestation_cbor.rs`                | Hand-rolled CBOR decoder + COSE_Sign1 parser + AWS chain verifier. |
 | `core/src/attestation.rs::verify_nitro_enclave` | Dispatches between dev JSON and CBOR paths.      |
 | `core/tests/nitro_attestation.rs`             | End-to-end tests with synthesised CBOR fixtures.    |
-| `docs/tee-deployment.md`                      | This document.                                       |
+| `tee-deployment.md`                      | This document.                                       |

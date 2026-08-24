@@ -17,7 +17,8 @@
 -- Reproduced by redteam/src/scenarios/tenant/tenant-spend-ledger-race.ts: two tenants,
 -- ten spends each on one (agent_id, policy_id), produced 20 correctly-split
 -- spend_log rows and a SINGLE spend_ledger row holding 1010.0 under tenant A.
--- docs/compliance/multi-tenancy-audit.md carries the full write-up.
+-- docs/architecture/multi-tenancy.md carries the tenant boundary; the audit
+-- write-up it superseded is in git history.
 --
 -- NON-DESTRUCTIVE. No row is deleted or merged: every existing row keeps its own
 -- tenant_id and total. What this cannot do is un-merge a total that already

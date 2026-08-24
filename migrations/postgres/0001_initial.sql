@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS agents (
     pop_public_key_b64u         TEXT    NOT NULL DEFAULT '',
     attestation_blob            TEXT,
     attestation_kind            TEXT    NOT NULL DEFAULT '',
-    -- M1 of TPM2-bound PoP key roadmap (docs/planning/roadmap.md Plan 1):
+    -- Columns from the TPM2-bound PoP track, cancelled and archived in 2026-08
+    -- (archive/removed-2026-08/hardware-attestation/):
     -- nullable hardware-attestation fields, populated when attestation_kind
     -- is 'tpm2_quote'. The verifier (M2) reads these to walk the EK chain
     -- and compare PCRs against the registered measurement.

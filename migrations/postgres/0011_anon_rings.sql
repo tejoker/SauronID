@@ -1,5 +1,5 @@
 -- Phase 2 of the anonymous ring-policy redesign.
--- See docs/design/anonymous-ring-policy.md.
+-- See docs/architecture/anonymous-ring-policy.md.
 --
 -- A ring is a RULE; agents subscribe to many rings. Members are per-ring stealth
 -- pseudonym points (core/src/ring_pseudonym.rs) — NEVER master keys — so a reader
