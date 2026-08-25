@@ -283,6 +283,64 @@ Load-bearing for an agent's accuracy, orthogonal to authorization.
 | **4,914,303** / month | 13,163 | `livekit/agents` | Apache-2.0 | Realtime voice. A voice agent taking an action is the same authorization problem with no place to show a confirmation dialog |
 | n/a — throttled | 14,688 | `pipecat-ai/pipecat` | BSD-2-Clause | The other voice pipeline |
 
+## Third pass — who vouches that an agent is real
+
+The nearest-neighbour lane to what we sell, and the one the first two passes
+skipped. Two questions live here: how does a server recognise an agent it has
+never seen, and where does it look the agent up.
+
+### Our per-call signature is RFC 9421 in private headers
+
+Visa's Trusted Agent Protocol and Cloudflare's web-bot-auth both settle on the
+same mechanism: **HTTP Message Signatures (RFC 9421)**, with the public key
+fetched from a `.well-known` URL. Visa's minimum signed field set is
+`@authority`, `@path`, `created`, `expires`, `keyid`, `tag`, `alg`, `nonce`, and
+the `tag` distinguishes a browsing interaction from a payment one.
+
+Compare [`crypto_protocol::CallSignatureInput`](../../core/src/crypto_protocol.rs):
+`agent_id`, `tenant_id`, `audience`, `method`, `target_uri`, `content_type`,
+`body_sha256_hex`, `config_digest`, `timestamp_ms`, `nonce` — carried in
+`x-sauron-call-*` headers ([`agent/call_sig.rs`](../../core/src/agent/call_sig.rs)).
+**Verified in the repo**, not a hypothesis:
+
+- We bind strictly more than Visa does — tenant, body hash and config digest have
+  no counterpart in the minimum set.
+- We are missing three of theirs. **`expires`**: our signer cannot bound its own
+  signature's lifetime, a server-side `±SAURON_CALL_SIG_SKEW_MS` window does it
+  instead. **`alg`**: Ed25519 is fixed, not stated. **`tag`**: no operation-class
+  field, so nothing distinguishes read from spend inside the signature.
+- The gap is an encoding, not a cryptosystem. Speaking 9421 means emitting
+  `Signature` / `Signature-Input` alongside our headers, not changing what we sign.
+
+`README.md` currently names RFC 9421 once, in a list of things we compare
+ourselves against. Two payment networks and a CDN now treat it as the wire
+format.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| — | 196 | `visa/trusted-agent-protocol` | NOASSERTION | Spec plus a runnable five-service demo, **including an `agent-registry` public-key service**. Last push **2025-10-28** — the spec moved to `developer.visa.com` and the repo did not follow |
+| — | 149 | `cloudflare/web-bot-auth` | Apache-2.0 | The IETF-track shape of the same idea, pushed 2026-08-22. Small repo, large deployment surface behind it |
+
+### Discovery exists and verifies nothing
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| — | 7,190 | `modelcontextprotocol/registry` | NOASSERTION | The official MCP registry and the `server.json` shape everything else consumes |
+| — | 25 | `prassanna-ravishankar/a2a-registry` | MIT | Live A2A directory. Its stated key principle is *"We trust the agent card"* — register by URL, health-probe every 30 minutes, and that is the whole trust model |
+| — | 4 | `agentoperations/agent-registry` | — | The right design with no adoption: A2A AgentCard + `server.json` + `SKILL.md` as identity, wrapped in a `draft → evaluated → approved → published` promotion lifecycle. Explicitly *"does not compute trust scores"* |
+
+Every registry in this lane indexes self-declared metadata and probes for
+liveness. None attests that the agent behind the card is the one that was
+registered, which is the same finding as the skill supply-chain section reached
+from the other direction: **the ecosystem inspects nothing at publish time**. A
+registry entry backed by an action-level audit chain is a thing none of these
+three can produce, and `agentoperations/agent-registry` leaves exactly that hole
+open by design.
+
+Not surveyed, and deliberately: semantic and KV caching (a cost lever with no
+authorization surface), RL environments for agent training, vector databases,
+agent marketplaces, fine-tuning.
+
 ## Adapter targets — the ground moved
 
 Our adapters target LangChain, OpenAI, Anthropic, AutoGen, CrewAI, LlamaIndex and
@@ -348,6 +406,5 @@ The GitHub API returns a bare 404 for a renamed repository rather than following
 the redirect, which is how `Giskard-AI/giskard` first read as nonexistent when it
 had merely become `giskard-oss`.
 
-Not surveyed: voice agents, agent marketplaces, fine-tuning, vector databases
-beyond a first pass, prompt-optimization and structured-decoding libraries, and
-the OWASP Agentic Top 10 as a checklist rather than a citation.
+Still not surveyed after three passes: the OWASP Agentic Top 10 as a checklist
+rather than a citation, and everything listed at the end of the third pass.
