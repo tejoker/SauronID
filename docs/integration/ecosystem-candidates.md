@@ -159,6 +159,130 @@ another agent is exactly the boundary we exist to draw.
 | 25,485 | `a2aproject/A2A` | Apache-2.0 | **We have no A2A story** |
 | 1,010 | `ArcadeAI/arcade-mcp` | MIT | MCP server framework with tool auth |
 
+## Agent add-ons — what bolts onto an agent *we* build
+
+The sections above ask what plugs into the gateway. This one asks the opposite
+question: when we implement an agent, what do we bolt onto it so it is not a bare
+loop? Numbers read 2026-08-25 from the GitHub API, `pypistats.org` and
+`api.npmjs.org`, source grade A. Every "note" is a **hypothesis** — no code read,
+no license checked against BUSL-1.1.
+
+**Memory.** The layer no agent framework ships well. Four projects, four
+incompatible definitions of the word: a drawer of facts, a graph of facts over
+time, a whole runtime, a corpus pipeline. Pick by shape, not by stars.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **4,082,861** / month | 64,006 | `mem0ai/mem0` | Apache-2.0 | Extraction-based fact memory, `add()`/`search()`. Least plumbing; graph tier is paid on the hosted product |
+| **1,332,300** / month | 30,291 | `getzep/graphiti` | Apache-2.0 | Bi-temporal graph: every fact carries `valid_at`/`invalid_at`, contradictions invalidate rather than delete. **Closest thing here to our audit chain** — and it needs Neo4j or FalkorDB behind it. Zep Community Edition is deprecated; what self-hosts is the engine, not the product |
+| n/a — throttled | 24,436 | `letta-ai/letta` | Apache-2.0 | Not a memory layer: a stateful agent runtime with OS-style tiers (MemGPT lineage). Adopting it means adopting the frame |
+| 213,013 / month | 30,257 | `topoteretes/cognee` | Apache-2.0 | Corpus → graph + vector pipeline. 1.0 (2026-06-26) runs the whole layer on one Postgres, which matches our deployment shape better than the alternatives |
+
+Memory is also a new exfiltration target with no counterpart in our threat model:
+an agent that remembers is an agent whose store can be read, poisoned, or made to
+recall the wrong tenant's facts. `docs/security/threat-model.md` covers actions,
+not state.
+
+**Browser and computer use.** Where an agent stops calling APIs and starts
+driving a UI. Also the single largest blast-radius increase available: shell
+execution combined with network egress is the exact pattern the skill supply-chain
+figures above name as most-triggered critical.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **62,717,709** / month (PyPI) | 110,464 | `browser-use/browser-use` | MIT | Autonomous loop, task in / result out. Raw PyPI count includes mirrors and CI; treat the order of magnitude, not the digit |
+| **5,808,831** / week (npm) | 36,448 | `microsoft/playwright-mcp` | Apache-2.0 | Accessibility-tree tools over MCP. **The lowest-token option and the one already speaking our protocol** |
+| **1,461,536** / week (npm) | 24,047 | `browserbase/stagehand` | MIT | `act()`/`extract()`/`observe()` with an action cache — you pay the model once per page shape |
+| 7,529 / month | 22,848 | `Skyvern-AI/skyvern` | **AGPL-3.0 — blocker** | RPA replacement with CAPTCHA/2FA. License is incompatible with how we ship |
+
+**Tool layer.** Between an agent and a hundred tools sits a selection problem we
+have not met yet because our tool allowlists are small.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| — | 29,874 | `ComposioHQ/composio` | MIT | Managed tool catalog with auth per integration — overlaps our credential broker |
+| — | 10,526 | `mcp-use/mcp-use` | MIT | Client SDK for wiring MCP servers into an agent |
+
+**Durable execution.** An agent that runs for hours needs its progress
+checkpointed, not its process kept alive. Named here because a per-action mandate
+that expires mid-run is our problem, not the workflow engine's.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| — | 22,522 | `temporalio/temporal` | MIT | The default. Replays completed steps rather than re-spending tokens |
+| 12,737 / month | 743 | `dapr/dapr-agents` | Apache-2.0 | Durable workflow plus virtual actors; thousands of agents scale-to-zero on one core |
+| — | 4,339 | `restatedev/restate` | NOASSERTION | Lighter single-binary alternative; license unresolved |
+
+One open question this pass raises and does not answer: **a mandate signed for one
+action does not survive a checkpoint-and-resume hours later.** Every engine above
+assumes the work is replayable. Our authorization is not.
+
+## Second pass — approval, payments, adversarial testing
+
+Same method, four lanes the first two passes missed. Numbers read 2026-08-25.
+
+### Somebody else already called it a mandate
+
+The Agent Payments Protocol signs an object it calls a **mandate**: a
+user-authorized, cryptographically signed statement of what an agent may buy, and
+the protocol carries intent mandates and cart mandates through the transaction.
+That is our word and close to our concept, arrived at independently, backed by
+Google and shipped as Apache-2.0.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **261,558** / week (npm), 187,315 / month (PyPI) | 6,541 | `x402-foundation/x402` | Apache-2.0 | HTTP 402 revived. Schemes are `exact`, **`upto`** and `batch-settlement` — and `upto` is an authorization with an amount ceiling, which our policy DSL cannot express |
+| no package published | 3,155 | `google-agentic-commerce/AP2` | Apache-2.0 | Intent and cart **mandates**, signed by the user, verifiable by the merchant. Install is `pip install git+…`; last push 2026-06-17 |
+| — | — | `google-agentic-commerce/a2a-x402` | Apache-2.0 | Bridges the two: payment-required / payment-submitted / payment-completed over A2A, the protocol we have no story for |
+
+Two things follow, and neither is optional if the money-agent wedge is the wedge.
+First, a per-action mandate that carries no amount is weaker than what a payments
+protocol already ships — `upto` is a spend cap and we have no field for one.
+Second, if AP2 becomes the way an agent proves it was allowed to spend, our scheme
+either maps onto it or has to explain, to a buyer, why it does not.
+
+### Approval has no living open-source competitor
+
+`humanlayer/humanlayer` was the answer to "block this call until a human says
+yes". Its README now states the code is *"pretty much all deprecated"* and points
+at a closed rebuild. The numbers say the library was never really used anyway:
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| 903 / month (PyPI), 209 / week (npm) | 11,330 | `humanlayer/humanlayer` | NOASSERTION | 11,330 stars, **903 installs** — and self-declared deprecated. `require_approval` as a decorator, omnichannel routing, was the shape everyone linked to |
+
+11,330 stars against 903 monthly installs is a wider gap than `guidance`, and the
+project is gone on top of it. **The human-approval gate is the one lane in this
+whole file where the open-source field is empty**, which is either the best news
+here or evidence that nobody pays for it. `docs/company-brain/` decides which.
+
+### Adversarial testing — the compliance artifact we write by hand
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **613,013** / week (npm) | 24,562 | `promptfoo/promptfoo` | MIT | Red-team plugins with reports mapped to OWASP LLM Top 10, NIST AI RMF and MITRE ATLAS. Acquired by OpenAI 2026-03-09, license unchanged. **That mapping is the artifact `docs/security/assessment/` assembles manually** |
+| n/a — throttled | 9,026 | `NVIDIA/garak` | Apache-2.0 | Model-layer scanner. v0.15 added an **agent-breaker probe aimed at the tools a tool-using agent can reach** — our exact surface |
+| — | 5,770 | `Giskard-AI/giskard-oss` | Apache-2.0 | OWASP-mapped scan; continuous monitoring is the paid Hub. Note the rename — `Giskard-AI/giskard` is gone |
+
+### Input and output shaping
+
+Load-bearing for an agent's accuracy, orthogonal to authorization.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **9,634,096** / month | 65,536 | `docling-project/docling` | MIT | Documents → structured form. Highest-installed project in this entire file |
+| **6,576,439** / month | 37,587 | `stanfordnlp/dspy` | MIT | Prompts as optimizable programs. Caveat with a date: a GEPA run published 2026-07-02 took training accuracy 90 → 95% and held-out accuracy 95 → **85%**. An optimized prompt needs the same regression review as a code diff |
+| 627,210 / month | 9,078 | `BoundaryML/baml` | Apache-2.0 | Schema-first LLM functions with its own type checker |
+| n/a — throttled | 13,777 | `567-labs/instructor` | MIT | Pydantic-validated structured output, the low-ceremony option |
+
+### Surfaces we ship no adapter for
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **1,778,530** / week (npm) | 15,533 | `ag-ui-protocol/ag-ui` | MIT | Agent-to-UI event protocol. Pairs with the A2A gap: we have neither the human-facing nor the agent-facing protocol |
+| **4,914,303** / month | 13,163 | `livekit/agents` | Apache-2.0 | Realtime voice. A voice agent taking an action is the same authorization problem with no place to show a confirmation dialog |
+| n/a — throttled | 14,688 | `pipecat-ai/pipecat` | BSD-2-Clause | The other voice pipeline |
+
 ## Adapter targets — the ground moved
 
 Our adapters target LangChain, OpenAI, Anthropic, AutoGen, CrewAI, LlamaIndex and
@@ -195,7 +319,11 @@ whole OSS security line dead. Also `square/keywhiz` (2023-09),
 (2024-08), `shroominic/codeinterpreter-api` (2024-11), `splx-ai/agentic-radar`
 (2025-11), `FoundationAgents/MetaGPT` (2026-01), `openai/evals` (2026-04),
 `guidance-ai/guidance` (21,715 stars, 20,742 monthly installs — starred, not
-used).
+used), `HKUDS/AnyTool` (686 stars, **42** monthly installs, last push 2026-02-28 —
+a paper with a repo, the clearest star-versus-use case in this file),
+`humanlayer/humanlayer` (self-declared deprecated, 903 monthly installs against
+11,330 stars) and `Azure/PyRIT` (**archived 2026-03-25** — Microsoft's red-team
+framework is read-only; promptfoo's plugins are where its users went).
 
 ## One number about us
 
@@ -211,9 +339,15 @@ downloads from `pypistats.org/api`, `api.npmjs.org/downloads` and
 `crates.io/api/v1/crates` — all public, no auth. crates.io requires a real
 `User-Agent` or it returns nothing.
 
+The agent add-ons section was sourced through the exa MCP (`mcp__exa__web_search_exa`),
+which is authorized and working; the exa *plugin* server (`plugin:exa:exa`) is not.
+`pypistats.org` rate-limits hard at roughly one request every few seconds and
+returns 429 rather than an error body — `letta`, `instructor`, `garak` and
+`pipecat-ai` are marked n/a for that reason, not because they have no installs.
+The GitHub API returns a bare 404 for a renamed repository rather than following
+the redirect, which is how `Giskard-AI/giskard` first read as nonexistent when it
+had merely become `giskard-oss`.
+
 Not surveyed: voice agents, agent marketplaces, fine-tuning, vector databases
-beyond a first pass, and the OWASP Agentic Top 10 as a checklist rather than a
-citation. The web-sourced half of this file came from general search; a proper
-pass with a research MCP (firecrawl or exa, neither currently authorized) would
-add production-adoption and abandonment signal that neither GitHub nor a package
-registry exposes.
+beyond a first pass, prompt-optimization and structured-decoding libraries, and
+the OWASP Agentic Top 10 as a checklist rather than a citation.
