@@ -85,9 +85,14 @@ Aujourd'hui deux fichiers, tous les deux sur le SDK :
   moment de l'appel d'outil
 - [sdk-llm-adapters.md](integration/sdk-llm-adapters.md) : LangChain, OpenAI
   Assistants, Anthropic Computer Use
+- [ecosystem-candidates.md](integration/ecosystem-candidates.md) : ce qui existe
+  autour de la passerelle et pourrait s'y brancher — red team, observabilité,
+  eval, sandboxing, guardrails, gateway modèle, protocole A2A. Chiffres relevés
+  sur l'API GitHub, note A ; chaque « pourquoi » est une hypothèse, rien n'a été
+  audité au-delà des métadonnées.
 
-Le catalogue de connecteurs, lui, n'existe pas encore. Il viendra du fichier 04
-du company brain, qui décidera ce qu'on connecte et dans quel ordre.
+C'est une liste de candidats, pas un catalogue de connecteurs. Ce qu'on branche
+et dans quel ordre se décide dans le fichier 04 du company brain.
 
 ## `site/`
 
