@@ -341,6 +341,70 @@ Not surveyed, and deliberately: semantic and KV caching (a cost lever with no
 authorization surface), RL environments for agent training, vector databases,
 agent marketplaces, fine-tuning.
 
+## Fourth pass — the agent that forgets, and the agent a company would run
+
+### Goal persistence is not the same problem as memory
+
+The memory section above is about remembering *facts*. This is about remembering
+*the instruction*. A long-running agent whose context fills with tool output
+drifts off the task it was given, and the mechanism every effective mitigation
+shares is the same: **the goal has to live outside the context window and be
+re-read**, not stated once at the start.
+
+Reported, grade C (blog-sourced, arXiv identifiers not fetched): comment-based
+pressure inside processed code was enough to override system-prompt instructions
+over the length of a session. If that holds, it is a prompt-injection path
+through content an agent merely *reads*, which
+[`egress_gateway/`](../../core/src/egress_gateway/) never sees.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| **5,848,370** / month | 28,506 | `langchain-ai/deepagents` | MIT | Offloads tool output to a filesystem, then summarises into a structure that carries *session intent*. Ships evals that force summarisation mid-task and check the objective survived — the only project here that tests for drift instead of asserting it away |
+| — | **131,535** | `github/spec-kit` | MIT | `spec → plan → tasks → implement`, each phase a markdown artifact the agent re-reads. 1.0.0 on 2026-08-21, 38 agent integrations. The most-starred project in this entire file, and the mechanism is simply *the goal is a file* |
+| 170,510 / month | 28,503 | `oraios/serena` | MIT | LSP symbols over MCP plus `.serena/memories` project summaries. Closest to the "codebase as a map the agent consults" shape, minus the graph |
+| 85,643 / week (npm) | 28,066 | `yamadashy/repomix` | MIT | Packs a repo into one prompt. The zero-setup end of the same axis |
+| 5,354 / week (npm) | 12,441 | `zilliztech/claude-context` | MIT | Hybrid BM25 + vector over AST chunks. **Code chunks leave the machine by default** — it indexes into Milvus / Zilliz Cloud |
+| — | 8 | `tianjianl/selfcompact` | MIT | Research, not a dependency, but the design is worth stealing: the model compacts only when four gates pass, and *being stuck blocks compaction* — a stuck agent should diagnose, not summarise |
+
+**Why this is our problem and not only theirs.** A drifted agent still holds a
+valid mandate. Our per-call signature binds identity, tenant, path and body — it
+proves *who* is calling and *what* they are calling, and says nothing about *why*.
+An agent three hours into a task, now pursuing a subgoal nobody asked for, signs
+every request perfectly. Goal drift is the failure mode our authorization model
+cannot see, and `spec-kit`'s answer — the objective is a durable artifact,
+re-read at every step — is the same shape as a mandate that names an intent.
+
+### What a company agent actually needs
+
+Ordered by what blocks a deployment, not by what demos well:
+
+1. **Reach into internal systems.** Connectors to Drive, Slack, Jira, Confluence,
+   the CRM. Nobody builds these; you adopt them.
+2. **Retrieval that respects who is asking.** Document-level ACLs, synced from the
+   source system, enforced per requester.
+3. **An identity per employee-agent pair, and an audit trail.** Our lane.
+4. **Approval before an outbound action.** Empty lane — see the second pass.
+5. **PII handling** (`presidio`, already listed) and **cost control** (the
+   model-path gateways, already listed).
+6. **Policy distribution.** A rule changed centrally has to reach every enforcing
+   node.
+
+| Downloads | Stars | Repo | License | Note |
+|---|---|---|---|---|
+| 138,824 / week (npm) | **202,455** | `n8n-io/n8n` | NOASSERTION | 400+ integrations and the thing a company already automates with. Source-available under a Sustainable Use licence, not OSI open source — read it before assuming it composes with ours |
+| — | 153,551 | `langgenius/dify` | NOASSERTION | Agent and workflow builder; SSO, RBAC and audit logs sit in the enterprise tier. Apache-derivative with use restrictions |
+| — | 89,292 | `infiniflow/ragflow` | Apache-2.0 | Document-heavy retrieval, and the cleanest licence of the four platforms |
+| — | 31,768 | `onyx-dot-app/onyx` | NOASSERTION | 40+ connectors, and the only one that models requirement 2 properly: an `AccessType::SYNC` connector mirrors the source system's own permissions per document. **That permission sync is Enterprise Edition; the MIT community edition does not have it** |
+| — | 5,505 | `permitio/opal` | Apache-2.0 | Pushes policy and data updates to OPA agents in real time. Requirement 6, which our policy engine has no answer for |
+
+The finding worth carrying out of this pass: **requirement 2 is a leak our
+authorization model does not cover.** An agent that answers an employee from a
+document that employee cannot open has exfiltrated it, and no action was taken —
+nothing was written, sent, or paid, so an action-level mandate and an action-level
+audit chain both record a clean run. The one project that solves it puts the
+solution behind a commercial tier. `docs/security/threat-model.md` governs
+actions; a company agent's worst failure is a read.
+
 ## Adapter targets — the ground moved
 
 Our adapters target LangChain, OpenAI, Anthropic, AutoGen, CrewAI, LlamaIndex and
