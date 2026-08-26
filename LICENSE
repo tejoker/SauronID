@@ -47,17 +47,17 @@ Everything else
 ---------------
 
     examples/, redteam/, scripts/, deploy/, docs/, schemas/, site/,
-    migrations/, release/, archive/
+    migrations/, release/, archive/, packaging/, zkp/
 
 Supporting material for the above. Not separately licensed: treat it as
 Apache-2.0 where it accompanies an Apache-2.0 component, and as BUSL-1.1 where
-it accompanies the gateway. `docs/company-brain/` is excluded, see Trademarks.
+it accompanies the gateway. Brand assets under `docs/company-brain/brand/` are excluded, see Trademarks.
 
 Trademarks
 ----------
 
 No licence is granted to any SauronID name, wordmark, eye logo, or brand asset
-under `docs/company-brain/`. Neither the Apache grant nor the BUSL grant
+under `docs/company-brain/brand/`. Neither the Apache grant nor the BUSL grant
 conveys trademark rights: BUSL says so explicitly, and Apache-2.0 section 6
 does the same. You may run and modify the software; you may not distribute it
 under our name.
