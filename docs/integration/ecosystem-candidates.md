@@ -6,9 +6,10 @@ committed, and what we connect and in what order is decided in
 [`../company-brain/04-features.md`](../company-brain/04-features.md).
 
 Read the labels. Numbers in the tables are **verified** — GitHub REST API, PyPI,
-npm and crates.io, read 2026-08-25, source grade A. Every "why it matters" line
-is a **hypothesis**: no code was read, no license compatibility was checked
-against BUSL-1.1, no dependency audit was run.
+npm and crates.io, read 2026-08-25 and 2026-08-26, source grade A. Licences are
+verified too, in [Licence audit](#licence-audit--what-we-may-actually-use): every
+repository named here was resolved to its actual terms. Every "why it matters"
+line remains a **hypothesis**: no code was read and no dependency audit was run.
 
 ## Rank by downloads, not stars
 
@@ -431,6 +432,106 @@ serving — `vllm-project/vllm` (89,956), `sgl-project/sglang` (32,413); structu
 output — `dottxt-ai/outlines` (15,689); tools — `ComposioHQ/composio` (29,866);
 memory — `topoteretes/cognee` (30,252); durable execution —
 `temporalio/temporal` (22,512), `conductor-oss/conductor` (32,120).
+
+## Licence audit — what we may actually use
+
+The top of this file has said, through four passes, that no licence was checked.
+This closes it. Every repository named above was read through
+`gh api repos/{slug}`; where GitHub reported `NOASSERTION` or `NONE`, the licence
+file itself was fetched and read. 93 repositories, 2026-08-26, source grade A.
+
+**93 repositories: 82 permissive, 4 open core, 4 conditional, 3 unusable.** The
+headline is boring and worth stating plainly: the agent ecosystem is
+overwhelmingly MIT and Apache-2.0, and licence risk is concentrated in exactly
+the projects whose commercial model depends on it.
+
+### `NOASSERTION` is a detector failure, not a licence
+
+Six repositories read as `NOASSERTION` through the API and are plainly permissive
+once the file is opened. Ranking or rejecting on the API field alone would have
+mislabelled all six:
+
+| Repo | GitHub says | Actually |
+|---|---|---|
+| `microsoft/regorus` | NOASSERTION | MIT, leading whitespace defeats the detector |
+| `openai/evals` | NOASSERTION | MIT |
+| `humanlayer/humanlayer` | NOASSERTION | Apache-2.0 |
+| `NVIDIA-NeMo/Guardrails` | NOASSERTION | Apache-2.0, declared as an SPDX header |
+| `KeyValueSoftwareSystems/agent-opfor` | NOASSERTION | Apache-2.0 |
+| `modelcontextprotocol/registry` | NOASSERTION | mid-transition MIT → Apache-2.0; both permissive |
+
+### Clear — 82 repositories, permissive, attribution only
+
+**MIT (31).** `567-labs/instructor`, `ag-ui-protocol/ag-ui`, `ArcadeAI/arcade-mcp`,
+`Azure/PyRIT`, `browserbase/stagehand`, `browser-use/browser-use`,
+`ComposioHQ/composio`, `data-privacy-stack/presidio`, `docling-project/docling`,
+`external-secrets/kubernetes-external-secrets`, `FoundationAgents/MetaGPT`,
+`github/spec-kit`, `guidance-ai/guidance`, `HKUDS/AnyTool`,
+`langchain-ai/deepagents`, `microsoft/agent-governance-toolkit`,
+`microsoft/regorus`, `monzo/egress-operator`, `openai/evals`, `oraios/serena`,
+`Portkey-AI/gateway`, `prassanna-ravishankar/a2a-registry`, `promptfoo/promptfoo`,
+`protectai/llm-guard`, `shroominic/codeinterpreter-api`, `stanfordnlp/dspy`,
+`superagent-ai/superagent`, `temporalio/temporal`, `tianjianl/selfcompact`,
+`yamadashy/repomix`, `zilliztech/claude-context`.
+
+**Apache-2.0 (49).** `a2aproject/A2A`, `agno-agi/agno`, `apache/casbin`,
+`BoundaryML/baml`, `cedar-policy/cedar`, `cloudflare/web-bot-auth`,
+`comet-ml/opik`, `conductor-oss/conductor`, `confident-ai/deepeval`,
+`dapr/dapr-agents`, `dottxt-ai/outlines`, `e2b-dev/E2B`, `evidentlyai/evidently`,
+`getzep/graphiti`, `Giskard-AI/giskard-oss`,
+`google-agentic-commerce/a2a-x402`, `google-agentic-commerce/AP2`,
+`Helicone/helicone`, `huggingface/smolagents`, `humanlayer/humanlayer`,
+`infiniflow/ragflow`, `kata-containers/kata-containers`,
+`KeyValueSoftwareSystems/agent-opfor`, `letta-ai/letta`, `livekit/agents`,
+`lm-sys/RouteLLM`, `luckyPipewrench/pipelock`, `maximhq/bifrost`, `mem0ai/mem0`,
+`microsoft/playwright-mcp`, `NVIDIA/garak`, `NVIDIA-NeMo/Guardrails`,
+`NVIDIA/SkillSpector`, `open-policy-agent/opa`, `permitio/opal`,
+`PrefectHQ/fastmcp`, `protectai/rebuff`, `sgl-project/sglang`, `snyk/agent-scan`,
+`spidernet-io/egressgateway`, `spiffe/spire`, `splx-ai/agentic-radar`,
+`square/keywhiz`, `strands-agents/harness-sdk`, `Tencent/AI-Infra-Guard`,
+`topoteretes/cognee`, `vllm-project/vllm`, `x402-foundation/x402`.
+
+**BSD-2-Clause (1).** `pipecat-ai/pipecat`. **Dual (1).**
+`modelcontextprotocol/registry`.
+
+Every project we named as a first choice through four passes lands here:
+`cedar-policy/cedar`, `microsoft/playwright-mcp`, `github/spec-kit`,
+`langchain-ai/deepagents`, `promptfoo/promptfoo`, `x402-foundation/x402`,
+`google-agentic-commerce/AP2`, `permitio/opal`, `docling-project/docling`.
+**No recommendation in this file is licence-blocked.**
+
+### Open core — permissive except one named directory
+
+| Repo | Terms | The carve-out |
+|---|---|---|
+| `langfuse/langfuse` | MIT Expat | `ee/`, `web/src/ee/`, `worker/src/ee/` |
+| `onyx-dot-app/onyx` | MIT Expat | every `ee` directory, under the Onyx Enterprise License |
+| `mastra-ai/mastra` | Apache-2.0 | any `ee/` directory — including `packages/core/src/auth/ee/` |
+| `BerriAI/litellm` | MIT | `enterprise/` |
+
+Read what is inside the carve-outs, because the pattern is not random: Mastra
+fences off **auth**, and Onyx fences off the **per-document permission sync** the
+fourth pass identified as the single hardest company-agent requirement. Three of
+the four open-core projects here sell the identity-and-access half. That is the
+market telling us where the money is, in the same sentence as it tells us we
+cannot take that code.
+
+### Conditional — commercial use permitted, within limits
+
+| Repo | Licence | The limit |
+|---|---|---|
+| `langgenius/dify` | modified Apache-2.0 | **Operating a multi-tenant service requires a commercial licence from Dify.** One tenant is one workspace. We are multi-tenant by construction — this trips for us specifically |
+| `n8n-io/n8n` | Sustainable Use | Internal business use is fine; hosting it as a service for others is not |
+| `Arize-ai/phoenix` | Elastic License v2 | No offering it as a managed service |
+| `restatedev/restate` | Business Source | Same family as our own BUSL-1.1, with the same production-use restriction until the change date |
+
+### Unusable
+
+| Repo | Why |
+|---|---|
+| `Skyvern-AI/skyvern` | **AGPL-3.0.** Commercial use is allowed, network copyleft is the problem: it reaches users who interact over a network, which is the whole deployment |
+| `visa/trusted-agent-protocol` | **Not an open-source licence at all** — Visa Developer Center Terms of Use. The spec is readable and worth aligning to; the reference implementation is not adoptable |
+| `daytonaio/daytona` | **No licence file.** The licence endpoint returns 404. 71,887 stars and no grant of rights — flagged earlier on the absence of an SPDX id, now confirmed by the absence of the file |
 
 ## Do not adopt — dead or stalling
 
