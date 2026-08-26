@@ -20,7 +20,7 @@
  *   - core/src/tenancy/mod.rs::tenant_from_jwt — `decode(...).ok()?`
  *     returns None on signature mismatch, so the `tnt` claim is never
  *     trusted from an invalid JWT.
- *   - core/src/admin.rs::auth_middleware refuses unauthenticated calls.
+ *   - core/src/admin/auth.rs::auth_middleware refuses unauthenticated calls.
  */
 
 import {

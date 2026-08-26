@@ -18,9 +18,9 @@
  *      visible cross-tenant.
  *
  * Mitigation in code:
- *   - core/src/admin.rs::get_action_anchor_proof requires receipt_id
+ *   - core/src/admin/anchors.rs::get_action_anchor_proof requires receipt_id
  *     to exist in agent_action_receipts (which IS tenant-scoped).
- *   - core/src/admin.rs::get_anchor_batches is intentionally global.
+ *   - core/src/admin/anchors.rs::get_anchor_batches is intentionally global.
  */
 
 import {

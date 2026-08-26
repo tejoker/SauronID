@@ -363,7 +363,7 @@ CREATE TABLE IF NOT EXISTS agent_action_anchors (
 CREATE INDEX IF NOT EXISTS idx_agent_action_anchors_root  ON agent_action_anchors (batch_root_hex);
 CREATE INDEX IF NOT EXISTS idx_agent_action_anchors_range ON agent_action_anchors (from_created_at, to_created_at);
 
--- Agent egress audit/enforcement log (see core/src/egress_gateway.rs).
+-- Agent egress audit/enforcement log (see core/src/egress_gateway/mod.rs).
 -- tenant_id is added by 0004_multi_tenant.sql.
 CREATE TABLE IF NOT EXISTS agent_egress_log (
     id            BIGSERIAL PRIMARY KEY,

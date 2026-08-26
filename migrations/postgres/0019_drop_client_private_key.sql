@@ -5,7 +5,7 @@
 -- and by the time external custody became mandatory the insert was writing the
 -- literal string 'EXTERNAL_CUSTODY' into it. Nothing has ever read it back.
 --
--- It goes for two reasons. The insert in core/src/admin.rs no longer names the
+-- It goes for two reasons. The insert in core/src/admin/clients.rs no longer names the
 -- column, so on an existing database a NOT NULL column with no default would
 -- reject every new client. And a column called private_key_hex in the schema
 -- of a product whose claim is that the operator holds no partner key costs a

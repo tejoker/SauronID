@@ -81,7 +81,7 @@ verify: build  ## cargo test + invariants + empirical (full release gate)
 	./scripts/dev/quickstart.sh
 	SAURON_REQUIRE_CALL_SIG=1 ./scripts/dev/quickstart.sh
 
-docs:  ## Open the empirical comparison doc
-	@cat docs/planning/empirical-comparison.md | less
+docs:  ## Open the documentation map
+	@cat docs/README.md | less
 
 .DEFAULT_GOAL := help

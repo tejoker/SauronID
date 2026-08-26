@@ -29,8 +29,8 @@ supabase/     SQL to provision the early-access signups table (insert-only RLS)
 Conventions: all visible copy lives in `copy.ts` dictionaries keyed by locale;
 internal links go through `localeHref(locale, path)`; strings inside
 `evidence` / mono blocks are product artifacts and stay in English; claim
-wording follows `../PRODUCT.md` (never "certified/compliant", availability is
-always labeled).
+wording follows `../docs/company-brain/04-features.md` (never
+"certified/compliant", availability is always labeled).
 
 ## Early-access form — modes
 
@@ -62,5 +62,5 @@ set `NEXT_PUBLIC_LAUNCHER_URL`.
 6. **Legal pages**: privacy policy + imprint before collecting real signups
    (GDPR: the form stores personal data once Supabase is live).
 7. **Verify claims at launch**: supported OS/model list published with the
-   Launcher; keep availability labels in sync with reality (see PRODUCT.md
-   claim discipline).
+   Launcher; keep availability labels in sync with reality (see
+   `docs/company-brain/04-features.md` claim discipline).

@@ -395,7 +395,7 @@ fn agent_lookup_by_id_returns_404_cross_tenant() {
 // ───────────────────────────────────────────────────────────────────────
 
 /// `/admin/stats` is intentionally operator-aggregate. The SQL in
-/// `core/src/admin.rs::get_stats` queries `COUNT(*) FROM users`,
+/// `core/src/admin/queries.rs::get_stats` queries `COUNT(*) FROM users`,
 /// `COUNT(*) FROM clients`, etc — NO `WHERE tenant_id = ?`. This test
 /// pins that documented behaviour: writing under two tenants and then
 /// counting across the global tables surfaces the combined total.
@@ -419,7 +419,7 @@ fn admin_stats_aggregates_across_tenants() {
     assert_eq!(
         total_unfiltered, 3,
         "admin-aggregate path must see both tenants' rows; this is the documented \
-         behaviour of /admin/stats. See core/src/admin.rs::get_stats."
+         behaviour of /admin/stats. See core/src/admin/queries.rs::get_stats."
     );
 
     // Sanity: the per-tenant filter restores isolation when the operator
