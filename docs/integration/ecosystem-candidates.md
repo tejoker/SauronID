@@ -433,6 +433,185 @@ output — `dottxt-ai/outlines` (15,689); tools — `ComposioHQ/composio` (29,86
 memory — `topoteretes/cognee` (30,252); durable execution —
 `temporalio/temporal` (22,512), `conductor-oss/conductor` (32,120).
 
+## Fifth pass — breadth, and the lane we thought was ours
+
+Sixty more repositories, every number from `gh api` on 2026-08-26, grade A.
+
+### Somebody published our feature list under MIT
+
+Six MCP gateways sit directly on our lane. Adoption is near zero. The feature
+lists are not.
+
+| Stars | Repo | License | Last push |
+|---|---|---|---|
+| 4,368 | `IBM/mcp-context-forge` | Apache-2.0 | 2026-08-26 |
+| 1,541 | `docker/mcp-gateway` | MIT | 2026-08-25 |
+| 386 | `lasso-security/mcp-gateway` | MIT | 2026-01-22 |
+| 9 | `thiagomendes/mcpx` | Apache-2.0 | 2026-01-09 |
+| 4 | `hoophq/mcpproxy` | MIT | 2026-08-06 |
+| 0 | `reaatech/mcp-gateway` | MIT | 2026-08-24 |
+
+Read what the two smallest ones advertise. `hoophq/mcpproxy`: allow/deny tool
+globs that strip denied tools from `tools/list` so the model never sees them,
+**human approval holding a flagged call**, **rug-pull detection** by fingerprinting
+every tool's name, description and input schema and killing the session when a
+fingerprint changes mid-session, per-session JSONL audit replay, inbound and
+outbound auth planes including RFC 8693 token exchange. `reaatech/mcp-gateway`
+ships an audit package advertising **tamper-evident chaining**.
+
+Four stars and zero stars. The conclusion is not that they are competitors — it is
+that **the feature list stopped being the differentiator.** Tool allowlists,
+approval holds and a hash-chained audit log are now things a two-person team
+publishes under MIT in a weekend. What is not commoditised is the identity and
+mandate model, the per-call binding, and an operating record. `04-features.md`
+should stop describing the former as the product.
+
+### The harness itself
+
+| Stars | Repo | License | Note |
+|---|---|---|---|
+| **201,493** | `anomalyco/opencode` | MIT | Was `sst/opencode` |
+| 85,131 | `OpenHands/OpenHands` | MIT | Was `All-Hands-AI/OpenHands` |
+| 66,860 | `cline/cline` | Apache-2.0 | |
+| 60,635 | `microsoft/autogen` | **CC-BY-4.0** | A content licence, not a software licence — see below |
+| 57,621 | `crewAIInc/crewAI` | MIT | |
+| 53,494 | `aaif-goose/goose` | Apache-2.0 | Was `block/goose` |
+| 51,877 | `run-llama/llama_index` | MIT | |
+| 48,497 | `Aider-AI/aider` | Apache-2.0 | Last push 2026-05-22 — the only one here going quiet |
+| 40,477 | `langchain-ai/langgraph` | MIT | Durable execution and checkpointing for the agent loop |
+| 28,974 | `openai/openai-agents-python` | MIT | 41M monthly installs, still unadapted |
+| 26,318 | `deepset-ai/haystack` | Apache-2.0 | |
+| 21,292 | `google/adk-python` | Apache-2.0 | The SDK the AP2 samples are written against |
+| 20,145 | `SWE-agent/SWE-agent` | MIT | |
+| 19,502 | `pydantic/pydantic-ai` | MIT | |
+| 17,640 | `camel-ai/camel` | Apache-2.0 | |
+
+### "Best" is a measurement, and one benchmark measures our exact claim
+
+| Stars | Repo | License | What it grades |
+|---|---|---|---|
+| 5,714 | `SWE-bench/SWE-bench` | MIT | A patch, certified by the repo's own tests |
+| 3,694 | `THUDM/AgentBench` | Apache-2.0 | Breadth across eight environments |
+| 3,106 | `xlang-ai/OSWorld` | Apache-2.0 | Desktop computer use |
+| 2,552 | `harbor-framework/terminal-bench-1` | Apache-2.0 | Terminal tasks; was `laude-institute/terminal-bench` |
+| **1,878** | `sierra-research/tau2-bench` | MIT | Dual-control: the simulated user holds tools too |
+| **1,403** | `sierra-research/tau-bench` | MIT | **Policy adherence across a multi-turn conversation, graded on final database state** |
+| 1,719 | `openai/mle-bench` | NOASSERTION | ML engineering tasks |
+| 1,587 | `web-arena-x/webarena` | Apache-2.0 | A frozen self-hosted website |
+| 1,329 | `ServiceNow/BrowserGym` | NOASSERTION | Browser environments |
+
+τ-bench is the one to care about, for a reason specific to us. It hands an agent
+a **written policy document** and API tools, lets a simulated user argue with it,
+and grades the resulting database state rather than the transcript. That is our
+product's claim expressed as a benchmark: does the agent do only what the policy
+permits. Its headline metric is **pass^k** — success in *all* k independent trials,
+the inverse of pass@k. Reported, grade C (blog-sourced, arXiv not fetched):
+state-of-the-art function-calling agents fall below 25% at pass^8 in the retail
+domain while their single-run scores sit in the low-to-mid 60s.
+
+**We assert policy adherence and have never measured it.** A public MIT harness
+for precisely that has existed since 2024 and neither
+[`docs/security/assessment/`](../security/assessment/README.md) nor the redteam
+suite references it.
+
+Also reported: OpenAI stopped reporting SWE-bench Verified as a frontier coding
+metric after auditing the quarter models most often failed and finding a majority
+of those instances had flawed tests. The successor, SWE-bench Pro, did not resolve
+at the slug this pass tried — worth finding before citing.
+
+### Retrieval, serving, cost — and an AGPL wall across the web-access lane
+
+| Stars | Repo | License | Note |
+|---|---|---|---|
+| 179,458 | `ollama/ollama` | MIT | |
+| **172,528** | `firecrawl/firecrawl` | **AGPL-3.0** | |
+| 125,695 | `ggml-org/llama.cpp` | MIT | |
+| 79,446 | `unclecode/crawl4ai` | Apache-2.0 | **The permissive alternative to firecrawl** |
+| **36,121** | `searxng/searxng` | **AGPL-3.0** | |
+| 34,198 | `qdrant/qdrant` | Apache-2.0 | |
+| 29,149 | `chroma-core/chroma` | Apache-2.0 | |
+| 22,747 | `pgvector/pgvector` | PostgreSQL | Permissive; GitHub reports NOASSERTION |
+| 15,478 | `vibrantlabsai/ragas` | Apache-2.0 | Was `explodinggradients/ragas` |
+| 12,085 | `FlagOpen/FlagEmbedding` | MIT | |
+| 11,417 | `LMCache/LMCache` | Apache-2.0 | KV-cache reuse across requests — the cost lever |
+| 11,279 | `lancedb/lancedb` | Apache-2.0 | |
+| 2,917 | `michaelfeil/infinity` | MIT | Embedding and reranking server |
+| 2,004 | `AgentOps-AI/tokencost` | MIT | Last push 2025-09-05 — stale pricing tables are worse than none |
+
+The two obvious ways to give an agent the open web — `firecrawl` and `searxng` —
+are **both AGPL-3.0**, and the natural home for either is on our egress path.
+`crawl4ai` at 79,446 stars and Apache-2.0 is the one that composes with how we
+ship.
+
+### Isolation below the container
+
+| Stars | Repo | License |
+|---|---|---|
+| 36,271 | `firecracker-microvm/firecracker` | Apache-2.0 |
+| 19,157 | `google/gvisor` | Apache-2.0 |
+| 8,478 | `containers/bubblewrap` | LGPL-2.0 |
+| 7,936 | `superradcompany/microsandbox` | Apache-2.0 |
+
+### Tracing has a standard now
+
+| Stars | Repo | License |
+|---|---|---|
+| 7,401 | `traceloop/openllmetry` | Apache-2.0 |
+| 1,174 | `Arize-ai/openinference` | Apache-2.0 |
+| 638 | `open-telemetry/semantic-conventions` | Apache-2.0 |
+
+The OpenTelemetry GenAI semantic conventions are where a receipt could be emitted
+as a span instead of only as a row in our chain. That makes our audit trail
+readable by tooling nobody has to adopt from us.
+
+### Skills and tool supply
+
+| Stars | Repo | License |
+|---|---|---|
+| **277,748** | `obra/superpowers` | MIT |
+| **171,672** | `anthropics/skills` | **no licence file** |
+| 92,833 | `punkpeye/awesome-mcp-servers` | MIT |
+| 89,872 | `modelcontextprotocol/servers` | MIT → Apache-2.0 transition |
+
+`obra/superpowers` is the largest number anywhere in this file. And
+`anthropics/skills`, at 171,672 stars, **has no licence file** — the licence
+endpoint 404s, exactly like `daytonaio/daytona`. Skills are copied into agents by
+hand every day from a repository that grants no rights.
+
+### Self-improvement, previously recorded as out of scope
+
+| Stars | Repo | License |
+|---|---|---|
+| 74,797 | `unslothai/unsloth` | Apache-2.0 |
+| 23,141 | `verl-project/verl` | Apache-2.0 |
+| 19,155 | `huggingface/trl` | Apache-2.0 |
+| 10,662 | `OpenPipe/ART` | Apache-2.0 |
+| 2,197 | `NovaSky-AI/SkyRL` | Apache-2.0 |
+
+All permissive. Whether an agent that trains on its own traces is something we
+authorize or something we forbid is a `docs/company-brain/` question, and it is
+not answered anywhere.
+
+### Licence deltas from this pass
+
+New unusable or restricted: `firecrawl` and `searxng` (AGPL-3.0),
+`anthropics/skills` (no licence), `microsoft/autogen` (**CC-BY-4.0** — a Creative
+Commons content licence carrying no patent grant and never intended for code, on
+60,635 stars). New permissive-but-mislabelled: `pgvector` is the PostgreSQL
+licence, `bubblewrap` is LGPL-2.0, both reported as NOASSERTION.
+
+### Slugs rot, and the API hides it
+
+Eight repositories in this file have moved. `gh api` silently follows the
+redirect and returns the canonical name, so a stale slug keeps working until it
+does not: `All-Hands-AI/OpenHands` → `OpenHands/OpenHands`, `block/goose` →
+`aaif-goose/goose`, `sst/opencode` → `anomalyco/opencode`,
+`laude-institute/terminal-bench` → `harbor-framework/terminal-bench-1`,
+`explodinggradients/ragas` → `vibrantlabsai/ragas`, `volcengine/verl` →
+`verl-project/verl`, `microsandbox/microsandbox` →
+`superradcompany/microsandbox`, `Giskard-AI/giskard` → `Giskard-AI/giskard-oss`.
+Any pass that re-runs this file should record the redirect, not just the target.
+
 ## Licence audit — what we may actually use
 
 The top of this file has said, through four passes, that no licence was checked.
