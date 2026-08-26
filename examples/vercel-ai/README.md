@@ -11,7 +11,7 @@ real loop.
 ## Prereqs
 
 - `docker compose up` at the repo root.
-- Build the SDK once: `cd ../../agentic && npm install && npm run build`.
+- Build the SDK once: `cd ../../sdk/typescript && npm install && npm run build`.
 
 ## Run
 

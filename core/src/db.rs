@@ -745,7 +745,7 @@ pub fn init_schema(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_agent ON agent_action_receipts(agent_id, created_at);
 
         -- Phase 2 of the anonymous ring-policy redesign
-        -- (docs/design/anonymous-ring-policy.md). A ring is a RULE; agents
+        -- (docs/architecture/anonymous-ring-policy.md). A ring is a RULE; agents
         -- subscribe to many rings. `rule_json` carries allowed_actions +
         -- allowed_config_digests + per-ring budgets. Members are per-ring stealth
         -- pseudonym points (ring_pseudonym.rs) — NEVER master keys — so a
@@ -914,8 +914,8 @@ pub fn init_schema(conn: &Connection) {
         -- (agent, policy, period) collapsed into ONE row owned by whichever
         -- wrote first. The non-owning tenant then read 0 and its budget cap
         -- never tripped, while the owning tenant absorbed spend it never made.
-        -- `tenant-spend-ledger-race.ts` reproduces it; docs/multi-tenancy-audit.md
-        -- has the numbers.
+        -- `tenant-spend-ledger-race.ts` reproduces it; docs/architecture/multi-tenancy.md
+        -- has the table.
         CREATE TABLE IF NOT EXISTS spend_ledger (
             policy_id    TEXT NOT NULL,
             agent_id     TEXT NOT NULL,
@@ -992,7 +992,7 @@ pub fn init_schema(conn: &Connection) {
 
         -- Sprint 8: operator-managed cohort definitions for DP-published
         -- cross-tenant benchmarks. Global (NOT tenant-scoped) — see
-        -- docs/privacy-model.md "Publication pipeline".
+        -- archive/removed-2026-08/cohort-stats-compliance/privacy-model.md "Publication pipeline".
         CREATE TABLE IF NOT EXISTS cohort_definitions (
             cohort_id              TEXT PRIMARY KEY,
             label                  TEXT NOT NULL,
@@ -1011,7 +1011,7 @@ pub fn init_schema(conn: &Connection) {
         -- budget for the current regulatory cycle and refuses publication
         -- when the budget is exhausted. Operators rotate (reset) the
         -- budget per regulatory cycle through POST /v1/cohort/:id/budget/rotate.
-        -- See docs/privacy-model.md § "Inter-period ε budget tracking".
+        -- See archive/removed-2026-08/cohort-stats-compliance/privacy-model.md § "Inter-period ε budget tracking".
         CREATE TABLE IF NOT EXISTS dp_budget_ledger (
             cohort_id     TEXT NOT NULL,
             metric_id     TEXT NOT NULL,
@@ -1170,7 +1170,7 @@ pub fn init_schema(conn: &Connection) {
                     target: "sauron::db",
                     "spend_ledger rebuilt with tenant_id in the primary key; \
                      pre-existing totals were copied as-is and may over-count the \
-                     owning tenant (see docs/multi-tenancy-audit.md)"
+                     owning tenant (see docs/architecture/multi-tenancy.md)"
                 ),
                 Err(e) => {
                     let _ = conn.execute_batch("ROLLBACK;");
@@ -1274,7 +1274,9 @@ pub fn init_schema(conn: &Connection) {
         [],
     );
 
-    // M1 of TPM2-bound PoP key roadmap (docs/roadmap.md Plan 1):
+    // Columns from the TPM2-bound PoP track, cancelled and archived in 2026-08
+    // (archive/removed-2026-08/hardware-attestation/). Kept because dropping a
+    // column needs a table rebuild, and nothing reads them.
     //   - attestation_pubkey_b64u — the AIK public key extracted from the
     //     hardware attestation (used as the trusted PoP key once M2 lands).
     //   - attestation_pcr_set — JSON-encoded PCR selection + canonical hash
@@ -1528,157 +1530,10 @@ pub fn init_schema(conn: &Connection) {
 }
 
 #[cfg(test)]
-mod pool_timeout_tests {
-    use super::*;
-
-    /// The HTTP layer answers 503 by looking for [`POOL_TIMEOUT_MARKER`] in the
-    /// panic payload, and `Result::unwrap` builds that payload with `Debug`. So
-    /// the marker has to survive the round trip through an actual panic — not
-    /// just be present in a `format!("{:?}")` we write ourselves.
-    ///
-    /// This is also the guard against r2d2: its own error `Debug`-prints as
-    /// `Error(None)`, which carries nothing to match on. If someone "simplifies"
-    /// `lock()` back to returning `r2d2::Error`, overload starts answering 500
-    /// again with no other test noticing. This one fails.
-    #[test]
-    fn an_exhausted_pool_panics_with_the_marker_the_http_layer_matches() {
-        let pool = Pool::builder()
-            .max_size(1)
-            .connection_timeout(std::time::Duration::from_millis(50))
-            .build(SqliteConnectionManager::memory())
-            .expect("pool builds");
-        let handle = DbHandle {
-            pool,
-            pg_pool: None,
-        };
-
-        // Hold the only connection, so the next caller can only time out.
-        let _held = handle.lock().expect("first connection is free");
-
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = handle.lock().unwrap();
-        }))
-        .expect_err("a saturated pool must fail");
-
-        let payload = panicked
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panicked.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or_default();
-
-        assert!(
-            payload.contains(POOL_TIMEOUT_MARKER),
-            "panic payload must carry the marker so overload answers 503, got: {payload}"
-        );
-    }
-
-    /// Display is what the `.map_err(|e| e.to_string())` call sites surface, so
-    /// it should read as load rather than as a marker string.
-    #[test]
-    fn display_explains_the_condition_without_leaking_the_marker() {
-        let pool = Pool::builder()
-            .max_size(1)
-            .connection_timeout(std::time::Duration::from_millis(50))
-            .build(SqliteConnectionManager::memory())
-            .expect("pool builds");
-        let handle = DbHandle {
-            pool,
-            pg_pool: None,
-        };
-        let _held = handle.lock_sqlite().expect("first connection is free");
-
-        let err = handle
-            .lock_sqlite()
-            .expect_err("a saturated pool must fail");
-        let shown = err.to_string();
-        assert!(shown.contains("pool exhausted"), "got: {shown}");
-        assert!(!shown.contains(POOL_TIMEOUT_MARKER), "got: {shown}");
-    }
-}
+mod pool_timeout_tests;
 
 #[cfg(test)]
-mod durability_tests {
-    use super::*;
-
-    #[test]
-    fn persistent_connections_use_full_synchronous_durability() {
-        let path = std::env::temp_dir().join(format!(
-            "sauron-durability-{}-{}.sqlite",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let db = open_db_at(path.to_str().unwrap(), 1);
-        let conn = db.lock_sqlite().expect("connection");
-        let synchronous: i64 = conn
-            .query_row("PRAGMA synchronous", [], |row| row.get(0))
-            .expect("read synchronous pragma");
-        assert_eq!(synchronous, 2, "SQLite synchronous must be FULL");
-        drop(conn);
-        drop(db);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
-    }
-}
+mod durability_tests;
 
 #[cfg(test)]
-mod pg_tls_tests {
-    use super::normalise_sslmode;
-
-    /// The two modes a managed provider actually hands you. `tokio-postgres`
-    /// rejects both at parse time, and that rejection used to mean "silently run
-    /// on SQLite while `Repo` runs on Postgres".
-    #[test]
-    fn verify_modes_are_promoted_to_require() {
-        for url in [
-            "postgres://u:p@host/db?sslmode=verify-full",
-            "postgres://u:p@host/db?sslmode=verify-ca",
-            "postgres://u:p@host/db?sslmode=VERIFY-FULL",
-        ] {
-            let out = normalise_sslmode(url);
-            assert!(out.ends_with("sslmode=require"), "{url} -> {out}");
-            assert!(out.parse::<postgres::Config>().is_ok(), "{out}");
-        }
-    }
-
-    /// Modes `tokio-postgres` already understands must survive untouched — in
-    /// particular `disable`, because silently promoting it to `require` would
-    /// break every plaintext local deployment.
-    #[test]
-    fn understood_modes_are_left_alone() {
-        for mode in ["disable", "prefer", "require"] {
-            let url = format!("postgres://u:p@host/db?sslmode={mode}");
-            assert_eq!(normalise_sslmode(&url), url);
-        }
-    }
-
-    /// The rewrite must not eat the rest of the query string, and must cope with
-    /// `sslmode` appearing anywhere in it.
-    #[test]
-    fn other_parameters_are_preserved() {
-        let out = normalise_sslmode(
-            "postgres://u:p@host/db?application_name=sauron&sslmode=verify-full&connect_timeout=5",
-        );
-        assert_eq!(
-            out,
-            "postgres://u:p@host/db?application_name=sauron&sslmode=require&connect_timeout=5"
-        );
-        assert!(out.parse::<postgres::Config>().is_ok());
-
-        // No sslmode at all: unchanged, and still parses. tokio-postgres then
-        // defaults to `prefer`.
-        let plain = "postgres://u:p@host/db";
-        assert_eq!(normalise_sslmode(plain), plain);
-    }
-
-    /// A URL with no `sslmode` defaults to `prefer`, which negotiates TLS when
-    /// the server offers it. The old code could not have done this at all.
-    #[test]
-    fn the_default_mode_still_attempts_tls() {
-        let cfg: postgres::Config = "postgres://u:p@host/db".parse().unwrap();
-        assert!(matches!(
-            cfg.get_ssl_mode(),
-            postgres::config::SslMode::Prefer
-        ));
-    }
-}
+mod pg_tls_tests;

@@ -109,7 +109,7 @@ fn main() -> std::io::Result<()> {
              verifier accepts.\n\
              \n\
              This is scaffolding, not a supported deployment mode — see \
-             deploy/nitro/README.md and docs/tee-deployment.md.\n\
+             deploy/nitro/README.md and tee-deployment.md.\n\
              \n\
              To run it anyway for local plumbing work, set \
              SAURON_NITRO_ALLOW_STUB=1."

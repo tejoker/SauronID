@@ -8,13 +8,13 @@
  */
 
 import { CoreApi } from "./core-api";
-import { scenarioAutonomousPolicy } from "./scenarios/autonomous-policy";
-import { scenarioDelegatedPolicy } from "./scenarios/delegated-policy";
-import { scenarioDelegationScopeDenied } from "./scenarios/delegation-scope-denied";
-import { scenarioInvalidAjwt } from "./scenarios/invalid-ajwt";
-import { scenarioJtiReplay } from "./scenarios/jti-replay";
-import { scenarioParentEmptyScopeDenied } from "./scenarios/parent-empty-scope-denied";
-import { scenarioPopRequiredOnVerify } from "./scenarios/pop-required-on-verify";
+import { scenarioAutonomousPolicy } from "./scenarios/policy/autonomous-policy";
+import { scenarioDelegatedPolicy } from "./scenarios/policy/delegated-policy";
+import { scenarioDelegationScopeDenied } from "./scenarios/policy/delegation-scope-denied";
+import { scenarioInvalidAjwt } from "./scenarios/protocol/invalid-ajwt";
+import { scenarioJtiReplay } from "./scenarios/protocol/jti-replay";
+import { scenarioParentEmptyScopeDenied } from "./scenarios/policy/parent-empty-scope-denied";
+import { scenarioPopRequiredOnVerify } from "./scenarios/protocol/pop-required-on-verify";
 
 const baseUrl = process.env.API_URL || process.env.SAURON_CORE_URL || "http://127.0.0.1:3001";
 if (!process.env.SAURON_ADMIN_KEY) {

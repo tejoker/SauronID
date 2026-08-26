@@ -34,7 +34,7 @@ payment.
 ## Prereqs
 
 - `docker compose up` at the repo root (core on `http://localhost:3001`).
-- `pip install sauronid-client` (or `pip install -e ../../clients/python`).
+- `pip install sauronid-client` (or `pip install -e ../../sdk/python`).
 - Ring keygen binary: `cd ../../core && cargo build --release`, or set
   `SAURONID_AGENT_ACTION_TOOL=/path/to/agent-action-tool`.
 

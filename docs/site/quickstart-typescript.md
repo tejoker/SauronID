@@ -14,8 +14,8 @@ Register an agent and make a signed call from Node 18+.
 ## Install
 
 ```bash
-npm ci --prefix agentic
-npm run build --prefix agentic
+npm ci --prefix sdk/typescript
+npm run build --prefix sdk/typescript
 ```
 
 ## Register and call

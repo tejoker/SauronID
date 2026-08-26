@@ -41,9 +41,8 @@ pub enum AttestationKind {
     None,
     /// Legacy default: PoP key is derived server-side from `jwt_secret`. Carries
     /// no hardware proof. Refused in production unless explicitly opted in
-    /// (see `check_server_derived_allowed`). This makes M1 of the TPM2 PoP
-    /// roadmap meaningful: operators have to consciously accept the trust
-    /// assumption that `jwt_secret` compromise = full agent impersonation.
+    /// (see `check_server_derived_allowed`). Opting in means consciously accepting
+    /// that a `jwt_secret` compromise equals full agent impersonation.
     ServerDerived,
     Ed25519Self,
 }
@@ -125,7 +124,7 @@ pub fn check_server_derived_allowed() -> Result<(), AttestationError> {
         return Ok(());
     }
     Err(AttestationError::BadCertChain(
-        "server-derived PoP is refused in production: set SAURON_ALLOW_SERVER_DERIVED_POP=1 to opt in, or upgrade to ed25519_self / tpm2_quote (see docs/roadmap.md Plan 1)".into(),
+        "server-derived PoP is refused in production: set SAURON_ALLOW_SERVER_DERIVED_POP=1 to opt in, or register with attestation kind ed25519_self".into(),
     ))
 }
 
@@ -198,8 +197,8 @@ pub fn enforce_registration_attestation(
         if require_hw {
             return Err(AttestationError::BadCertChain(
                 "SAURON_REQUIRE_HARDWARE_ATTESTATION=1: registration requires a verifiable \
-                 hardware attestation kind (ed25519_self / tpm2_quote / nitro_enclave); \
-                 got none/server_derived"
+                 hardware attestation kind, and this build ships no hardware verifier (the \
+                 TPM2 and Nitro paths were archived in 2026-08); got none/server_derived"
                     .into(),
             ));
         }

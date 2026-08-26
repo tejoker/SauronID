@@ -1,7 +1,7 @@
 //! S8 extension — persistent per-cohort per-metric ε ledger.
 //!
 //! Closes the documented "No inter-period ε budget tracking" gap from
-//! `docs/privacy-model.md`. Each publication checks the cohort's remaining
+//! `privacy-model.md`. Each publication checks the cohort's remaining
 //! ε against a lifetime cap for the current regulatory cycle and refuses
 //! publication when the budget is exhausted. Operators rotate (reset) the
 //! budget per regulatory cycle through the

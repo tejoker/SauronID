@@ -81,7 +81,7 @@ services:
 
   # ── Hardhat Local EVM Node (port 8545) ──────────────────────────────────────
   # A `hardhat-node` service used to live here, building ../contracts/revocation.
-  # That directory went with the banking surface (contracts/ now holds only
-  # sauron_ledger), and compose validates every build context when it loads the
+  # That directory went with the banking surface and `contracts/` is now gone
+  # entirely, and compose validates every build context when it loads the
   # file — so `up -d backend` failed instantly with a missing build path no
   # matter which service was selected. Nothing referenced it. Removed.

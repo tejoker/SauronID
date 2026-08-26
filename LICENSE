@@ -9,10 +9,10 @@ product.
 Apache License 2.0 — full text in LICENSE-APACHE-2.0
 ----------------------------------------------------
 
-    agentic/                TypeScript SDK
-    clients/python/         Python SDK
-    clients/go/             Go SDK
-    mcp-server/             MCP server
+    sdk/typescript/                TypeScript SDK
+    sdk/python/         Python SDK
+    sdk/go/             Go SDK
+    sdk/mcp-server/             MCP server
     transparent-zk/         RISC Zero guests, journal types, customer verifier
 
 These are deliberately open. The SDKs and the MCP server are thin clients: they
@@ -46,20 +46,21 @@ welcome.
 Everything else
 ---------------
 
-    examples/, redteam/, scripts/, deploy/, docs/, schemas/, site/, branding/,
-    contracts/, migrations/, zkp/
+    examples/, redteam/, scripts/, deploy/, docs/, schemas/, site/,
+    migrations/, release/, archive/, packaging/, zkp/
 
 Supporting material for the above. Not separately licensed: treat it as
 Apache-2.0 where it accompanies an Apache-2.0 component, and as BUSL-1.1 where
-it accompanies the gateway. `branding/` is excluded — see Trademarks.
+it accompanies the gateway. Brand assets under `docs/company-brain/brand/` are excluded, see Trademarks.
 
 Trademarks
 ----------
 
 No licence is granted to any SauronID name, wordmark, eye logo, or brand asset
-under `branding/`. Neither the Apache grant nor the BUSL grant conveys trademark
-rights: BUSL says so explicitly, and Apache-2.0 section 6 does the same. You may
-run and modify the software; you may not distribute it under our name.
+under `docs/company-brain/brand/`. Neither the Apache grant nor the BUSL grant
+conveys trademark rights: BUSL says so explicitly, and Apache-2.0 section 6
+does the same. You may run and modify the software; you may not distribute it
+under our name.
 
 Commercial licensing
 --------------------

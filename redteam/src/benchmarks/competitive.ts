@@ -2,7 +2,7 @@
  * Competitive benchmark harness — SauronID vs DPoP vs HTTP Message Signatures
  * vs AWS STS vs Auth0.
  *
- * See `docs/competitive-benchmark.md` for methodology, scope decisions, and
+ * See the competitive-benchmark write-up (in git history) for methodology, scope decisions, and
  * threats to validity. This file is the runnable scaffold referenced there.
  *
  * Status:
@@ -24,7 +24,7 @@
  *                                       --conc=<int> --n=<int>
  *   node dist/benchmarks/competitive.js --report
  *
- * Output: writes `benchmarks/results-<target>-<ts>.json` to redteam/.
+ * Output: writes `benchmarks/results/results-<target>-<ts>.json` to redteam/.
  */
 
 import { execFileSync } from "child_process";
@@ -232,7 +232,7 @@ async function runBench(t: BenchTarget, conc: number, n: number, warmup: number)
 // ─── target: SauronID ─────────────────────────────────────────────────────
 //
 // Talks to the running sauron-core (booted out-of-band — see
-// docs/competitive-benchmark.md §7). Registers ONE long-lived agent during
+// the competitive-benchmark write-up §7). Registers ONE long-lived agent during
 // setup() and reuses it for every request.
 
 const SAURON_BASE = process.env.SAURON_CORE_URL || "http://127.0.0.1:3001";
@@ -960,7 +960,7 @@ function loadAuth0Env(): Auth0Env {
     const clientSecret = process.env.AUTH0_CLIENT_SECRET;
     if (!domain || !clientId || !clientSecret) {
         throw new Error(
-            "set AUTH0_* env to run this target; see docs/competitive-benchmark.md §7. " +
+            "set AUTH0_* env to run this target; see the competitive-benchmark write-up §7. " +
             "Required: AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET. " +
             "Optional: AUTH0_AUDIENCE (defaults to https://${AUTH0_DOMAIN}/api/v2/)."
         );
@@ -1162,10 +1162,13 @@ function getJson<T = any>(url: string): Promise<{ status: number; body: T }> {
 // ─── report assembly ─────────────────────────────────────────────────────
 
 function reportSummary(): void {
+    // Run JSONs live in benchmarks/results/; the summary this function writes
+    // sits one level up, so a re-run never reads its own output back in.
     const dir = resolve(__dirname, "..", "..", "benchmarks");
+    const runsDir = resolve(dir, "results");
     try {
-        const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-        const rows: BenchResult[] = files.map((f) => JSON.parse(readFileSync(resolve(dir, f), "utf8")));
+        const files = readdirSync(runsDir).filter((f) => f.endsWith(".json"));
+        const rows: BenchResult[] = files.map((f) => JSON.parse(readFileSync(resolve(runsDir, f), "utf8")));
         rows.sort((a, b) => a.target.localeCompare(b.target) || a.conc - b.conc);
 
         const lines: string[] = [];
@@ -1248,7 +1251,7 @@ async function main(): Promise<void> {
     console.log(`p50=${result.p50_ms.toFixed(2)}ms p95=${result.p95_ms.toFixed(2)}ms p99=${result.p99_ms.toFixed(2)}ms`);
     console.log(`rps=${result.rps.toFixed(1)} errors=${result.errors} rejected=${result.rejected}`);
 
-    const outDir = resolve(__dirname, "..", "..", "benchmarks");
+    const outDir = resolve(__dirname, "..", "..", "benchmarks", "results");
     try {
         mkdirSync(outDir, { recursive: true });
     } catch {

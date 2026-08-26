@@ -22,7 +22,7 @@ body:
     id: component
     attributes:
       label: Component
-      placeholder: core / agentic / clients/python / clients/go / dashboard / zkp
+      placeholder: core / sdk/typescript / sdk/python / sdk/go / dashboard / site
   - type: textarea
     id: environment
     attributes:

@@ -1,5 +1,5 @@
 //! Phase 2 of the anonymous ring-policy redesign: rings as first-class **rules**
-//! that agents subscribe to. See `docs/design/anonymous-ring-policy.md`.
+//! that agents subscribe to. See `docs/architecture/anonymous-ring-policy.md`.
 //!
 //! A ring carries a [`RingRule`] (allowed actions + allowed config digests +
 //! per-ring budgets) and a member set of **per-ring stealth pseudonym points**

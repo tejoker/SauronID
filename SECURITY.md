@@ -23,9 +23,9 @@ Response targets:
 SauronID is a fail-closed authorization and verifiable audit boundary for AI
 agents. What counts as a violation is defined by:
 
-- `docs/threat-model.md` — canonical threat model and trust boundaries
-- `docs/redteam-matrix.md` — attack classes we test against
-- `docs/crypto-migration-boundary.md` — cryptographic assumptions and boundaries
+- `docs/security/threat-model.md` — canonical threat model and trust boundaries
+- `docs/security/redteam-matrix.md` — attack classes we test against
+- `docs/security/crypto/crypto-migration-boundary.md` — cryptographic assumptions and boundaries
 
 Bypasses of the fail-closed authorization path, forgery or truncation of the
 hash-chained audit log, cross-tenant data leakage, and egress-gateway escapes
@@ -43,5 +43,5 @@ are all in scope.
 - Security CI on every push: cargo-audit, cargo-deny, gitleaks, trivy, plus a
   weekly dependency audit and CycloneDX SBOM generation
 
-A public audit report and a bug bounty program are planned once the external
-cryptography review concludes (see `docs/crypto-review-attestation.md`).
+A public audit report and a bug bounty program are planned once an external
+cryptography review concludes. None has been completed to date.

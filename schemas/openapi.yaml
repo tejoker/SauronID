@@ -292,7 +292,7 @@ components:
 
     AgentActionEnvelope:
       type: object
-      description: Signed action envelope for the delegated agent leash (core/src/agent_action.rs).
+      description: Signed action envelope for the delegated agent leash (core/src/agent_action/types.rs).
       required: [agent_id, human_key_image, action, nonce, expires_at, policy_hash, ajwt_jti]
       properties:
         agent_id: { type: string }

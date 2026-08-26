@@ -1,0 +1,44 @@
+{
+  "name": "@sauronid/mcp-server",
+  "version": "0.1.0",
+  "description": "SauronID as a Model Context Protocol server - leashed, signed, receipted agent actions (payments, egress, receipts) for any MCP client, no SDK integration required",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tejoker/SauronID.git",
+    "directory": "sdk/mcp-server"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "ai-agent",
+    "identity",
+    "policy-enforcement",
+    "sauronid"
+  ],
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "sauronid-mcp": "dist/src/index.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build && npm test",
+    "test": "npm run build && node dist/test/mcp-server.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@sauronid/agentic": "file:../typescript",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.4.0"
+  }
+}

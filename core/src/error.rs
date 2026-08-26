@@ -96,13 +96,13 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "bad_request",
                 m,
-                "check the request body and parameters against the API schema; see docs/sdk-integration.md",
+                "check the request body and parameters against the API schema; see docs/integration/sdk-integration.md",
             ),
             AppError::Unauthorized(m) => (
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 m,
-                "check credentials and required x-sauron-* headers; see docs/sdk-integration.md",
+                "check credentials and required x-sauron-* headers; see docs/integration/sdk-integration.md",
             ),
             AppError::NotFound(m) => (
                 StatusCode::NOT_FOUND,
@@ -153,7 +153,7 @@ impl IntoResponse for AppError {
 /// Hint returned whenever a request loses a race for the database.
 const CONTENTION_FIX: &str =
     "the database was busy with another write; retry after a short delay. If this is \
-     frequent, the single-writer SQLite tier is saturated — see docs/production-readiness.md";
+     frequent, the single-writer SQLite tier is saturated — see docs/architecture/postgres-port-status.md";
 
 /// True when a database error message describes write contention rather than a
 /// fault.
@@ -230,7 +230,7 @@ impl From<(StatusCode, String)> for AppError {
                     _ => "error",
                 },
                 message,
-                fix: "see the message; docs/sdk-integration.md lists the headers and body each route expects",
+                fix: "see the message; docs/integration/sdk-integration.md lists the headers and body each route expects",
             },
         }
     }

@@ -29,7 +29,7 @@
 //! small enough to enumerate rather than count. Each entry below is a claim
 //! that the code there does not work on Postgres and is not meant to.
 //!
-//! These tests exist so the figure in `docs/production-readiness.md` comes from
+//! These tests exist so the figure in `docs/architecture/postgres-port-status.md` comes from
 //! the build rather than from reading, and so re-pinning a call site forces the
 //! claim to move with the code.
 
@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 /// only ever runs when there is no Postgres pool at all. Making those dispatch
 /// would give Postgres two independent routes to one table.
 ///
-/// Update together with the figure in docs/production-readiness.md.
+/// Update together with the figure in docs/architecture/postgres-port-status.md.
 const SQLITE_ONLY: &[(&str, usize, &str)] = &[
     (
         "repository.rs",
@@ -88,11 +88,24 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// `lock_sqlite()` uses in production code, per file.
 ///
-/// Test modules are excluded: a fixture asserting on the SQLite database it
-/// just created is not a deployment that cannot use Postgres. Comments are
-/// stripped first — this counts call sites, and the doc comments explaining why
-/// a site is SQLite-only name the function too. Counting those made adding an
-/// explanation look like adding an opt-out.
+/// Test code is excluded: a fixture asserting on the SQLite database it just
+/// created is not a deployment that cannot use Postgres. That exclusion has two
+/// forms to recognise. A module still inline in its file is cut at its
+/// `#[cfg(test)]`. A module extracted to its own file carries no such marker
+/// (the parent's `mod` declaration holds it), so the file name is the signal:
+/// `tests.rs` and `*_tests.rs` are test code, which is the convention every
+/// extracted module in core/src follows.
+///
+/// Comments are stripped first — this counts call sites, and the doc comments
+/// explaining why a site is SQLite-only name the function too. Counting those
+/// made adding an explanation look like adding an opt-out.
+fn is_test_file(p: &Path) -> bool {
+    match p.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n == "tests.rs" || n.ends_with("_tests.rs"),
+        None => false,
+    }
+}
+
 fn sqlite_only_sites() -> BTreeMap<String, usize> {
     let mut files = Vec::new();
     rust_files(&core_src(), &mut files);
@@ -100,6 +113,9 @@ fn sqlite_only_sites() -> BTreeMap<String, usize> {
 
     let mut by_file = BTreeMap::new();
     for f in files {
+        if is_test_file(&f) {
+            continue;
+        }
         let src = std::fs::read_to_string(&f).expect("readable source");
         let body = match src.find("#[cfg(test)]") {
             Some(i) => &src[..i],
@@ -154,7 +170,7 @@ fn the_sqlite_only_opt_outs_are_exactly_the_documented_ones() {
              Every `lock_sqlite()` asserts \"this does not work on Postgres and is \
              not meant to\". Adding one is a deliberate act: record it in \
              SQLITE_ONLY with the reason, and update the figure in \
-             docs/production-readiness.md in the same commit. Removing one is the \
+             docs/architecture/postgres-port-status.md in the same commit. Removing one is the \
              port progressing — do the same."
         );
     }

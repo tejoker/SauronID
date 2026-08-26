@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS agents (
     pop_public_key_b64u         TEXT    NOT NULL DEFAULT '',
     attestation_blob            TEXT,
     attestation_kind            TEXT    NOT NULL DEFAULT '',
-    -- M1 of TPM2-bound PoP key roadmap (docs/roadmap.md Plan 1):
+    -- Columns from the TPM2-bound PoP track, cancelled and archived in 2026-08
+    -- (archive/removed-2026-08/hardware-attestation/):
     -- nullable hardware-attestation fields, populated when attestation_kind
     -- is 'tpm2_quote'. The verifier (M2) reads these to walk the EK chain
     -- and compare PCRs against the registered measurement.
@@ -362,7 +363,7 @@ CREATE TABLE IF NOT EXISTS agent_action_anchors (
 CREATE INDEX IF NOT EXISTS idx_agent_action_anchors_root  ON agent_action_anchors (batch_root_hex);
 CREATE INDEX IF NOT EXISTS idx_agent_action_anchors_range ON agent_action_anchors (from_created_at, to_created_at);
 
--- Agent egress audit/enforcement log (see core/src/egress_gateway.rs).
+-- Agent egress audit/enforcement log (see core/src/egress_gateway/mod.rs).
 -- tenant_id is added by 0004_multi_tenant.sql.
 CREATE TABLE IF NOT EXISTS agent_egress_log (
     id            BIGSERIAL PRIMARY KEY,

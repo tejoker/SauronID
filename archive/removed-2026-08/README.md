@@ -56,4 +56,6 @@ The pre-pivot 2025 hackathon prototype used to sit beside this directory as
 `banking-2025/`. It has since been removed from the working tree entirely and
 lives at the `archive/banking-2025` git tag. Its byte-identical duplicate of
 `contracts/sauron_ledger` went with it — `diff -rq` against the live copy had
-returned nothing.
+returned nothing. That live copy is now removed too: its own header described it
+as anchoring KYC commitment roots, nothing outside `contracts/` ever called it,
+and no CI job built it. It is at the `archive/sauron-ledger-2024` tag.

@@ -37,7 +37,7 @@ Selectively run phases:
     python3 scripts/demo_real_agent.py --skip-chat --skip-attacks
     python3 scripts/demo_real_agent.py --only-attacks
 
-Dependencies (already in clients/python/sauronid_client install + base58):
+Dependencies (already in sdk/python/sauronid_client install + base58):
     pip install requests cryptography
     pip install --upgrade groq google-genai anthropic   # whichever you have
 """

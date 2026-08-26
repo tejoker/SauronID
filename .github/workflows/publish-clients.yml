@@ -67,11 +67,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - run: npm ci
-        working-directory: agentic
+        working-directory: sdk/typescript
       - run: npm run build && npm test
-        working-directory: agentic
+        working-directory: sdk/typescript
       - name: Publish
-        working-directory: agentic
+        working-directory: sdk/typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ inputs.dist_tag || 'next' }}
@@ -99,9 +99,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install "build==1.2.2.post1" && python -m build --sdist
-        working-directory: clients/python
+        working-directory: sdk/python
       - name: Assert source distribution has no workstation binary
-        working-directory: clients/python
+        working-directory: sdk/python
         run: |
           if tar -tzf dist/*.tar.gz | grep -E '/agent-action-tool(\.exe)?$'; then
             echo "source distribution contains a platform binary" >&2
@@ -110,7 +110,7 @@ jobs:
       - name: Publish via trusted publishing
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
         with:
-          packages-dir: clients/python/dist
+          packages-dir: sdk/python/dist
 
   mcp-server:
     name: Publish @sauronid/mcp-server
@@ -126,12 +126,12 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - name: Build and test
-        working-directory: mcp-server
+        working-directory: sdk/mcp-server
         run: |
           npm ci
           npm test
           npm run build
-      # `mcp-server` depends on `@sauronid/agentic` as `file:../agentic`, which
+      # `mcp-server` depends on `@sauronid/agentic` as `file:../typescript`, which
       # is right for local development and unresolvable for anyone installing
       # from npm — published as-is, `npx @sauronid/mcp-server` fails during
       # install. Pin it to the version in the tree instead.
@@ -141,9 +141,9 @@ jobs:
       # ahead of a matching agentic release produces a package that cannot be
       # installed. The check below refuses rather than shipping that.
       - name: Pin the agentic dependency to a published version
-        working-directory: mcp-server
+        working-directory: sdk/mcp-server
         run: |
-          ver=$(node -p "require('../agentic/package.json').version")
+          ver=$(node -p "require('../sdk/typescript/package.json').version")
           VER="$ver" node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -162,7 +162,7 @@ jobs:
           echo "pinned @sauronid/agentic to ^${ver}"
 
       - name: Publish
-        working-directory: mcp-server
+        working-directory: sdk/mcp-server
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # A manual run picks its own dist-tag; a clients-v* tag publishes to

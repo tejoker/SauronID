@@ -10,7 +10,7 @@
 //! parser, COSE_Sign1 parser, Sig_structure construction, and signature
 //! verifier are correct against the AWS spec + RFC 8152 / RFC 8949, but
 //! end-to-end validation against a real AWS Nitro root cert chain is deferred
-//! to operator environments. See `docs/tee-deployment.md`.
+//! to operator environments. See `tee-deployment.md`.
 //!
 //! ## Self-signed test cert caveat
 //!

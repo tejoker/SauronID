@@ -73,10 +73,10 @@ jobs:
       fail-fast: false
       matrix:
         # Adjust to match the actual subdirs that ship `package.json`.
-        # clients/python is a Python package and is handled by the python-sbom job.
+        # sdk/python is a Python package and is handled by the python-sbom job.
         subdir:
           - dashboard
-          - agentic
+          - sdk/typescript
           - redteam
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -94,6 +94,9 @@ jobs:
             echo "present=0" >> $GITHUB_OUTPUT
             echo "::notice::No package.json in ${{ matrix.subdir }} — skipping."
           fi
+          # upload-artifact rejects a name containing a slash, and the matrix now
+          # carries nested paths (sdk/typescript). Flatten once, reuse below.
+          echo "slug=$(echo '${{ matrix.subdir }}' | tr '/' '-')" >> $GITHUB_OUTPUT
 
       - name: Install deps
         if: steps.check.outputs.present == '1'
@@ -113,7 +116,7 @@ jobs:
         if: steps.check.outputs.present == '1'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sbom-ts-${{ matrix.subdir }}
+          name: sbom-ts-${{ steps.check.outputs.slug }}
           path: ${{ matrix.subdir }}/sbom-ts-*.json
           retention-days: 90
 
@@ -137,9 +140,9 @@ jobs:
       - name: Install client + pip-licenses
         run: |
           python -m pip install --upgrade pip
-          # `clients/python` ships a pyproject; install it (plus its deps) so
+          # `sdk/python` ships a pyproject; install it (plus its deps) so
           # pip-licenses sees the full transitive closure.
-          pip install ./clients/python pip-licenses
+          pip install ./sdk/python pip-licenses
 
       - name: Generate Python SBOM
         run: |

@@ -34,7 +34,7 @@
 //!   - **Live AWS Nitro hardware verification.** The code path is correct per
 //!     RFC 8152 + AWS spec, but end-to-end validation against a real Nitro EC2
 //!     instance is deferred to operator environments — we cannot produce a
-//!     genuine Nitro attestation in this session. See `docs/tee-deployment.md`.
+//!     genuine Nitro attestation in this session. See `tee-deployment.md`.
 //!   - **AWS root cert revocation lists.** Operator-supplied PEM is trusted as-is.
 //!   - **Bundling AWS root certs.** Operator supplies the per-region root via
 //!     `SAURON_NITRO_ROOT_PEM` for IP/license reasons. URL reference:

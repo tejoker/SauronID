@@ -51,7 +51,7 @@ export default async function PoliciesListPage() {
                 Create your first policy →
               </Link>
               <a
-                href="/docs/policy-dsl.md"
+                href="/docs/architecture/policy-dsl.md"
                 className="text-sm text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
               >
                 Read the DSL docs

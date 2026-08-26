@@ -10,7 +10,7 @@ payment. Go 1.22+.
   `SAURONID_AGENT_ACTION_TOOL=/path/to/agent-action-tool`.
 
 The `go.mod` here uses a `replace` directive pointing at the in-repo SDK
-(`../../clients/go/sauronid`), so no network fetch is needed.
+(`../../sdk/go/sauronid`), so no network fetch is needed.
 
 ## Run
 

@@ -29,14 +29,14 @@ step "dev leash demo smoke"
 "$ROOT/core/tests/smoke_dev_leash_demo.sh"
 
 step "agentic sdk build + crypto/enforcement/stats tests"
-install_if_needed "$ROOT/agentic"
-(cd "$ROOT/agentic" && npm run build && npm test && npm run test:enforcement && npm run test:stats)
+install_if_needed "$ROOT/sdk/typescript"
+(cd "$ROOT/sdk/typescript" && npm run build && npm test && npm run test:enforcement && npm run test:stats)
 
 step "python sdk tests"
-python -m pytest "$ROOT/clients/python/tests" -q
+python -m pytest "$ROOT/sdk/python/tests" -q
 
 step "go sdk tests"
-(cd "$ROOT/clients/go/sauronid" && go test ./...)
+(cd "$ROOT/sdk/go/sauronid" && go test ./...)
 
 step "redteam build"
 install_if_needed "$ROOT/redteam"

@@ -1,5 +1,5 @@
 //! Phase 4 of the anonymous ring-policy redesign: multi-unit usage ledger.
-//! See `docs/design/anonymous-ring-policy.md`.
+//! See `docs/architecture/anonymous-ring-policy.md`.
 //!
 //! Tracks **tokens and money** per ring pseudonym (the per-ring key image), not
 //! per agent identity — so accounting works under the anonymous model. Tokens
@@ -14,7 +14,7 @@
 //! Honesty boundary: token counts are host/gateway-reported (same class as the
 //! config digest). The ledger + append-only `usage_log` make them tamper-evident
 //! and anchorable; they become authoritative only when an in-path inference
-//! gateway counts them (see `docs/ideas/blackbox-encrypted-inference.md`).
+//! gateway counts them.
 
 use crate::error::AppError;
 use std::collections::HashMap;

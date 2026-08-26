@@ -122,7 +122,7 @@ npm run build --silent
 ok "redteam compiled"
 
 step "Build agentic SDK (TS)"
-cd "$ROOT/agentic"
+cd "$ROOT/sdk/typescript"
 npm ci --ignore-scripts --silent
 npm run build --silent
 ok "agentic compiled"
@@ -195,7 +195,7 @@ ok "seeded 10 clients + 10 users"
 cd "$ROOT/redteam"
 if [ "$ENFORCE_MODE" = "1" ]; then
     step "Run 16-attack empirical suite (fail-closed mode)"
-    if node dist/scenarios/empirical-suite.js > /tmp/sauron-empirical.log 2>&1; then
+    if node dist/scenarios/suites/empirical-suite.js > /tmp/sauron-empirical.log 2>&1; then
         grep "empirical:" /tmp/sauron-empirical.log
         ok "empirical 16/16"
     else
@@ -229,7 +229,7 @@ echo "  Admin key:   $SAURON_ADMIN_KEY"
 echo "  Logs:        /tmp/sauron-quickstart.log"
 echo
 echo "  Next:"
-echo "    • run a Python adapter: see clients/python/sauronid_client/README.md"
-echo "    • verify an audit anchor: docs/empirical-comparison.md"
-echo "    • production deploy: docs/operations.md"
+echo "    • run a Python adapter: see sdk/python/sauronid_client/README.md"
+echo "    • verify an audit anchor: redteam/"
+echo "    • production deploy: deploy/README.md"
 echo

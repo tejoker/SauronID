@@ -13,6 +13,6 @@ tamper-evident, scrape-friendly surfaces:
 Every event also lands in an HMAC hash-chained table, so the SIEM copy can
 be re-verified against the chain at any time.
 
-Full shipper configs (Splunk, Elastic, Vector) and the pull-not-push
-rationale:
-[`docs/siem-integration.md`](https://github.com/tejoker/SauronID/blob/main/docs/siem-integration.md).
+Core never pushes because a push target is a credential the gateway would have
+to hold and an outbound path an agent could try to reach. Point your existing
+shipper at the JSONL file, or poll the admin API.

@@ -8,7 +8,7 @@ if [[ "${SAURON_NPM_AUDIT_OFFLINE:-0}" == "1" ]]; then
 fi
 
 for directory in \
-  agentic dashboard mcp-server redteam redteam/loadtest \
+  sdk/typescript sdk/mcp-server dashboard redteam redteam/loadtest \
   examples/typescript-quickstart; do
   printf '[npm audit] %s\n' "$directory"
   (cd "$ROOT/$directory" && npm audit "${args[@]}")

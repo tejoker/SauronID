@@ -1,4 +1,4 @@
-//! Policy DSL: declarative agent-binding configuration. See docs/policy-dsl.md for the schema.
+//! Policy DSL: declarative agent-binding configuration. See docs/architecture/policy-dsl.md for the schema.
 //!
 //! Layout:
 //! - `assurance`  — KYA assurance-level matrix (legacy, ported from `policy.rs`).

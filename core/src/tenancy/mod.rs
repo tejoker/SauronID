@@ -17,7 +17,7 @@
 //!
 //! ## What is scoped vs global
 //!
-//! See `docs/multi-tenancy.md` for the full matrix. Summary:
+//! See `docs/architecture/multi-tenancy.md` for the full matrix. Summary:
 //!
 //! - **SCOPED** (data-isolated per tenant): `agents`, `policies`,
 //!   `agent_action_receipts`, `agent_egress_log`, `consent_log`,

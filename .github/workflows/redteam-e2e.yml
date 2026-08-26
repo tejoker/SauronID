@@ -116,10 +116,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: agentic/package-lock.json
+          cache-dependency-path: sdk/typescript/package-lock.json
 
       - name: Agentic unit tests + live shim integration
-        working-directory: agentic
+        working-directory: sdk/typescript
         env:
           SAURON_CORE_URL: http://localhost:3001
         run: |

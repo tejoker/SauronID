@@ -5,13 +5,12 @@
 //! is `sauronid:v1:<root_hex>`. Anyone can verify via Solana Explorer or any
 //! Solana RPC; no custom on-chain program deployment is required.
 //!
-//! For operators who want richer on-chain semantics (counter, authority,
-//! per-anchor event log), an Anchor program is shipped under
-//! `contracts/sauron_ledger/`. Deploying that program is a one-time operator
-//! step (`anchor build && anchor deploy --provider.cluster devnet`) and is
-//! independent of this client.
+//! The memo path is the only path. A custom Anchor program for richer on-chain
+//! semantics (counter, authority, per-anchor event log) used to sit in
+//! `contracts/sauron_ledger/`; it was the 2024 KYC-era contract, nothing here
+//! ever called it, and it is removed (tag `archive/sauron-ledger-2024`).
 //!
-//! The memo path is the default because:
+//! Memo is what this client uses because:
 //!   - it works on devnet *and* mainnet with no deploy step;
 //!   - the cryptographic commitment lives in the merkle root, not the chain —
 //!     Solana's role is durable timestamping, identical to the OTS path;
