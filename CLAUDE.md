@@ -17,6 +17,50 @@ globales, il les précise pour SauronID.
 
 Carte complète des dossiers et de leur rôle : [`docs/README.md`](docs/README.md).
 
+## Deux dépôts, une seule session
+
+SauronID tient dans deux dépôts et se travaille depuis un seul poste.
+
+| Dépôt | Chemin local | Contient | Visibilité |
+|---|---|---|---|
+| `tejoker/SauronID` | `~/code/SauronID` | Le produit : passerelle, console, SDK, preuves, docs, marque | Public |
+| `clement-sporrer/SauronID-Landing` | `~/code/sauronid-site` | `www.sauronid.eu`, le site public, Next.js sur Vercel | Privé |
+
+Celui-ci est le centre. On démarre ici. C'est ici que les décisions se prennent
+et que les claims deviennent vrais avant d'apparaître ailleurs.
+
+Où aller selon ce qu'on veut toucher :
+
+| Travailler sur | Aller dans |
+|---|---|
+| La passerelle, le chemin d'application | `core/` |
+| La console produit, l'interface connectée | `dashboard/` |
+| Ce qu'écrit un intégrateur | `sdk/`, `examples/` |
+| La preuve que les claims tiennent | `redteam/`, `transparent-zk/` |
+| La documentation publique développeur | `docs/site/` |
+| Le site vitrine | l'autre dépôt, `~/code/sauronid-site` |
+
+Attention à l'homonymie : `docs/site/` est la source Mintlify de la
+documentation développeur et reste ici. `site/` à la racine n'est plus qu'un
+pointeur vers le dépôt du site vitrine, voir [`site/README.md`](site/README.md).
+
+Pour voir les deux dans la même session, depuis une session ouverte ici :
+
+```
+/add-dir ~/code/sauronid-site
+```
+
+La session lit la vérité produit ici et écrit le site là-bas, dans le même tour.
+Sur cette machine le dossier est déjà déclaré dans `.claude/settings.local.json`,
+qui est gitignoré et personnel. Sur une machine neuve, cloner d'abord :
+
+```bash
+git clone git@github.com:clement-sporrer/SauronID-Landing.git ~/code/sauronid-site
+```
+
+Ne reconstruis pas de page marketing dans cet arbre. Il n'existe qu'une copie
+vivante du site.
+
 ## La hiérarchie de la vérité
 
 1. **`docs/company-brain/`** décide. Problème, solution, produit, features,

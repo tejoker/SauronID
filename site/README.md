@@ -1,66 +1,48 @@
-# SauronID website
+# Le site public n'est plus ici
 
-Bilingual (EN at `/`, FR at `/fr`) marketing site. Next.js 16 App Router,
-static export (`output: "export"`), no server required: `next build` emits a
-plain `out/` folder deployable on any static host.
+`www.sauronid.eu` a été extrait le 2026-08-27 vers son propre dépôt, avec son
+historique. Ce dossier ne contient que le pointeur.
 
-## Develop
+| | |
+|---|---|
+| Dépôt | `clement-sporrer/SauronID-Landing` (privé) |
+| Clone local | `~/code/sauronid-site` |
+| Stack | Next.js 16.3.0, React 19.2.3, export statique (`output: "export"`) |
+| Déploiement | Vercel, sur push vers `main` |
+| Contenu | 10 pages, bilingue EN à la racine et FR sous `/fr`, formulaire early access |
+
+Pourquoi dehors : ce dépôt est public et le code marketing ne l'est pas, Vercel
+exige un accès propriétaire sur ce qu'il construit, et le site se déploie à
+chaque push alors que la passerelle ne doit pas partager ce déclencheur.
+
+## Travailler sur les deux dans une seule session
+
+Cloner une fois :
 
 ```bash
-npm install
-npm run dev        # http://localhost:3000
-npm run build      # static export in out/
+git clone git@github.com:clement-sporrer/SauronID-Landing.git ~/code/sauronid-site
 ```
 
-## Structure
+Puis, depuis une session ouverte ici :
 
 ```
-app/          routes only: metadata + render a view (EN at root, FR under app/fr)
-components/
-  layout/     Header (nav, language menu, scroll reset), Footer
-  interactive/ BoundaryDemo, RingSeal, Checkpoint, EarlyAccessForm
-  ui/         shared building blocks
-  views/      one folder per page: the view component + copy.ts (EN/FR dictionaries)
-lib/          i18n helpers, early-access signup client
-styles/       design system split by concern, imported by app/globals.css
-supabase/     SQL to provision the early-access signups table (insert-only RLS)
+/add-dir ~/code/sauronid-site
 ```
 
-Conventions: all visible copy lives in `copy.ts` dictionaries keyed by locale;
-internal links go through `localeHref(locale, path)`; strings inside
-`evidence` / mono blocks are product artifacts and stay in English; claim
-wording follows `../docs/company-brain/04-features.md` (never
-"certified/compliant", availability is always labeled).
+La session lit la vérité produit ici et écrit le site là-bas, dans le même tour.
+Rien ne se recopie à la main. Sur cette machine le dossier est déjà déclaré dans
+`.claude/settings.local.json`, la commande n'est pas nécessaire.
 
-## Early-access form — modes
+## Ce qui reste vrai de l'autre côté de la frontière
 
-- **No configuration**: falls back to a pre-filled email (always works).
-- **Supabase configured**: signups are stored in `early_access_signups`.
-- **Launcher URL configured**: a stored signup immediately starts the real
-  download; before that, users are told their cohort will email the link.
+- Un claim sur le site doit être vrai ici d'abord, et autorisé par
+  `docs/company-brain/`. Le company brain décide, le site exécute.
+- Les trois labels de disponibilité (vérifié dans le dépôt, direction produit,
+  hypothèse) s'appliquent au site comme au reste.
+- Design et voix : `docs/design/design-system.md` et
+  `docs/company-brain/brand/`.
+- Les identifiants sont des variables d'environnement Vercel, jamais dans un
+  dépôt.
 
-Setup (5 minutes): create a Supabase project → run
-`supabase/early_access.sql` in its SQL editor → copy `env.example` to
-`.env.local` and fill `NEXT_PUBLIC_SUPABASE_URL` +
-`NEXT_PUBLIC_SUPABASE_ANON_KEY` (public by design; the table is insert-only
-for the anon role). The day the Launcher binary exists, host it anywhere and
-set `NEXT_PUBLIC_LAUNCHER_URL`.
-
-## Next steps before public launch
-
-1. **Supabase**: create the production project, run the SQL, set the two env
-   vars in the deploy environment.
-2. **Launcher binary**: build, sign, host it; set `NEXT_PUBLIC_LAUNCHER_URL`.
-   Until then the form honestly queues people for their cohort.
-3. **Deploy**: any static host (Vercel/Netlify/nginx/S3). Root domain
-   required (links are root-absolute). Wire `www` + apex, HTTPS.
-4. **Domains in metadata**: set `metadataBase` in `app/layout.tsx` once the
-   final domain is known, so hreflang/OG URLs are absolute.
-5. **Analytics/consent**: nothing is installed by choice; add a
-   privacy-respecting analytics only with a consent story consistent with the
-   compliance page.
-6. **Legal pages**: privacy policy + imprint before collecting real signups
-   (GDPR: the form stores personal data once Supabase is live).
-7. **Verify claims at launch**: supported OS/model list published with the
-   Launcher; keep availability labels in sync with reality (see
-   `docs/company-brain/04-features.md` claim discipline).
+Ne pas reconstruire de page marketing dans cet arbre. Il n'y a qu'une copie
+vivante du site, elle est dans l'autre dépôt.
