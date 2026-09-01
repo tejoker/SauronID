@@ -162,10 +162,27 @@ nous : « eux, leurs agents tiennent en production, et ils ont ce que les autres
 n'ont pas pour ça ».
 
 La bonne façon de montrer l'étendue est **l'exemple, jamais l'abstraction**.
-Cinq cas concrets répartis par fonction, chacun avec le même squelette : le
-processus, ce qu'il coûtait, ce que l'agent fait, l'action à effet réel, la
-règle qui la borne. Le squelette répété fait comprendre qu'il y en a cinquante
-autres, sans avoir à le promettre.
+Un portfolio de vingt processus répartis par fonction, chacun avec le même
+squelette : le processus, ce qu'il coûtait, ce que l'agent fait, l'action à
+effet réel, la règle qui la borne. Le squelette répété fait comprendre qu'il y
+en a cinquante autres, sans avoir à le promettre.
+
+Cette règle disait cinq jusqu'au 1er septembre 2026. Le nombre a changé parce
+que sa fonction a changé. À cinq, le portfolio démontrait la largeur. À vingt,
+il fait le travail que cinq ne faisaient pas : un visiteur reconnaît le sien.
+C'est la condition d'entrée dans la conversation, avant tout argument.
+
+Deux contraintes viennent avec le nombre, et sans elles vingt cartes deviennent
+un catalogue illisible.
+
+1. **Une carte se lit d'un coup d'oeil.** Le coût, l'acte qui engage, la règle
+   qui le borne, rien d'autre. Les indicateurs et le pas à pas vivent sur la
+   page du processus, où va un lecteur qui a déjà reconnu le sien.
+2. **Deux niveaux de preuve, jamais mélangés.** Un processus déjà déployé
+   ailleurs porte le chiffre publié, le nom de qui l'a publié et l'échelle du
+   déploiement. Les autres portent un chiffrage, avec ses hypothèses affichées.
+   Le relevé des cas publiés est dans
+   [`research/portfolio-cas-publies.md`](research/portfolio-cas-publies.md).
 
 Trois autres interdits :
 
