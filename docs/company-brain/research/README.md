@@ -15,8 +15,8 @@ précédente ait produit une preuve écrite.
 | # | Étape | Fichier | État |
 |---|---|---|---|
 | 0 | Recherche documentaire : qu'est-ce qui est mesuré, par qui, avec quelle méthode | [`problem-landscape.md`](problem-landscape.md), [`copilot-vs-agent.md`](copilot-vs-agent.md), [`use-cases.md`](use-cases.md), [`sources.md`](sources.md) | fait, 24 août 2026 |
-| 1 | Formulation du problème : le job à faire, qui le ressent, ce qu'il coûte | [`01-probleme-factures.md`](01-probleme-factures.md) | écrit le 31 août 2026, six hypothèses ouvertes |
-| 2 | Découverte client : entretiens, pas de pitch, transcripts conservés | guide dans [`01-probleme-factures.md`](01-probleme-factures.md) | prêt à lancer, aucun entretien mené |
+| 1 | Formulation du problème : le job à faire, qui le ressent, ce qu'il coûte | à écrire, horizontal, sans référence à un processus | à faire |
+| 2 | Découverte client : entretiens, pas de pitch, transcripts conservés | [`porte-1-factures-exception.md`](porte-1-factures-exception.md) | instrument prêt pour la porte 1, aucun entretien mené |
 | 3 | Beachhead market, persona, use case complet | à écrire | à faire |
 | 4 | Quantified value proposition : le avant/après chiffré chez un client type | à écrire | à faire |
 | 5 | Solution et features déduites des étapes 1 à 4, pas de l'existant | à écrire | à faire |
@@ -24,6 +24,15 @@ précédente ait produit une preuve écrite.
 | 7 | TAM, SAM, SOM calculés bottom-up | à écrire | à faire |
 | 8 | Modèle économique et pricing, après mesure de l'usage et du coût | à écrire | à faire |
 | 9 | Go-to-market et playbook de déploiement | à écrire | à faire |
+
+## Portes et problème, à ne pas confondre
+
+Un fichier `porte-*.md` décrit un processus par lequel on entre chez un client :
+un volume, un coût, une fenêtre de calendrier, un guide d'entretien. Il est daté
+et il se périme. Le problème formulé à l'étape 1 est horizontal et ne nomme aucun
+processus : c'est celui de l'agent qu'on ne peut pas déployer sans contrainte
+hors modèle. Les deux ne se remplacent pas. Une porte qui se referme ne remet pas
+le problème en cause, elle fait écrire le fichier de la porte suivante.
 
 ## Règles de preuve
 

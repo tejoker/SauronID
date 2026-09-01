@@ -80,7 +80,7 @@ pas dans un document client avant relecture du texte original.
 | Raisch et Krakowski, 2021, cas Symrise, cité par Enholm et al. | deux ans de validation humaine de chaque suggestion avant bascule en automatisation | 02, mode observation | à relire, et vérifier le cas à la source et non via la revue |
 | Lee et Shin, *Machine Learning for Enterprises*, Business Horizons, 2020 | la pénurie de compétences comme frein d'adoption propre aux entreprises de taille intermédiaire | 11, modèle éditeur plus déploiement | à relire |
 | Anderson et Coveyduc, *Artificial Intelligence for Business*, Wiley, 2020 | permissions et sécurité écartées du prototype, redevenant le point de friction au passage en production | 02, la thèse | à relire |
-| Andrew Ng, recommandations publiques sur les projets pilotes | commencer par des tâches discrètes plutôt que par des rôles entiers | 10 et 30, ciblage outbound | à relire, et identifier la publication exacte plutôt que la citation de seconde main |
+| Andrew Ng, recommandations publiques sur les projets pilotes | commencer par des tâches discrètes plutôt que par des rôles entiers | 10 et 30, choix de la porte d'entrée | à relire, et identifier la publication exacte plutôt que la citation de seconde main |
 
 Une remarque qui compte plus que la liste. Ces sept références **valident** le
 raisonnement écrit dans 02, 10 et 11, elles ne l'ont pas produit. Le

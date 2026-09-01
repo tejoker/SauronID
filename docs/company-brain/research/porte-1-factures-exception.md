@@ -1,10 +1,36 @@
-# 01. Le problème, formulation testable : les factures en exception
+# Porte 1 : les factures fournisseurs en exception
 
-**Écrit le 31 août 2026.** Étape 1 de la séquence décrite dans
-[`README.md`](README.md). Elle formule le job à faire, qui le ressent, et ce
-qu'il coûte, sous une forme que l'étape 2 peut casser.
+**Écrit le 31 août 2026. Périmé le 15 octobre 2026** si aucun cadrage n'est
+payé, par la règle de bascule de
+[`../10-segment-cible.md`](../10-segment-cible.md).
 
-Ce fichier ne contient aucune preuve. Il contient des hypothèses écrites assez
+## Ce que ce fichier n'est pas
+
+**Ce n'est pas le problème que SauronID résout.** C'est une porte d'entrée
+commerciale, la première, choisie pour une fenêtre de calendrier. Le problème
+que SauronID résout est horizontal et ne parle pas de comptabilité : un agent
+qui exécute des actions réelles ne se déploie pas sans contrainte appliquée en
+dehors du modèle. Il est formulé dans [`../01-problemes.md`](../01-problemes.md)
+et n'a rien de financier.
+
+`11-positionnement.md` le dit dans ces termes : la porte est étroite, la maison
+est grande. Ce fichier décrit une porte. Trois conséquences à tenir.
+
+1. **Rien ici ne monte dans le produit.** Aucune règle, aucun connecteur, aucun
+   champ de schéma spécifique à un standard comptable. Le noyau reste agnostique
+   (voir [`../04-features.md`](../04-features.md)).
+2. **Rien ici ne monte sur le site.** Le site montre cinq fonctions et ne se
+   déclare spécialiste d'aucune. Ce fichier sert la prospection sortante et
+   seulement elle.
+3. **La porte se remplace, la maison non.** À l'échéance ci-dessus, on passe au
+   recouvrement, puis aux tickets et droits d'accès. Un fichier jumeau de
+   celui-ci s'écrira alors, avec les mêmes six hypothèses réécrites pour ce
+   processus. La méthode est réutilisable, les chiffres ne le sont pas.
+
+## Ce que ce fichier est
+
+L'instrument de terrain de l'étape 2 de [`README.md`](README.md), appliqué à un
+seul processus. Il ne contient aucune preuve : des hypothèses écrites assez
 précisément pour être fausses, et le guide d'entretien qui les tranche. Tout ce
 qui est marqué **[hypothèse]** n'a été validé par personne.
 
@@ -31,7 +57,8 @@ Trois raisons sérieuses pour lesquelles ce fichier peut se révéler sans objet
 
 ## Le job à faire
 
-Formulation Jobs to be Done, sans le vocabulaire produit.
+Formulation Jobs to be Done, sans le vocabulaire produit. C'est le job d'un chef
+comptable, pas la catégorie dans laquelle SauronID se range.
 
 > Quand une facture fournisseur arrive et qu'elle ne correspond à rien
 > d'attendu, je veux savoir vite qui doit trancher et obtenir sa décision, pour

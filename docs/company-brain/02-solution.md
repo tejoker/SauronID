@@ -274,16 +274,17 @@ D'où deux règles, qui sont des règles commerciales autant que méthodologique
    traitement ne saura pas non plus reconnaître ce qu'on lui a fait gagner.
 
 3. **Quand le coût unitaire est introuvable, on mesure une métrique de
-   transition.** Le coût complet d'un traitement est souvent inconnu du client
-   et n'existe dans aucune source publique indépendante (voir
-   [`research/sources.md`](research/sources.md), où tous les chiffres de coût
-   par facture sont en note C). Un délai, lui, se lit dans ses outils sans
-   étude : combien de jours entre l'arrivée d'un dossier en exception et sa
+   transition.** Le coût complet d'un traitement est souvent inconnu du client,
+   et aucun processus d'entreprise n'a de coût de référence publié par une
+   source sans intérêt commercial : tous les chiffres qui circulent viennent
+   d'éditeurs qui vendent la chose mesurée (voir
+   [`research/sources.md`](research/sources.md)). Un délai, lui, se lit dans les
+   outils du client sans étude : combien de temps entre l'entrée d'un cas et sa
    résolution, combien de relances internes, quelle part du volume passe par le
-   chemin dégradé. C'est sa donnée, donc elle est de meilleure qualité que
-   n'importe quel benchmark d'éditeur, et elle bouge dans le même sens que le
-   coût. On prend le coût quand il existe, le délai quand il n'existe pas, et on
-   fixe lequel des deux fait foi au cadrage, pas à la fin.
+   chemin dégradé. C'est sa donnée, donc elle vaut mieux qu'un benchmark
+   d'éditeur, et elle bouge dans le même sens que le coût. On prend le coût
+   quand il existe, le délai quand il n'existe pas, et on fixe lequel des deux
+   fait foi au cadrage, pas à la fin.
 
 Le côté « après » ne demande aucun effort supplémentaire : la couche de contrôle
 enregistre chaque action, ce qu'elle a coûté en jetons et en euros, ce qui a été
