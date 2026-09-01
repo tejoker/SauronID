@@ -15,8 +15,8 @@ précédente ait produit une preuve écrite.
 | # | Étape | Fichier | État |
 |---|---|---|---|
 | 0 | Recherche documentaire : qu'est-ce qui est mesuré, par qui, avec quelle méthode | [`problem-landscape.md`](problem-landscape.md), [`copilot-vs-agent.md`](copilot-vs-agent.md), [`use-cases.md`](use-cases.md), [`sources.md`](sources.md) | fait, 24 août 2026 |
-| 1 | Formulation du problème : le job à faire, qui le ressent, ce qu'il coûte | à écrire | à faire |
-| 2 | Découverte client : entretiens, pas de pitch, transcripts conservés | à écrire | à faire |
+| 1 | Formulation du problème : le job à faire, qui le ressent, ce qu'il coûte | [`01-probleme-factures.md`](01-probleme-factures.md) | écrit le 31 août 2026, six hypothèses ouvertes |
+| 2 | Découverte client : entretiens, pas de pitch, transcripts conservés | guide dans [`01-probleme-factures.md`](01-probleme-factures.md) | prêt à lancer, aucun entretien mené |
 | 3 | Beachhead market, persona, use case complet | à écrire | à faire |
 | 4 | Quantified value proposition : le avant/après chiffré chez un client type | à écrire | à faire |
 | 5 | Solution et features déduites des étapes 1 à 4, pas de l'existant | à écrire | à faire |

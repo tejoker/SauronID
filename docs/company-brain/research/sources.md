@@ -60,7 +60,33 @@ mémoire, et pour être vérifiés ou abandonnés.
 | 70% des demandes de support de niveau 1 traitées de bout en bout | éditeurs de CRM | argument de vente |
 | Retour sur investissement en 3 à 6 mois sur les cas à fort volume | éditeurs et blogs sectoriels | aucune méthode publiée |
 | 131 agences d'implémentation IA recensées, segment services à +46% par an | annuaire privé et cabinets d'études | ne mesure pas une population, à ne pas citer comme taille de marché |
+| 14 à 20 € de coût de traitement d'une facture fournisseur papier, dont 1,40 € de saisie et 5,40 € de validation, 6,60 € une fois dématérialisée | APECA, Quadient, DIMO Demat, et une étude Arthur D. Little commanditée par Deskom | tous éditeurs de dématérialisation ou association d'éditeurs, aucune étude consultée à la source. La décomposition ne se recoupe pas : si 1,40 € vaut 10%, la base est 14 €, et 5,40 € en fait 39% et non « près d'un tiers ». Utilisable pour cadrer un entretien, jamais dans un document client |
 | 7 031 ETI, 164 000 PME, 312 grandes entreprises en France (données 2023) | INSEE, Focus n° 372 | chiffres repris d'une synthèse, publication non lue à la source. À revérifier avant tout usage externe |
+
+## Littérature de méthode, à relire à la source
+
+Ces références ne portent pas de chiffre. Elles portent un cadre de
+raisonnement, et c'est pour ça qu'elles ne prennent pas de note A, B ou C : la
+notation qualifie une mesure, pas une méthode. Elles ont été restituées par une
+synthèse NotebookLM le 31 août 2026 et **aucune n'a été lue à la source**. Un
+cadre peut servir à structurer un discours interne dans cet état. Il ne part
+pas dans un document client avant relecture du texte original.
+
+| Référence | Ce qu'on en tire | Où c'est utilisé | État |
+|---|---|---|---|
+| Agrawal, Gans, Goldfarb, *Prediction Machines*, Harvard Business School Press, 2018, et le AI Canvas | la baisse du coût de la prédiction augmente la valeur du jugement, qui devient le facteur limitant | 02, section prédiction et jugement | à relire, cadre central, priorité haute |
+| Chip Huyen, *Designing Machine Learning Systems*, O'Reilly, 2022 | le déploiement fantôme comme méthode de mise en production sans impact opérationnel, et l'échec par optimisation de métriques ML déconnectées du métier | 02, mode observation et unité de valeur | à relire |
+| Enholm, Papagiannidis, Mikalef, Krogstie, *Artificial Intelligence and Business Value: a Literature Review*, Information Systems Frontiers, 2021 | aucune étude n'établit l'impact financier long terme de l'IA, faute de point de départ mesuré | 02, ce qui rend le gain démontrable | à relire, revue par les pairs, devrait passer en A une fois lue |
+| Raisch et Krakowski, 2021, cas Symrise, cité par Enholm et al. | deux ans de validation humaine de chaque suggestion avant bascule en automatisation | 02, mode observation | à relire, et vérifier le cas à la source et non via la revue |
+| Lee et Shin, *Machine Learning for Enterprises*, Business Horizons, 2020 | la pénurie de compétences comme frein d'adoption propre aux entreprises de taille intermédiaire | 11, modèle éditeur plus déploiement | à relire |
+| Anderson et Coveyduc, *Artificial Intelligence for Business*, Wiley, 2020 | permissions et sécurité écartées du prototype, redevenant le point de friction au passage en production | 02, la thèse | à relire |
+| Andrew Ng, recommandations publiques sur les projets pilotes | commencer par des tâches discrètes plutôt que par des rôles entiers | 10 et 30, ciblage outbound | à relire, et identifier la publication exacte plutôt que la citation de seconde main |
+
+Une remarque qui compte plus que la liste. Ces sept références **valident** le
+raisonnement écrit dans 02, 10 et 11, elles ne l'ont pas produit. Le
+positionnement a été écrit avant de les rencontrer. C'est une bonne nouvelle
+pour la solidité du raisonnement, et une raison de plus de ne pas les citer
+comme si elles étaient à l'origine de nos choix.
 
 ## Sources cherchées et non trouvées
 
