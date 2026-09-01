@@ -28,6 +28,9 @@ Index, pas d'un A propre.
 
 | Source | Ce qui a été consulté | Méthode | Biais à connaître |
 |---|---|---|---|
+| Anthropic, études de cas clients DXC, eSentire, Rocket Money | pages lues intégralement le 1er septembre 2026 | déploiements nommés, chiffres fournis par le client ou l'éditeur, aucune méthode de mesure publiée, aucun audit tiers | [`portfolio-cas-publies.md`](portfolio-cas-publies.md) et portfolio du site |
+| Mistral, page clients | page lue le 1er septembre 2026 | 42 entreprises nommées, aucun résultat chiffré. Annonces de partenariat, pas des études de cas | portfolio, à titre de contre-exemple |
+| Palantir, documentation Foundry et AIP | pages de documentation produit | description de fonction, aucun client nommé, aucun chiffre | veille concurrentielle |
 | Anthropic et Material, *The 2026 State of AI Agents Report* | PDF de 2,3 Mo téléchargé, texte extrait, parties I à III lues | plus de 500 responsables techniques américains, fin 2025 | le commanditaire vend les modèles qui font tourner les agents mesurés. Le verbe des questions ROI est *believe* |
 | IBM, *Cost of a Data Breach Report 2026* | communiqué du 29 juillet 2026 et pages d'analyse | 600 organisations étudiées | IBM vend de la sécurité et de la gouvernance de données |
 | Gartner, communiqués de presse 2025 et 2026 | titres et extraits des communiqués publics. Le site refuse la lecture automatisée, contenu non vérifié dans le corps du texte | sondage 3 400+ organisations pour la prédiction d'annulation | modèle économique fondé sur la prédiction |
@@ -61,6 +64,7 @@ mémoire, et pour être vérifiés ou abandonnés.
 | Retour sur investissement en 3 à 6 mois sur les cas à fort volume | éditeurs et blogs sectoriels | aucune méthode publiée |
 | 131 agences d'implémentation IA recensées, segment services à +46% par an | annuaire privé et cabinets d'études | ne mesure pas une population, à ne pas citer comme taille de marché |
 | 14 à 20 € de coût de traitement d'une facture fournisseur papier, dont 1,40 € de saisie et 5,40 € de validation, 6,60 € une fois dématérialisée | APECA, Quadient, DIMO Demat, et une étude Arthur D. Little commanditée par Deskom | tous éditeurs de dématérialisation ou association d'éditeurs, aucune étude consultée à la source. La décomposition ne se recoupe pas : si 1,40 € vaut 10%, la base est 14 €, et 5,40 € en fait 39% et non « près d'un tiers ». Utilisable pour cadrer un entretien, jamais dans un document client |
+| 171% de retour moyen sur les agents, Klarna 60 M$ et 853 employés, JPMorgan 360 000 heures d'avocat, General Mills 20 M$ | blogs agrégateurs de cas d'usage, 2026 | aucune méthode consultable, aucune source primaire retrouvée. Bannis du site et de tout document client |
 | 7 031 ETI, 164 000 PME, 312 grandes entreprises en France (données 2023) | INSEE, Focus n° 372 | chiffres repris d'une synthèse, publication non lue à la source. À revérifier avant tout usage externe |
 
 ## Littérature de méthode, à relire à la source
@@ -101,6 +105,12 @@ Ce que la recherche n'a pas pu établir, malgré des requêtes ciblées.
   d'une brèche de sécurité.
 - Aucune enquête posant la question de la sécurité avant la première mise en
   production plutôt qu'au moment du passage à l'échelle.
+
+- Aucune étude de cas publiée par un éditeur de modèle ne porte sur une
+  entreprise de 100 à 1 500 salariés. Les déploiements documentés viennent
+  d'organisations qui ont une équipe de plateforme interne.
+- openai.com renvoie un 403 sur toutes les pages `/index/`, ce qui empêche de
+  lire les cas OpenAI à la source. À reprendre manuellement.
 
 ## Méthode de collecte
 

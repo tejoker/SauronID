@@ -14,7 +14,7 @@ précédente ait produit une preuve écrite.
 
 | # | Étape | Fichier | État |
 |---|---|---|---|
-| 0 | Recherche documentaire : qu'est-ce qui est mesuré, par qui, avec quelle méthode | [`problem-landscape.md`](problem-landscape.md), [`copilot-vs-agent.md`](copilot-vs-agent.md), [`use-cases.md`](use-cases.md), [`sources.md`](sources.md) | fait, 24 août 2026 |
+| 0 | Recherche documentaire : qu'est-ce qui est mesuré, par qui, avec quelle méthode | [`problem-landscape.md`](problem-landscape.md), [`copilot-vs-agent.md`](copilot-vs-agent.md), [`use-cases.md`](use-cases.md), [`portfolio-cas-publies.md`](portfolio-cas-publies.md), [`sources.md`](sources.md) | fait, 24 août 2026, portfolio ajouté le 1er septembre |
 | 1 | Formulation du problème : le job à faire, qui le ressent, ce qu'il coûte | à écrire, horizontal, sans référence à un processus | à faire |
 | 2 | Découverte client : entretiens, pas de pitch, transcripts conservés | [`porte-1-factures-exception.md`](porte-1-factures-exception.md) | instrument prêt pour la porte 1, aucun entretien mené |
 | 3 | Beachhead market, persona, use case complet | à écrire | à faire |
