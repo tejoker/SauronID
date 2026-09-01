@@ -1,8 +1,8 @@
-# Portfolio : les cas publiés par les laboratoires
+# Portfolio : les cas publiés par les laboratoires et les cabinets
 
-**Relevé le 1er septembre 2026.** Ce que les éditeurs de modèles publient
-eux-mêmes comme déploiements d'agents, avec chiffres, pour servir de référence
-externe à notre portfolio.
+**Relevé le 1er septembre 2026.** Ce que les éditeurs de modèles et les grands
+cabinets publient eux-mêmes comme déploiements d'agents, avec chiffres, pour
+servir de référence externe à notre portfolio.
 
 ## Pourquoi ce fichier existe
 
@@ -35,26 +35,61 @@ TotalEnergies, France Travail et Ardian : la meilleure liste de logos
 européens du marché, et **zéro résultat chiffré**. Ce sont des annonces de
 partenariat, pas des études de cas.
 
-**Presque aucun cas n'est dans notre bande de taille.** DXC compte 14 000
-personnes sur son activité assurance. eSentire est un opérateur de sécurité
-managée. Les résultats publiés viennent d'organisations qui ont une équipe de
-plateforme, pas d'entreprises de 100 à 1 500 salariés. Une carte de portfolio
-qui laisse croire l'inverse se retourne au premier appel.
+**Aucun cas ne concerne une entreprise de 100 à 1 500 salariés.** DXC compte
+14 000 personnes sur sa seule activité assurance, eSentire est un opérateur de
+sécurité managée, le client Deloitte est un groupe mondial de biens de
+consommation. Décision prise : **on les prend quand même.** Un cas net chez un
+grand groupe vaut mieux qu'un exemple théorique chez une entreprise de la bonne
+taille. Le prospect veut savoir si le processus tient en production, pas si son
+voisin de taille l'a fait. La seule règle est de ne jamais laisser croire que le
+chiffre est le sien : on affiche l'échelle du déploiement à côté du résultat.
 
 **Les chiffres qui circulent le plus sont les moins solides.** 171% de retour
 moyen, Klarna à 60 M$, JPMorgan à 360 000 heures d'avocat : tout ça vient de
 blogs agrégateurs sans méthode consultable. Note C, à ne jamais afficher.
 
-**openai.com refuse la lecture automatisée** (403 sur toutes les pages
-`/index/`). Les cas OpenAI listés par la recherche, dont Hebbia sur
-l'automatisation du travail financier et juridique, n'ont pas pu être lus à la
-source et ne sont donc pas retenus ici. À reprendre à la main.
+**Quatre éditeurs refusent la lecture automatisée.** openai.com renvoie 403 sur
+toutes les pages `/index/`, bcg.com un 403, mckinsey.com un timeout, y compris
+sur ses PDF publics. Les cas d'OpenAI (Hebbia sur le travail financier et
+juridique), de BCG (quatre entreprises et la transformation de coûts) et de
+McKinsey (mémos de crédit bancaire) sont connus par extraits de recherche
+seulement, donc **note C**, donc pas affichables. À reprendre à la main.
+
+Le chiffre McKinsey le plus cité, 20 à 60% de productivité d'analyste crédit et
+30% de délai de décision en moins, entre dans cette catégorie tant qu'il n'a pas
+été lu dans l'article. Il n'est pas dans les cartes retenues.
 
 ## Les cas retenus
 
 Quatre critères de sélection, tous éliminatoires : l'entreprise est nommée,
 l'éditeur publie lui-même, un acte réel est posé (pas seulement une suggestion),
 et un chiffre est donné. Ce qui reste tient en peu de lignes.
+
+### Un groupe mondial de biens de consommation, factures fournisseurs
+
+Publié par Deloitte. C'est le cas le plus directement utile, parce que c'est
+exactement la porte 1 (voir
+[`porte-1-factures-exception.md`](porte-1-factures-exception.md)).
+
+L'agent lit la facture, y compris manuscrite ou non standard, identifie le
+fournisseur, l'entité, la devise, la date et l'imputation comptable, produit un
+indice de confiance, relance les factures ouvertes, et traite les lignes de taxe
+étrangères.
+
+| Mesure publiée | Valeur |
+|---|---|
+| Taux de traitement sans intervention | 92%, cible proche de 99% |
+| Temps de traitement | de 30 minutes environ par facture à quelques minutes ou secondes, soit 50 à 75% de moins |
+| Effectifs affectés au traitement | divisé par deux |
+| Ce qui reste humain | vérifier les recommandations, décider d'une revue supplémentaire selon l'indice de confiance, analyser les causes racines, traiter les cas aberrants |
+
+Deux choses à en tirer, et la deuxième compte plus que la première.
+
+La première : 92% sans intervention, c'est le chiffre qui fait taire l'objection
+« ça ne marchera jamais sur nos factures ». La seconde : ce qui reste à l'humain
+est nommé, et c'est **l'exception et la cause racine**. Le déploiement le plus
+abouti publié sur ce processus confirme la thèse de la porte 1. Le volume part,
+le jugement reste, et c'est l'indice de confiance qui trace la frontière.
 
 ### DXC, assurance, traitement des sinistres
 
@@ -114,6 +149,9 @@ quelqu'un d'autre.
 | League, santé | cycles produit divisés par deux | processus interne d'éditeur, non transposable |
 | Palantir AIP, contrôle de factures | vérifie une facture contre un contrat, signale l'écart, approuve dans la limite de la politique | tiré de la documentation produit, aucun client nommé, aucun chiffre |
 | Détaillant Palantir, ruptures de stock | -50% | publié par un intégrateur tiers, pas par Palantir. Note C |
+| PwC GL.ai, revue du grand livre | milliards d'écritures analysées, anomalies signalées | détection, pas action. L'outil signale, un auditeur décide. Utile comme preuve que la finance accepte l'IA sur ses écritures, pas comme cas d'agent |
+| EY, 150 agents pour 80 000 fiscalistes | aucun résultat de processus publié | une taille de flotte n'est pas un résultat |
+| Mémos de crédit bancaire, McKinsey | 20 à 60% de productivité, 30% de délai en moins | article non lisible automatiquement, chiffre connu par extrait de recherche. Note C tant qu'il n'est pas lu. Et un mémo est un document, pas un acte |
 
 Palantir mérite une note à part : la description de leur fonction de contrôle de
 facture est **presque mot pour mot notre argumentaire**. Approuver dans la limite
@@ -124,25 +162,33 @@ référence à citer.
 
 ## Ce que ce relevé change pour le site
 
-1. **Le portfolio s'ouvre sur trois cartes, pas quinze.** DXC, eSentire, Rocket
-   Money. Trois cas nommés, chiffrés, publiés par l'éditeur du modèle, chacun
-   avec son lien.
-2. **Chaque carte porte deux blocs séparés visuellement.** Ce qui a été mesuré
-   là-bas, et ce qu'il faudrait pour que ça tienne ici. Le second bloc est notre
-   argumentaire, et il ne se déguise pas en résultat.
-3. **La ligne de DXC ouvre le portfolio.** De 70% à 20% de dossiers exigeant un
-   jugement humain. C'est la meilleure phrase de vente disponible, elle est
-   publiée par quelqu'un d'autre, et elle dit notre thèse.
-4. **Nos 14 cas modélisés restent**, en dessous, sous un autre titre et un autre
+1. **Le portfolio s'ouvre sur quatre cartes, pas quinze.** Le client Deloitte
+   sur les factures, DXC sur les sinistres, eSentire sur les alertes, Rocket
+   Money sur les actions de compte. Quatre cas chiffrés, publiés par l'éditeur
+   ou le cabinet, chacun avec son lien.
+2. **La carte Deloitte ouvre.** 92% de factures traitées sans intervention, sur
+   la porte 1, publié par un cabinet que le directeur financier connaît. C'est
+   la carte qui fait le travail commercial.
+3. **La ligne de DXC porte la thèse.** De 70% à 20% de dossiers exigeant un
+   jugement humain. Elle dit ce que nous vendons, mesurée par quelqu'un d'autre.
+4. **Chaque carte porte trois blocs séparés visuellement.** L'échelle du
+   déploiement, ce qui a été mesuré là-bas, et ce qu'il faudrait pour que ça
+   tienne chez le lecteur. Le troisième bloc est notre argumentaire et il ne se
+   déguise jamais en résultat.
+5. **Nos 14 cas modélisés restent**, en dessous, sous un autre titre et un autre
    niveau de preuve. Ce sont des chiffrages, pas des références.
-5. **Aucun chiffre agrégateur.** 171% de retour, Klarna, JPMorgan : bannis.
+6. **Aucun chiffre agrégateur, aucun chiffre non lu à la source.** 171% de
+   retour, Klarna, JPMorgan, et pour l'instant McKinsey et BCG : bannis.
 
 ## À faire avant que ce fichier serve
 
-- Lire les cas OpenAI à la main, openai.com bloquant la lecture automatisée.
-  Hebbia en priorité.
-- Chercher un cas publié dans la bande 100 à 1 500 salariés. Aucun trouvé à ce
-  jour, et c'est le trou le plus gênant du portfolio.
+- Lire à la main les quatre sources qui bloquent la lecture automatisée :
+  OpenAI (Hebbia), BCG (quatre entreprises et transformation de coûts),
+  McKinsey (mémos de crédit, opérations bancaires). Chacune peut ajouter une
+  carte.
+- Chercher un cas publié dans la bande 100 à 1 500 salariés. Aucun trouvé. Ce
+  n'est pas bloquant, c'est une amélioration : un cas à la bonne taille
+  vaudrait plus que les quatre autres réunis.
 - Vérifier que chaque lien cité est encore en ligne avant chaque campagne. Une
   étude de cas retirée pendant qu'elle est affichée sur notre site est un
   incident.
@@ -158,4 +204,6 @@ Toutes relevées le 1er septembre 2026.
 | Rocket Money | https://claude.com/customers/rocket-money | Anthropic |
 | Index des cas Claude | https://claude.com/customers | Anthropic |
 | Clients Mistral | https://mistral.ai/customers | Mistral |
+| Factures fournisseurs, groupe de biens de consommation | https://www.deloitte.com/us/en/what-we-do/case-studies/hands-off-the-task-eyes-on-the-outcome.html | Deloitte |
+| GL.ai, revue du grand livre | https://www.pwc.com/m1/en/events/socpa-2020/documents/gl-ai-brochure.pdf | PwC |
 | Contrôle de facture AIP | documentation produit palantir.com/docs/foundry | Palantir |
