@@ -85,6 +85,11 @@ Aujourd'hui deux fichiers, tous les deux sur le SDK :
   moment de l'appel d'outil
 - [sdk-llm-adapters.md](integration/sdk-llm-adapters.md) : LangChain, OpenAI
   Assistants, Anthropic Computer Use
+- [agent-action-envelope.md](integration/agent-action-envelope.md) : la
+  **spécification** de ce qu'une signature d'action dit, en octets — encodage
+  canonique, champs enregistrés, algorithme de vérification, vecteurs de test
+  publiés. Version 2 vérifiée dans le dépôt, champs v3 (mandat, plan, SBOM)
+  déclarés direction produit.
 - [ecosystem-candidates.md](integration/ecosystem-candidates.md) : ce qui existe
   autour de la passerelle et pourrait s'y brancher — red team, observabilité,
   eval, sandboxing, guardrails, gateway modèle, protocole A2A. Chiffres relevés

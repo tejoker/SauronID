@@ -202,6 +202,37 @@ pub fn ed25519_jwk_thumbprint(public_key_b64u: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// Pins the published spec vector `call-signature-v2-001` from
+    /// `docs/integration/agent-action-envelope.md`. An implementer in any
+    /// language reproduces these bytes or their verifier is wrong — and if this
+    /// assertion ever has to change, the wire format changed and the version
+    /// constant must change with it.
+    #[test]
+    fn published_test_vector_call_signature_v2_001() {
+        let payload = call_signature_payload(&CallSignatureInput {
+            agent_id: "agt_01HZX9TESTVECTOR0001",
+            tenant_id: "tnt_acme",
+            audience: "https://gateway.example.com",
+            method: "POST",
+            target_uri: "/agent/action?dry_run=false",
+            content_type: "application/json",
+            // sha256 of {"amount_usd":10.5,"to":"acct_42"}
+            body_sha256_hex: "bb4e34dd216a71da1b4f1b025512ed9a2d5a8faae659a12589bce37e67ace55e",
+            config_digest: "9f2c000000000000000000000000000000000000000000000000000000000000",
+            timestamp_ms: "1787000000000",
+            nonce: "n_2f8a1c04b7e94d6a",
+        });
+        assert_eq!(payload.len(), 473, "canonical length is part of the vector");
+        assert_eq!(
+            Sha256::digest(&payload)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            "d44097382062b34b490e7624afd6520a476709f7fb84f2917454b063151df366",
+            "canonical bytes drifted from the published vector"
+        );
+    }
+
     #[test]
     fn canonical_fields_are_unambiguous() {
         assert_ne!(

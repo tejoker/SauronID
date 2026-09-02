@@ -1,0 +1,63 @@
+{
+  "spec": "sauronid-agent-action-envelope",
+  "vector": "call-signature-v2-001",
+  "test_key": {
+    "alg": "Ed25519",
+    "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "public_key_b64u": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+  },
+  "body_utf8": "{\"amount_usd\":10.5,\"to\":\"acct_42\"}",
+  "fields": [
+    {
+      "name": "version",
+      "value": "2"
+    },
+    {
+      "name": "agent_id",
+      "value": "agt_01HZX9TESTVECTOR0001"
+    },
+    {
+      "name": "tenant_id",
+      "value": "tnt_acme"
+    },
+    {
+      "name": "audience",
+      "value": "https://gateway.example.com"
+    },
+    {
+      "name": "method",
+      "value": "POST"
+    },
+    {
+      "name": "target_uri",
+      "value": "/agent/action?dry_run=false"
+    },
+    {
+      "name": "content_type",
+      "value": "application/json"
+    },
+    {
+      "name": "body_sha256",
+      "value": "bb4e34dd216a71da1b4f1b025512ed9a2d5a8faae659a12589bce37e67ace55e"
+    },
+    {
+      "name": "config_digest",
+      "value": "9f2c000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "timestamp_ms",
+      "value": "1787000000000"
+    },
+    {
+      "name": "nonce",
+      "value": "n_2f8a1c04b7e94d6a"
+    }
+  ],
+  "domain": "sauron.call.v2",
+  "canonical_bytes_hex": "0000000e736175726f6e2e63616c6c2e76320000000776657273696f6e0000000132000000086167656e745f6964000000186167745f3031485a583954455354564543544f52303030310000000974656e616e745f696400000008746e745f61636d650000000861756469656e63650000001b68747470733a2f2f676174657761792e6578616d706c652e636f6d000000066d6574686f6400000004504f53540000000a7461726765745f7572690000001b2f6167656e742f616374696f6e3f6472795f72756e3d66616c73650000000c636f6e74656e745f74797065000000106170706c69636174696f6e2f6a736f6e0000000b626f64795f73686132353600000040626234653334646432313661373164613162346631623032353531326564396132643561386661616536353961313235383962636533376536376163653535650000000d636f6e6669675f64696765737400000040396632633030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030300000000c74696d657374616d705f6d730000000d31373837303030303030303030000000056e6f6e6365000000126e5f32663861316330346237653934643661",
+  "canonical_bytes_len": 473,
+  "canonical_sha256": "d44097382062b34b490e7624afd6520a476709f7fb84f2917454b063151df366",
+  "signature_b64u": "AmS164osrYaN83efRmgd8xPMxZvJQoDn9puS8lkU7SJiYMw4gLey1lBoiBq1z4jaziiTGieqV2CfyK6Z4EGGAA",
+  "notice": "Cross-verified: these bytes are produced independently by core/src/crypto_protocol.rs (pinned by the test published_test_vector_call_signature_v2_001) and by a reference encoder written from the spec text alone. An implementer reproducing canonical_bytes_hex has a correct encoder.",
+  "spec_document": "docs/integration/agent-action-envelope.md"
+}
