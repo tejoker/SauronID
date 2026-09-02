@@ -1,7 +1,9 @@
 # SauronID Agent Action Envelope
 
-**Version 2** (call signature, owner mandate) — *vérifié dans le dépôt*.
-**Version 3 fields** (mandate binding, run scope, dependency set) — *direction produit*, specified here, not implemented.
+**Version 2 et version 3** (signature d'appel, mandat du propriétaire, liaison
+du mandat, portée d'exécution, expiration fixée par le signataire) — *vérifié
+dans le dépôt*. Les deux versions sont acceptées ; v2 n'est pas dépréciée.
+**`sbom_digest`** — *direction produit*, spécifié ici, non implémenté.
 
 Ce document est une **spécification**, pas une page produit. Il définit ce qu'une
 signature d'action d'agent *dit*, en octets, de manière qu'un tiers puisse écrire
@@ -80,7 +82,9 @@ Deux propriétés en découlent, et ce sont les seules qui comptent :
 | Domaine | Rôle | Version |
 |---|---|---|
 | `sauron.call.v2` | signature par appel | 2 |
+| `sauron.call.v3` | signature par appel, avec mandat, exécution et expiration | 3 |
 | `sauron.owner-mandate.v1` | mandat signé par le propriétaire humain | 1 |
+| `sauron.deployment-licence.v1` | licence de déploiement, plafond d'enregistrement | 1 |
 | `sauron.attestation-challenge.v1` | défi d'attestation | 1 |
 | `sauron.user-auth-challenge.v1` | défi d'authentification utilisateur | 1 |
 
@@ -183,25 +187,49 @@ mentir. Une signature sur « j'ai utilisé X » prouve que l'agent l'a *affirmé
 de manière non répudiable — ce n'est pas une preuve d'usage. Toute page produit
 qui présente ceci comme une preuve est fausse.
 
-## 5. Champs v3 — *direction produit*
+## 5. Signature par appel — champs v3
 
-Ce sont les champs qui rendent la spécification utile à quelqu'un d'autre que
-nous, et aucun n'est implémenté.
+Trois champs s'ajoutent à ceux de la v2, dans l'ordre canonique
+`… config_digest, mandate_digest, run_id, timestamp_ms, expires_at_ms, nonce`.
+Le domaine `sauron.call.v3` étant le premier champ signé, une signature v2 ne
+peut pas être relue comme une v3. **[vérifié]** —
+[`crypto_protocol::call_signature_v3_payload`](../../core/src/crypto_protocol.rs),
+vérification dans [`agent/call_sig.rs`](../../core/src/agent/call_sig.rs).
 
-| Champ | Contenu | Ce qu'il rend possible |
+| Champ | En-tête | Contenu | Ce qu'il ferme |
+|---|---|---|---|
+| `mandate_digest` | `x-sauron-call-mandate-digest` | SHA-256 de la charge `sauron.owner-mandate.v1` | **Chaque action cite l'autorité qui la permet.** En v2, le mandat et l'action étaient deux objets signés sans lien signé : le serveur tenait l'association dans une colonne et l'agent n'attestait de rien |
+| `run_id` | `x-sauron-call-run-id` | identifiant d'exécution | Une portée qui survit à un point de reprise, là où une signature par action ne survit pas |
+| `expires_at_ms` | `x-sauron-call-expires` | millisecondes Unix | **Le signataire borne la durée de vie de sa propre affirmation.** En v2, une fenêtre de dérive côté serveur décidait combien de temps la déclaration d'un agent restait vraie. RFC 9421 porte ce champ pour cette raison |
+
+Trois règles de vérification s'ajoutent, et chacune existe parce que sans elle
+le champ correspondant serait décoratif :
+
+1. Le `mandate_digest` cité **doit être celui sous lequel l'agent est
+   enregistré** (`agents.owner_mandate_hash`), comparé en temps constant. Sinon
+   un agent citerait n'importe quel mandat.
+2. Un agent sans mandat enregistré ne peut pas passer en v3 : la citation serait
+   vide de sens. Il reste en v2.
+3. L'expiration du signataire s'applique **en plus** de la fenêtre de dérive du
+   serveur, jamais à sa place : un signataire peut restreindre sa propre
+   affirmation, jamais l'élargir.
+
+Un appel v3 qui omet un de ces trois en-têtes est refusé plutôt que vérifié
+contre une charge v2 qu'il n'a pas signée.
+
+### Ce qui reste en direction produit
+
+| Champ | Contenu | Ce qu'il rendrait possible |
 |---|---|---|
-| `mandate_digest` | SHA-256 de la charge `sauron.owner-mandate.v1` | Chaque action **cite l'autorité qui l'a permise**. Aujourd'hui la signature d'appel ne référence pas le mandat : les deux existent sans lien signé |
-| `run_id` | identifiant d'exécution | Le champ existe déjà comme revendication `workflow_id` de l'A-JWT ; le promouvoir en champ signé donne une portée qui **survit à un point de reprise** |
-| `plan_digest` | SHA-256 du plan déclaré et canonicalisé | Le plan est fixé *avant* que l'agent ne lise un contenu hostile. Une instruction injectée produit une action hors plan, donc refusée |
-| `sbom_digest` | SHA-256 d'un document CycloneDX | Réponse exacte à « lesquelles de mes actions signées ont tourné avec cette bibliothèque » après divulgation d'une CVE |
-| `expires` | millisecondes Unix | Le signataire borne sa propre affirmation, comme l'exige RFC 9421 |
+| `sbom_digest` | SHA-256 d'un document CycloneDX | Répondre exactement à « lesquelles de mes actions signées ont tourné avec cette bibliothèque » après divulgation d'une CVE |
+| `plan_digest` | SHA-256 du plan déclaré et canonicalisé | Le plan est fixé *avant* que l'agent ne lise un contenu hostile ; une instruction injectée produit une action hors plan, donc refusée |
 
 Le plan **ne doit pas être du texte libre**. Un plan en langue naturelle impose
 un juge LLM, donc une décision d'application non déterministe, non
 reproductible, et contournable par un plan vague. Le plan est un ensemble de
 n-uplets `(outil, hôte cible, méthode, plafond de montant, plafond de nombre)` :
 l'appartenance se décide par appartenance ensembliste et arithmétique de
-compteurs.
+compteurs. `run_id` existe désormais pour l'y accrocher. **[direction]**
 
 ## 6. Registre de champs et règle d'extension
 
@@ -231,6 +259,10 @@ SHA-256 canonique  d44097382062b34b490e7624afd6520a476709f7fb84f2917454b063151df
 signature          AmS164osrYaN83efRmgd8xPMxZvJQoDn9puS8lkU7SJiYMw4gLey1lBoiBq1z4jaziiTGieqV2CfyK6Z4EGGAA
 clé publique       A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg
 ```
+
+Le même fichier publie `call-signature-v3-001` : 624 octets canoniques,
+SHA-256 `13b2bf2d97b89160d02329a840612e66320afe01cf6cde6e6b0ab7da5393321b`,
+épinglé par le test `v3_published_test_vector`.
 
 Ces octets sont produits **indépendamment** par deux implémentations : la
 référence Rust, où le test `published_test_vector_call_signature_v2_001` les

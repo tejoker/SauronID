@@ -12,6 +12,12 @@ use sha2::{Digest, Sha256};
 
 pub const CALL_SIGNATURE_VERSION: &str = "2";
 pub const CALL_SIGNATURE_DOMAIN: &str = "sauron.call.v2";
+/// Protocol 3 adds the three fields v2 could not express: the mandate the
+/// action cites as its authority, the run it belongs to, and an expiry the
+/// SIGNER sets rather than one the server infers from a skew window. Both
+/// versions are accepted; v2 is not deprecated by this constant existing.
+pub const CALL_SIGNATURE_V3_VERSION: &str = "3";
+pub const CALL_SIGNATURE_V3_DOMAIN: &str = "sauron.call.v3";
 pub const PARTNER_REGISTRATION_DOMAIN: &str = "sauron.partner-registration.v2";
 pub const ATTESTATION_CHALLENGE_DOMAIN: &str = "sauron.attestation-challenge.v1";
 pub const DEPLOYMENT_LICENCE_DOMAIN: &str = "sauron.deployment-licence.v1";
@@ -76,6 +82,59 @@ pub fn call_signature_payload(input: &CallSignatureInput<'_>) -> Vec<u8> {
             ("body_sha256", input.body_sha256_hex),
             ("config_digest", input.config_digest),
             ("timestamp_ms", input.timestamp_ms),
+            ("nonce", input.nonce),
+        ],
+    )
+}
+
+/// Protocol 3 signing input. Field order is the protocol and is not sortable.
+///
+/// Three fields are new against v2, and each closes a stated gap:
+///
+///   * `mandate_digest` — the action cites the grant that permits it. v2 left
+///     the mandate and the action as two signed objects with no signed link
+///     between them; the server held the association in a database column and
+///     the agent never attested to it.
+///   * `run_id` — a scope that survives a checkpoint-and-resume, where a
+///     per-action signature does not.
+///   * `expires_at_ms` — the signer bounds the lifetime of its own claim. v2
+///     relied on a server-side skew window, which means the server decided how
+///     long an agent's statement stayed true. RFC 9421 has this field for a
+///     reason.
+#[derive(Debug)]
+pub struct CallSignatureV3Input<'a> {
+    pub agent_id: &'a str,
+    pub tenant_id: &'a str,
+    pub audience: &'a str,
+    pub method: &'a str,
+    pub target_uri: &'a str,
+    pub content_type: &'a str,
+    pub body_sha256_hex: &'a str,
+    pub config_digest: &'a str,
+    pub mandate_digest: &'a str,
+    pub run_id: &'a str,
+    pub timestamp_ms: &'a str,
+    pub expires_at_ms: &'a str,
+    pub nonce: &'a str,
+}
+
+pub fn call_signature_v3_payload(input: &CallSignatureV3Input<'_>) -> Vec<u8> {
+    canonical_fields(
+        CALL_SIGNATURE_V3_DOMAIN,
+        &[
+            ("version", CALL_SIGNATURE_V3_VERSION),
+            ("agent_id", input.agent_id),
+            ("tenant_id", input.tenant_id),
+            ("audience", input.audience),
+            ("method", input.method),
+            ("target_uri", input.target_uri),
+            ("content_type", input.content_type),
+            ("body_sha256", input.body_sha256_hex),
+            ("config_digest", input.config_digest),
+            ("mandate_digest", input.mandate_digest),
+            ("run_id", input.run_id),
+            ("timestamp_ms", input.timestamp_ms),
+            ("expires_at_ms", input.expires_at_ms),
             ("nonce", input.nonce),
         ],
     )
@@ -263,6 +322,103 @@ mod tests {
             "d44097382062b34b490e7624afd6520a476709f7fb84f2917454b063151df366",
             "canonical bytes drifted from the published vector"
         );
+    }
+
+    /// Pins the published spec vector `call-signature-v3-001`. Same contract as
+    /// the v2 vector: reproduce these bytes in any language or the verifier is
+    /// wrong, and if this has to change then the wire format changed.
+    #[test]
+    fn v3_published_test_vector() {
+        let payload = call_signature_v3_payload(&CallSignatureV3Input {
+            agent_id: "agt_01HZX9TESTVECTOR0001",
+            tenant_id: "tnt_acme",
+            audience: "https://gateway.example.com",
+            method: "POST",
+            target_uri: "/agent/action?dry_run=false",
+            content_type: "application/json",
+            body_sha256_hex: "bb4e34dd216a71da1b4f1b025512ed9a2d5a8faae659a12589bce37e67ace55e",
+            config_digest: "9f2c000000000000000000000000000000000000000000000000000000000000",
+            mandate_digest: "4d1b000000000000000000000000000000000000000000000000000000000000",
+            run_id: "run_01HZX9RUN0001",
+            timestamp_ms: "1787000000000",
+            expires_at_ms: "1787000060000",
+            nonce: "n_2f8a1c04b7e94d6a",
+        });
+        assert_eq!(payload.len(), 624);
+        assert_eq!(
+            Sha256::digest(&payload)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            "13b2bf2d97b89160d02329a840612e66320afe01cf6cde6e6b0ab7da5393321b"
+        );
+    }
+
+    /// A v2 signature must not verify as v3 and vice versa. The domain is the
+    /// first signed field precisely so a version cannot be reinterpreted.
+    #[test]
+    fn v2_and_v3_payloads_are_domain_separated() {
+        let v2 = call_signature_payload(&CallSignatureInput {
+            agent_id: "a",
+            tenant_id: "t",
+            audience: "aud",
+            method: "POST",
+            target_uri: "/x",
+            content_type: "application/json",
+            body_sha256_hex: "ff",
+            config_digest: "cd",
+            timestamp_ms: "1",
+            nonce: "n",
+        });
+        let v3 = call_signature_v3_payload(&CallSignatureV3Input {
+            agent_id: "a",
+            tenant_id: "t",
+            audience: "aud",
+            method: "POST",
+            target_uri: "/x",
+            content_type: "application/json",
+            body_sha256_hex: "ff",
+            config_digest: "cd",
+            mandate_digest: "",
+            run_id: "",
+            timestamp_ms: "1",
+            expires_at_ms: "",
+            nonce: "n",
+        });
+        assert_ne!(v2, v3, "a v2 payload must never equal a v3 payload");
+    }
+
+    /// Each of the three fields v3 adds must change the signed bytes, or it is
+    /// decoration that an attacker can vary freely.
+    #[test]
+    fn every_new_v3_field_changes_the_payload() {
+        let base = CallSignatureV3Input {
+            agent_id: "a",
+            tenant_id: "t",
+            audience: "aud",
+            method: "POST",
+            target_uri: "/x",
+            content_type: "application/json",
+            body_sha256_hex: "ff",
+            config_digest: "cd",
+            mandate_digest: "m1",
+            run_id: "r1",
+            timestamp_ms: "1",
+            expires_at_ms: "9",
+            nonce: "n",
+        };
+        let baseline = call_signature_v3_payload(&base);
+        for (label, mutated) in [
+            ("mandate_digest", CallSignatureV3Input { mandate_digest: "m2", ..base }),
+            ("run_id", CallSignatureV3Input { run_id: "r2", ..base }),
+            ("expires_at_ms", CallSignatureV3Input { expires_at_ms: "10", ..base }),
+        ] {
+            assert_ne!(
+                baseline,
+                call_signature_v3_payload(&mutated),
+                "{label} must be inside the signature"
+            );
+        }
     }
 
     #[test]

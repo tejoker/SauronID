@@ -143,7 +143,8 @@ async fn try_verify_call_sig(
             "x-sauron-protocol-version: 2 required",
             "set x-sauron-protocol-version: 2 and use the call-sig v2 canonical payload",
         ))?;
-    if protocol_version != crypto_protocol::CALL_SIGNATURE_VERSION {
+    let is_v3 = protocol_version == crypto_protocol::CALL_SIGNATURE_V3_VERSION;
+    if !is_v3 && protocol_version != crypto_protocol::CALL_SIGNATURE_VERSION {
         return Err(AppError::with_hint(
             StatusCode::UPGRADE_REQUIRED,
             "call_sig_protocol_version",
@@ -207,14 +208,14 @@ async fn try_verify_call_sig(
     // (revocation was already checked; expiration was not — an expired lease is
     // no longer a valid delegation).
     let now = now_secs();
-    let (pop_pk_b64u, registered_checksum): (String, String) = {
+    let (pop_pk_b64u, registered_checksum, registered_mandate): (String, String, String) = {
         let st = state.read_or_recover();
         let mut db = st.db.lock().unwrap();
         db.any_conn().require(
-            "SELECT IFNULL(pop_public_key_b64u, ''), agent_checksum
+            "SELECT IFNULL(pop_public_key_b64u, ''), agent_checksum, IFNULL(owner_mandate_hash, '')
              FROM agents WHERE agent_id = ?1 AND revoked = 0 AND tenant_id = ?2 AND expires_at > ?3",
             sql_params![&agent_id, &tenant_id, now],
-            |r| Ok((r.get_string(0)?, r.get_string(1)?)),
+            |r| Ok((r.get_string(0)?, r.get_string(1)?, r.get_string(2)?)),
             || AppError::with_hint(
                 StatusCode::UNAUTHORIZED,
                 "call_sig_unknown_agent",
@@ -281,7 +282,103 @@ async fn try_verify_call_sig(
         .trim()
         .to_ascii_lowercase();
     let method = parts.method.as_str().to_ascii_uppercase();
-    let signing_payload = crypto_protocol::call_signature_payload(&CallSignatureInput {
+    // Protocol 3 carries three extra signed fields. They are read here, before
+    // the payload is built, so a v3 call that omits one is refused rather than
+    // silently verified against a v2 payload it did not sign.
+    let (mandate_digest, run_id, expires_at_ms) = if is_v3 {
+        let header = |name: &'static str, fix: &'static str| -> Result<String, AppError> {
+            parts
+                .headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    AppError::with_hint(
+                        StatusCode::UNAUTHORIZED,
+                        "call_sig_v3_missing_header",
+                        format!("{name} header required for protocol version 3"),
+                        fix,
+                    )
+                })
+        };
+        let mandate = header(
+            "x-sauron-call-mandate-digest",
+            "send the owner mandate hash the agent was registered with; protocol 2 does not require it",
+        )?;
+        let run = header(
+            "x-sauron-call-run-id",
+            "send a run identifier; one run groups the actions a declared plan covers",
+        )?;
+        let expires = header(
+            "x-sauron-call-expires",
+            "send the unix-millisecond instant after which this signature must not be accepted",
+        )?;
+
+        // The mandate must be the one this agent actually holds. Without this
+        // the field would be decoration: an agent could cite any grant.
+        if registered_mandate.is_empty() {
+            return Err(AppError::with_hint(
+                StatusCode::UNAUTHORIZED,
+                "call_sig_no_mandate",
+                "agent has no owner mandate recorded, so it cannot cite one",
+                "re-register the agent with an owner-signed mandate, or use protocol version 2",
+            ));
+        }
+        if mandate.as_bytes().ct_eq(registered_mandate.as_bytes()).unwrap_u8() != 1 {
+            return Err(AppError::with_hint(
+                StatusCode::UNAUTHORIZED,
+                "call_sig_mandate_mismatch",
+                "cited mandate digest is not the mandate this agent was registered under",
+                "send the owner_mandate_hash returned at registration",
+            ));
+        }
+
+        // The signer's own bound. Enforced in addition to the skew window, never
+        // instead of it: a signer may narrow its claim, never widen it.
+        let expires_ms: i64 = expires.parse().map_err(|_| {
+            AppError::with_hint(
+                StatusCode::UNAUTHORIZED,
+                "call_sig_bad_expires",
+                "x-sauron-call-expires must be unix milliseconds, ascii decimal",
+                "send an integer number of milliseconds since the epoch",
+            )
+        })?;
+        if now_ms > expires_ms {
+            return Err(AppError::with_hint(
+                StatusCode::UNAUTHORIZED,
+                "call_sig_expired",
+                "the signature is past the expiry its own signer set",
+                "sign a fresh call; do not reuse a signature past x-sauron-call-expires",
+            ));
+        }
+        (mandate, run, expires)
+    } else {
+        (String::new(), String::new(), String::new())
+    };
+
+    let v3_payload;
+    let signing_payload = if is_v3 {
+        v3_payload = crypto_protocol::call_signature_v3_payload(
+            &crypto_protocol::CallSignatureV3Input {
+                agent_id: &agent_id,
+                tenant_id: &tenant_id,
+                audience: &expected_audience,
+                method: &method,
+                target_uri,
+                content_type: &content_type,
+                body_sha256_hex: &body_hash_hex,
+                config_digest: claimed_digest,
+                mandate_digest: &mandate_digest,
+                run_id: &run_id,
+                timestamp_ms: call_ts_str,
+                expires_at_ms: &expires_at_ms,
+                nonce: &nonce,
+            },
+        );
+        v3_payload
+    } else {
+        crypto_protocol::call_signature_payload(&CallSignatureInput {
         agent_id: &agent_id,
         tenant_id: &tenant_id,
         audience: &expected_audience,
@@ -292,7 +389,8 @@ async fn try_verify_call_sig(
         config_digest: claimed_digest,
         timestamp_ms: call_ts_str,
         nonce: &nonce,
-    });
+    })
+    };
 
     let pk_bytes = URL_SAFE_NO_PAD.decode(pop_pk_b64u.trim()).map_err(|_| {
         AppError::with_hint(
