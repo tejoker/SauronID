@@ -9,22 +9,29 @@ un vérificateur sans lire notre code.
 
 ## Licence de cette spécification
 
-Une spécification sous BUSL-1.1 est morte à la naissance : personne n'implémente
-un format qu'il ne peut pas livrer. L'intention est donc :
+**Décidé** — [`LICENSE`](../../LICENSE) place explicitement ce document et
+[`schemas/agent-action-envelope-vectors.json`](../../schemas/agent-action-envelope-vectors.json)
+sous **Apache-2.0**.
 
-| Artefact | Licence visée |
+| Artefact | Licence |
 |---|---|
-| Ce document, `schemas/agent-action-envelope-vectors.json` | CC-BY-4.0 ou Apache-2.0 avec octroi de brevet explicite |
-| Un vérificateur de référence (à extraire) | Apache-2.0 |
+| Ce document, les vecteurs de test, tout vérificateur de référence qui en est extrait | Apache-2.0 |
 | La passerelle qui applique la spécification | BUSL-1.1, inchangé |
 
-**Décision en attente.** [`LICENSE`](../../LICENSE) place aujourd'hui `docs/` en
-« supporting material », traité comme Apache-2.0 ou BUSL-1.1 selon ce qu'il
-accompagne — ce qui est ambigu pour un texte que l'on veut voir implémenté par
-des tiers. L'amendement doit être un commit séparé et signé par le propriétaire.
-`visa/trusted-agent-protocol` est le contre-exemple utile : la spécification est
-lisible, le code de référence est sous conditions Visa Developer Center, et notre
-propre audit de licences l'a classé inutilisable.
+Apache-2.0 plutôt que CC-BY-4.0 parce que sa section 3 porte un octroi de
+brevet explicite, ce que CC-BY ne fait pas : un implémenteur qui évalue un
+format a besoin que la question des brevets soit répondue, pas laissée ouverte.
+N'importe qui peut implémenter, vérifier, livrer et vendre un logiciel qui parle
+ce format, y compris en concurrence avec nous.
+
+Une spécification sous BUSL-1.1 aurait été morte à la naissance :
+`visa/trusted-agent-protocol` est le contre-exemple utile — spécification
+lisible, code de référence sous conditions Visa Developer Center, classé
+inutilisable par notre propre audit de licences.
+
+Ce que la licence de la spécification ne donne pas : la passerelle, la
+certification de conformité, et le service de résolution de clés. Voir
+[`../company-brain/20-business-model.md`](../company-brain/20-business-model.md).
 
 ## Ce que cette spécification revendique, et ce qu'elle ne revendique pas
 

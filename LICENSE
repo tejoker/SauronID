@@ -15,12 +15,26 @@ Apache License 2.0 — full text in LICENSE-APACHE-2.0
     sdk/mcp-server/             MCP server
     transparent-zk/         RISC Zero guests, journal types, customer verifier
 
+    docs/integration/agent-action-envelope.md       the wire specification
+    schemas/agent-action-envelope-vectors.json      its published test vectors
+
 These are deliberately open. The SDKs and the MCP server are thin clients: they
 hold no keys, evaluate no policy and enforce nothing, and they are inert without
 a gateway to talk to. transparent-zk must be open for a different reason — a
 customer has to rebuild the guest programs from source to reproduce the image IDs
 committed in every proof. A proof whose program nobody can inspect is not
 evidence.
+
+The Agent Action Envelope specification and its test vectors are Apache-2.0 for
+a third reason, and the choice of licence is deliberate rather than a default: a
+wire format nobody may implement is not a standard, it is a private protocol
+with a public description. Apache-2.0 rather than CC-BY-4.0 because section 3
+carries an express patent grant and CC-BY does not — an implementer weighing a
+format needs the patent question answered, not left open. This grant covers the
+specification text, the vectors, and any reference verifier extracted from them.
+It does not extend to the gateway that enforces the format, which stays under
+BUSL-1.1 below. Anyone may implement, verify, ship and sell software that speaks
+this format, including in competition with us.
 
 Business Source License 1.1 — full text in LICENSE-BUSL-1.1
 ------------------------------------------------------------
@@ -51,7 +65,9 @@ Everything else
 
 Supporting material for the above. Not separately licensed: treat it as
 Apache-2.0 where it accompanies an Apache-2.0 component, and as BUSL-1.1 where
-it accompanies the gateway. Brand assets under `docs/company-brain/brand/` are excluded, see Trademarks.
+it accompanies the gateway. The two files named under Apache-2.0 above are the
+exception to that rule and are licensed explicitly, because "it depends what it
+accompanies" is not an answer an implementer can act on. Brand assets under `docs/company-brain/brand/` are excluded, see Trademarks.
 
 Trademarks
 ----------
