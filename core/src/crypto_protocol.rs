@@ -14,6 +14,7 @@ pub const CALL_SIGNATURE_VERSION: &str = "2";
 pub const CALL_SIGNATURE_DOMAIN: &str = "sauron.call.v2";
 pub const PARTNER_REGISTRATION_DOMAIN: &str = "sauron.partner-registration.v2";
 pub const ATTESTATION_CHALLENGE_DOMAIN: &str = "sauron.attestation-challenge.v1";
+pub const DEPLOYMENT_LICENCE_DOMAIN: &str = "sauron.deployment-licence.v1";
 pub const USER_AUTH_CHALLENGE_DOMAIN: &str = "sauron.user-auth-challenge.v1";
 
 /// Derive an independent 256-bit key from the deployment master secret.
@@ -76,6 +77,37 @@ pub fn call_signature_payload(input: &CallSignatureInput<'_>) -> Vec<u8> {
             ("config_digest", input.config_digest),
             ("timestamp_ms", input.timestamp_ms),
             ("nonce", input.nonce),
+        ],
+    )
+}
+
+/// What SauronID signs to meter a self-hosted deployment.
+///
+/// The gateway is not in the path of anything it does not authorize, so usage
+/// cannot be observed the way a network operator observes a transaction. This
+/// payload is the substitute: signed by us, verified locally by the gateway,
+/// with no callback. See `crate::licence` for the boundary — it caps agent
+/// registration and never action authorization.
+#[derive(Debug)]
+pub struct DeploymentLicenceInput<'a> {
+    pub licence_id: &'a str,
+    pub licensee: &'a str,
+    pub tenant_id: &'a str,
+    pub max_agents: &'a str,
+    pub issued_at_ms: &'a str,
+    pub expires_at_ms: &'a str,
+}
+
+pub fn deployment_licence_payload(input: &DeploymentLicenceInput<'_>) -> Vec<u8> {
+    canonical_fields(
+        DEPLOYMENT_LICENCE_DOMAIN,
+        &[
+            ("licence_id", input.licence_id),
+            ("licensee", input.licensee),
+            ("tenant_id", input.tenant_id),
+            ("max_agents", input.max_agents),
+            ("issued_at_ms", input.issued_at_ms),
+            ("expires_at_ms", input.expires_at_ms),
         ],
     )
 }

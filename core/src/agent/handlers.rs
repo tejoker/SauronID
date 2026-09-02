@@ -562,6 +562,31 @@ pub async fn register_agent(
             )
                 .into());
         }
+        // Deployment licence ceiling. This is the only commercial gate in the
+        // request path, and it sits on REGISTRATION by design: an expired or
+        // exhausted licence must never stop an existing agent's actions from
+        // being authorized, denied, logged and receipted. See
+        // `crate::licence` for why that boundary does not move.
+        let entitlement = crate::licence::entitlement_for(&tenant_id);
+        let registered: i64 = db.any_conn().scalar_or(
+            "SELECT COUNT(*) FROM agents WHERE revoked = 0 AND tenant_id = ?1",
+            sql_params![&tenant_id],
+            |r| r.get_i64(0),
+            0,
+        );
+        if registered >= entitlement.max_agents() {
+            return Err(AppError::Detailed {
+                status: StatusCode::PAYMENT_REQUIRED,
+                code: "agent_licence_ceiling_reached",
+                message: format!(
+                    "tenant '{tenant_id}' has {registered} active agents and the deployment \
+                     licence allows {}",
+                    entitlement.max_agents()
+                ),
+                fix: "raise the deployment licence ceiling, or revoke an unused agent",
+            });
+        }
+
         let key_image_in_use: bool = db.any_conn()
             .scalar_or(
                 "SELECT COUNT(*) FROM agents WHERE ring_key_image_hex = ?1 AND revoked = 0 AND tenant_id = ?2",

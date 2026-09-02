@@ -275,6 +275,79 @@ Deux points à trancher avec elle, sinon l'unité se retourne contre nous :
 
 Aucun niveau, aucun prix ici : ils appartiennent à 21, après mesure.
 
+## Encaisser sans exploiter : la licence de déploiement
+
+La contrainte est posée : on ne veut pas porter l'infrastructure d'un client
+vendu il y a dix ans. C'est cohérent avec la structure de coûts de ce fichier —
+la plateforme tourne chez le client — et avec 03, qui exclut de faire tourner
+les agents à sa place.
+
+Mais l'analogie avec un réseau de paiement s'arrête à un endroit précis, et il
+faut le dire : **Visa n'exploite rien pour ses marchands parce que Visa *est*
+l'infrastructure.** Le marchand se connecte au réseau, le réseau est dans le
+chemin de chaque transaction, et le prélèvement se fait dans le flux. SauronID
+est l'inverse : la passerelle tourne chez le client. On obtient ce qu'on
+voulait — aucun serveur, aucune astreinte — et on perd les deux choses que Visa
+possède : **la visibilité et le prélèvement.**
+
+### Le mécanisme
+
+Une **licence de déploiement signée** remplace le fait d'être dans le chemin.
+Elle nomme le licencié, le locataire, un plafond d'identités d'agents
+enregistrées et une date d'expiration. La passerelle la vérifie localement.
+Aucun rappel, aucune télémétrie, fonctionne hors réseau, rien à exploiter de
+notre côté. **[vérifié]** — [`../../core/src/licence.rs`](../../core/src/licence.rs),
+émission par [`../../scripts/ops/issue-licence.py`](../../scripts/ops/issue-licence.py).
+
+C'est ce qui répond à la question posée : **un prestataire tiers installe, le
+client paie quand même.** Ce qui se paie n'est pas l'installation, c'est la
+licence. La livraison devient délégable sans que la relation commerciale le
+soit. [`LICENSE`](../../LICENSE) interdit déjà d'offrir la passerelle à des
+tiers en service hébergé à toute taille, donc un intégrateur ne peut que monter
+l'instance du client sous la licence du client : notre contrepartie reste le
+client. **[vérifié]**
+
+### La frontière qui ne bougera pas
+
+Le plafond porte sur **l'enregistrement d'un nouvel agent**, jamais sur
+l'autorisation des actions des agents existants. Couper un contrôle de sécurité
+parce qu'une facture est en retard serait indéfendable, et un auditeur aurait
+raison de le dire. Une licence expirée ramène le plafond au palier gratuit :
+le déploiement cesse de croître, il ne cesse pas de fonctionner. **[vérifié]**,
+c'est le test `expiry_falls_back_to_the_free_tier_rather_than_to_zero`.
+
+Corollaire commercial : le levier de recouvrement est faible par construction.
+Un client qui ne renouvelle pas garde un système qui marche. Ce qu'il perd est
+l'extension, le support et les connecteurs maintenus — donc **la valeur du
+renouvellement doit venir de là, pas de la menace d'un arrêt.** C'est plus
+honnête et c'est plus fragile ; il faut le savoir avant de tarifer en 21.
+
+### Ce que la licence n'est pas
+
+Ce n'est pas un verrou technique. La source est publique et la clé d'émission
+est surchargeable : qui veut tourner sans licence peut. **La BUSL est
+l'instrument juridique**, la licence de déploiement est l'instrument comptable.
+Elle rend le plafond explicite plutôt que caché dans un contrat que personne ne
+relit, et elle rend la facturation vérifiable des deux côtés. Prétendre qu'elle
+empêche quoi que ce soit serait faux et se retournerait contre nous.
+
+### Le vrai coût d'un client de dix ans
+
+Ce n'est pas l'infrastructure : l'auto-hébergement l'élimine entièrement. C'est
+**le support** — des ingénieurs qui répondent sur une version livrée en 2027.
+Aucune architecture ne règle cela ; seules des conditions contractuelles le
+font, et elles doivent être écrites avant le premier contrat, pas au premier
+incident :
+
+1. **Une fenêtre de versions supportées** : la version courante et la
+   précédente, rien de plus ancien.
+2. **Le support est un palier facturé**, il n'est pas impliqué par la licence.
+3. **La mise à jour est une condition du support**, pas une option.
+
+Sans ces trois lignes, « on ne porte pas leur infrastructure » est vrai et sans
+effet, parce que la charge arrive par courriel et non par une facture de cloud.
+**[direction]**
+
 ## Les hypothèses de ce fichier
 
 À tester, dans cet ordre, et à reprendre en 31.
@@ -315,6 +388,15 @@ Aucun niveau, aucun prix ici : ils appartiennent à 21, après mesure.
    avec une fonction d'audit ; si elle monte, SauronID est l'entreprise et les
    agents sont la distribution. Aucun seuil n'est fixé ici : il se déduit des
    cinq premières, pas d'une intuition. **[hypothèse]**
+
+10. **Le renouvellement se vend sans levier d'arrêt.** La licence expirée ne
+    casse rien : le client garde un système qui marche et perd l'extension, le
+    support et les connecteurs maintenus. Si cela ne suffit pas à faire
+    renouveler, le modèle n'a pas de mécanisme de recouvrement et il faut le
+    découvrir au premier renouvellement, pas au dixième. **[hypothèse]**
+11. **Un intégrateur tiers préfère livrer sur notre couche** plutôt que
+    d'assembler des briques libres sans elle. Sa raison d'être doit être la
+    marque de conformité ; sans elle, rien ne l'attache. **[hypothèse]**
 
 Aucun chiffre n'entre ici avant d'être mesuré chez un client réel, avec sa note
 de qualité, conformément aux règles de preuve de

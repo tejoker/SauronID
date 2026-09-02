@@ -30,6 +30,7 @@ pub mod dpop;
 pub mod egress_gateway;
 pub mod error;
 pub mod identity;
+pub mod licence;
 pub mod merkle;
 pub mod middleware;
 pub mod oprf;
