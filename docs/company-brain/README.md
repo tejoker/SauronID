@@ -61,7 +61,7 @@ peut insérer un fichier dans une dizaine sans renuméroter le reste.
 | Fichier | Question | Framework appliqué | État |
 |---|---|---|---|
 | [`20-business-model.md`](20-business-model.md) | comment la valeur se capture | Business Model Canvas (Osterwalder et Pigneur) et Design a Business Model, étape 15 des 24 Steps (MIT) | écrit |
-| `21-pricing.md` | combien, sur quelle unité, pourquoi | Pricing Framework (24 Steps, MIT), *Monetizing Innovation* (Ramanujam et Tacke) pour la mesure du consentement à payer | à écrire |
+| `21-pricing.md` | combien, sur quelle unité, pourquoi — **bloqué** : l'unité comptée se décide en 20, section « L'unité de facturation », et rien ne se chiffre avant | Pricing Framework (24 Steps, MIT), *Monetizing Innovation* (Ramanujam et Tacke) pour la mesure du consentement à payer | à écrire |
 | `22-unit-economics.md` | est-ce que ça tient à l'échelle | LTV et COCA (24 Steps, MIT), 16 Startup Metrics (a16z) pour les définitions communes avec les investisseurs | à écrire |
 
 ### 3x, l'exécution et le récit

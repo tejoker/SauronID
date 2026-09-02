@@ -191,6 +191,90 @@ l'entreprise. Un format libre augmente le nombre d'agents susceptibles de parler
 norme deviendra le produit » — est exactement l'erreur que 11 interdit :
 confondre la notoriété et le chiffre.
 
+## Ce que l'abonnement paie, et pourquoi il est récurrent
+
+La question se pose dès qu'on vend l'agent d'abord : le client paie-t-il un
+abonnement « pour utiliser SauronID » ? Formulé ainsi, non — et il ne faut pas le
+vendre ainsi. Un acheteur à qui l'on présente un loyer d'intergiciel le compare à
+`n8n`, qui est gratuit, et demande pourquoi payer. La comparaison est perdue
+d'avance parce qu'elle porte sur le mauvais objet.
+
+Ce que l'abonnement paie est l'objet 3 de [`03-produit.md`](03-produit.md), la
+continuité : l'agent continue de tourner sous contrôle. Les règles restent
+modifiables, les droits révocables, les plafonds opposables, les traces
+produites et conservées. Le test est simple : **si l'agent n'a plus besoin de
+cela, l'abonnement n'a plus de justification.** Ce n'est pas une rente, c'est un
+service qui s'exerce en continu, parce qu'un mandat expire, une révocation doit
+prendre effet, et une chaîne de reçus doit continuer d'être produite et retenue.
+
+### Sa composition dépend de la taille du client, à cause de la licence
+
+Point souvent manqué : [`LICENSE`](../../LICENSE) rend l'usage en production
+**gratuit sous 1 000 000 € de revenu annuel**. Pour un client sous ce seuil,
+l'abonnement ne peut donc pas être un droit d'usage — il n'y en a pas à vendre.
+Il ne couvre que la continuité, le catalogue de connecteurs maintenu, et
+l'archive de reçus. **[vérifié]**
+
+| Client | Ce que l'abonnement contient |
+|---|---|
+| Sous le seuil de revenu | continuité, connecteurs maintenus, archive — pas de droit d'usage, il est déjà gratuit |
+| Au-dessus du seuil | les mêmes, plus la licence commerciale de la passerelle |
+
+Conséquence commerciale, contre-intuitive : c'est chez le petit client que
+l'abonnement doit être justifié par le service, et chez le grand qu'il se
+justifie aussi par la licence. Le discours n'est pas le même, et le confondre
+fait perdre le petit client.
+
+### La discipline de facturation, non négociable
+
+**Deux lignes sur la première facture, jamais un prix unique.** Vendre l'agent
+en premier rend la couche de contrôle invisible : le client achète un résultat,
+et au renouvellement il coupe la ligne qu'il ne voit pas. C'est exactement
+l'hypothèse 1 de ce fichier, et la stratégie « vendre l'agent d'abord » en
+augmente le risque au lieu de le réduire. Un abonnement introduit à la deuxième
+vente est le piège de l'agence.
+
+## L'unité de facturation : la décision qui bloque 21
+
+`21-pricing.md` ne peut pas s'écrire avant que l'unité comptée soit choisie. Ce
+n'est pas choisir un prix — c'est choisir **ce qu'on compte**. Trois critères, et
+chaque candidat en échoue au moins un :
+
+1. **Elle croît avec l'adoption**, sinon le deuxième workflow chez le même client
+   ne rapporte rien et l'hypothèse 3 n'a aucun effet économique.
+2. **Elle ne paie pas le client pour mal se comporter.**
+3. **La passerelle la compte elle-même**, sans déclaration du client.
+
+| Unité | Croît ? | Incitation perverse | Comptable par nous ? |
+|---|---|---|---|
+| **Par action** | oui | **disqualifiante** : le client est payé pour faire passer moins d'actions par la passerelle, alors que le contournement est déjà la limite reconnue dans [`../../README.md`](../../README.md). Facturer à l'action, c'est financer le contournement du produit | oui |
+| **Par workflow** | peu | aucune | **non** : « workflow » est une notion humaine, pas une ligne de base de données |
+| **Par siège** | non | aucune | oui, et sans rapport : un agent n'est pas un siège |
+| **Forfait par locataire** | **non** | aucune | oui |
+| **Par identité d'agent enregistrée** | oui | à cadrer : incite à partager une identité entre plusieurs tâches, ce qui détruit l'attribution — donc l'intérêt du produit | oui, la table `agents` la compte |
+
+**Recommandation : l'identité d'agent enregistrée.** C'est ce que SauronID émet
+réellement, c'est ce que la table `agents` compte, et cela croît quand le client
+ajoute un workflow sans consommer un jour de livraison de plus. **[direction]**
+
+Deux points à trancher avec elle, sinon l'unité se retourne contre nous :
+
+- **Une identité, pas un condensat.** Le condensat de configuration change à
+  chaque modification du prompt système ou de la liste d'outils
+  ([`../../core/src/agent_checksum.rs`](../../core/src/agent_checksum.rs)). Si
+  l'unité facturée était le condensat, chaque redéploiement multiplierait la
+  facture et le client apprendrait à ne plus mettre à jour sa configuration —
+  c'est-à-dire à dégrader sa propre sécurité pour payer moins. On facture
+  l'`agent_id`, la dérive de configuration met à jour la même identité.
+- **Le partage d'identité doit coûter plus cher qu'il ne rapporte.** Une identité
+  partagée entre deux tâches rend la chaîne de reçus inexploitable. La parade
+  n'est pas tarifaire mais produit : c'est le plan déclaré par exécution
+  (`run_id`, [`../integration/agent-action-envelope.md`](../integration/agent-action-envelope.md))
+  qui rend une identité partagée inutilisable pour se justifier devant un
+  auditeur. **[direction]**
+
+Aucun niveau, aucun prix ici : ils appartiennent à 21, après mesure.
+
 ## Les hypothèses de ce fichier
 
 À tester, dans cet ordre, et à reprendre en 31.
@@ -224,6 +308,13 @@ confondre la notoriété et le chiffre.
    désormais qu'il est publié et librement implémentable. Publier la
    spécification rend cette hypothèse plus risquée qu'avant, et c'est le prix
    assumé de la diffusion. **[hypothèse]**
+
+9. **La ligne d'abonnement survit à la négociation** quand l'agent est vendu en
+   premier. Mesure : la part de la valeur du contrat que représente l'abonnement,
+   sur les cinq premières livraisons. Si elle ne monte pas, on vend des agents
+   avec une fonction d'audit ; si elle monte, SauronID est l'entreprise et les
+   agents sont la distribution. Aucun seuil n'est fixé ici : il se déduit des
+   cinq premières, pas d'une intuition. **[hypothèse]**
 
 Aucun chiffre n'entre ici avant d'être mesuré chez un client réel, avec sa note
 de qualité, conformément aux règles de preuve de
