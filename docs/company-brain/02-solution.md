@@ -273,6 +273,19 @@ D'où deux règles, qui sont des règles commerciales autant que méthodologique
    pas renouvelé, et parce qu'un client qui ne connaît pas son coût de
    traitement ne saura pas non plus reconnaître ce qu'on lui a fait gagner.
 
+3. **Quand le coût unitaire est introuvable, on mesure une métrique de
+   transition.** Le coût complet d'un traitement est souvent inconnu du client,
+   et aucun processus d'entreprise n'a de coût de référence publié par une
+   source sans intérêt commercial : tous les chiffres qui circulent viennent
+   d'éditeurs qui vendent la chose mesurée (voir
+   [`research/sources.md`](research/sources.md)). Un délai, lui, se lit dans les
+   outils du client sans étude : combien de temps entre l'entrée d'un cas et sa
+   résolution, combien de relances internes, quelle part du volume passe par le
+   chemin dégradé. C'est sa donnée, donc elle vaut mieux qu'un benchmark
+   d'éditeur, et elle bouge dans le même sens que le coût. On prend le coût
+   quand il existe, le délai quand il n'existe pas, et on fixe lequel des deux
+   fait foi au cadrage, pas à la fin.
+
 Le côté « après » ne demande aucun effort supplémentaire : la couche de contrôle
 enregistre chaque action, ce qu'elle a coûté en jetons et en euros, ce qui a été
 refusé et pourquoi. On n'exploite pas l'agent, donc la mesure passe par un export
@@ -284,6 +297,47 @@ prévoir l'export dès le cadrage plutôt que de le demander après coup. Le tab
 du retour. C'est le même mécanisme qui rend l'agent déployable et qui prouve
 qu'il rapporte, et c'est la principale raison pour laquelle ces deux sujets ne
 se vendent pas séparément.
+
+## Prédiction et jugement
+
+Cadre : *Prediction Machines*, Agrawal, Gans et Goldfarb (Harvard Business
+School, 2018), et le AI Canvas qui en découle. Il sépare une décision en deux
+composants dont les prix évoluent en sens inverse. La **prédiction** est ce
+qu'un modèle produit : une sortie probable à partir de données. Le **jugement**
+est ce qui reste humain : quelles conséquences on accepte, lesquelles on refuse,
+et ce que coûte une erreur.
+
+La thèse du livre est arithmétique. Quand le coût de la prédiction s'effondre,
+la valeur du jugement monte, parce qu'il devient le facteur limitant. Un modèle
+à 3 centimes l'appel rend la question « qui décide ce qu'on autorise » plus
+chère que la question « qui sait prédire ».
+
+Ce que ça dit de notre place. Le modèle est le moteur de prédiction : peu cher,
+interchangeable, jamais fiable à cent pour cent. SauronID n'est pas un meilleur
+moteur de prédiction, et n'a aucune raison de le devenir. C'est l'infrastructure
+qui **exécute** le jugement de l'entreprise : plafonds, périmètres,
+co-signatures, refus par défaut. Le jugement lui-même reste chez le client, chez
+la personne qui écrit la règle. Nous garantissons seulement qu'un modèle ne peut
+pas le contourner.
+
+D'où une conséquence à tenir dans le discours : la séparation n'est pas un choix
+d'architecture qu'on pourrait faire autrement, c'est la seule structure qui
+suive l'économie du problème. Mettre le jugement dans le prompt, c'est le placer
+du côté qui se déprécie et qui se négocie (problème 7 de 01). Le mettre côté
+serveur, c'est le placer du côté qui prend de la valeur.
+
+Et c'est ce qui désarme l'objection du dirigeant qui refuse de laisser une IA
+toucher à l'argent : on ne lui demande pas de faire confiance au moteur de
+prédiction. On lui demande d'écrire son jugement une fois, et on lui prouve
+qu'il s'est appliqué.
+
+**Ce que la trace prouve, et ce qu'elle ne prouve pas.** Un reçu atteste d'une
+action : quel appel est parti, sous quelle règle, avec quelles signatures. Il
+n'atteste pas du raisonnement du modèle, et la chaîne de reçus ne rend donc
+aucun modèle explicable. Le problème de la boîte noire n'est pas résolu, il est
+rendu sans conséquence : peu importe pourquoi le modèle a voulu payer quarante
+mille euros, le plafond était à cinq mille et rien n'est parti. Confondre les
+deux se paie devant un auditeur qui connaît le sujet.
 
 ## La thèse
 
