@@ -96,6 +96,11 @@ pub struct HealthResponse {
     /// Durability of the security-audit sinks. `ok=false` (and a warning) once
     /// any audit event failed to persist — regulated deployments alert on this.
     pub audit: HealthComponent,
+    /// Deployment licence: what this gateway may register, and why. `ok=false`
+    /// when a licence is present but expired or unusable — the ceiling has then
+    /// fallen back to the free tier and new agents will be refused, while every
+    /// existing agent keeps working.
+    pub licence: HealthComponent,
     pub feature_flags: HealthFlags,
     pub warnings: Vec<String>,
 }
@@ -310,6 +315,10 @@ pub async fn health(State(state): State<Arc<RwLock<ServerState>>>) -> Json<Healt
         solana_anchor,
         database,
         audit,
+        licence: {
+            let (ok, detail) = crate::licence::status_line();
+            HealthComponent { ok, detail }
+        },
         feature_flags,
         warnings,
     })

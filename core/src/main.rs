@@ -531,6 +531,16 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
+    {
+        // An operator must be able to see the registration ceiling without
+        // waiting for a refused registration to tell them.
+        let (ok, detail) = sauron_core::licence::status_line();
+        if ok {
+            tracing::info!(target: "sauron::startup", licence = %detail, "deployment licence");
+        } else {
+            tracing::warn!(target: "sauron::startup", licence = %detail, "deployment licence");
+        }
+    }
     tracing::info!(target: "sauron::startup", %addr, "Sauron Server started");
 
     // `into_make_service_with_connect_info::<SocketAddr>` so the S12 global

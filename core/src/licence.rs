@@ -42,7 +42,7 @@ pub const FREE_TIER_MAX_AGENTS: i64 = 3;
 /// Issuer public key, base64url unpadded, 32 bytes of Ed25519.
 /// Overridable for self-issued deployments and for tests; see the module note on
 /// why that is not a weakness.
-const DEFAULT_ISSUER_PUBKEY_B64U: &str = "";
+const DEFAULT_ISSUER_PUBKEY_B64U: &str = "h01P9z18oDkwTmsmtabYlszppEL7RzH1dpSXydi1nME";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentLicence {
@@ -137,30 +137,34 @@ fn now_ms() -> i64 {
 /// treated as absent rather than as a boot failure: a corrupted or tampered file
 /// must not be a denial of service against the customer's own gateway, and the
 /// free tier is the safe floor.
-pub fn verify(json: &str, tenant_id: &str) -> Entitlement {
-    let Ok(lic) = serde_json::from_str::<DeploymentLicence>(json) else {
-        return Entitlement::FreeTier { reason: "licence document is not valid JSON" };
-    };
-    let Some(vk) = issuer_key() else {
-        return Entitlement::FreeTier { reason: "no issuer public key configured" };
-    };
-    let Ok(sig_bytes) = URL_SAFE_NO_PAD.decode(lic.signature_b64u.trim()) else {
-        return Entitlement::FreeTier { reason: "signature is not base64url" };
-    };
-    let Ok(sig_arr) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
-        return Entitlement::FreeTier { reason: "signature is not 64 bytes" };
-    };
-    if vk
-        .verify_strict(&lic.signed_payload(), &Signature::from_bytes(&sig_arr))
-        .is_err()
-    {
-        return Entitlement::FreeTier { reason: "licence signature does not verify" };
+/// Signature check only. Split out from `verify` so the health endpoint can
+/// describe a licence that is genuine but does not cover the tenant being
+/// asked about — an operator debugging a refused registration needs to see
+/// that difference, not a flat "free tier".
+fn verify_document(json: &str) -> Result<DeploymentLicence, &'static str> {
+    let lic = serde_json::from_str::<DeploymentLicence>(json)
+        .map_err(|_| "licence document is not valid JSON")?;
+    let vk = issuer_key().ok_or("no issuer public key configured")?;
+    let sig_bytes = URL_SAFE_NO_PAD
+        .decode(lic.signature_b64u.trim())
+        .map_err(|_| "signature is not base64url")?;
+    let sig_arr =
+        <[u8; 64]>::try_from(sig_bytes.as_slice()).map_err(|_| "signature is not 64 bytes")?;
+    vk.verify_strict(&lic.signed_payload(), &Signature::from_bytes(&sig_arr))
+        .map_err(|_| "licence signature does not verify")?;
+    if lic.max_agents <= 0 {
+        return Err("licence ceiling is not positive");
     }
+    Ok(lic)
+}
+
+pub fn verify(json: &str, tenant_id: &str) -> Entitlement {
+    let lic = match verify_document(json) {
+        Ok(l) => l,
+        Err(reason) => return Entitlement::FreeTier { reason },
+    };
     if !lic.covers_tenant(tenant_id) {
         return Entitlement::FreeTier { reason: "licence does not cover this tenant" };
-    }
-    if lic.max_agents <= 0 {
-        return Entitlement::FreeTier { reason: "licence ceiling is not positive" };
     }
     if now_ms() > lic.expires_at_ms {
         return Entitlement::Expired { licensee: lic.licensee };
@@ -186,6 +190,53 @@ pub fn entitlement_for(tenant_id: &str) -> Entitlement {
         }
     }
     Entitlement::FreeTier { reason: "no licence configured" }
+}
+
+/// One line an operator can read on the health endpoint and at boot. Reports
+/// what the deployment is entitled to and why, without needing a tenant.
+pub fn status_line() -> (bool, String) {
+    let doc = std::env::var("SAURON_LICENCE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("SAURON_LICENCE_PATH")
+                .ok()
+                .filter(|p| !p.trim().is_empty())
+                .and_then(|p| std::fs::read_to_string(p.trim()).ok())
+        });
+    let Some(doc) = doc else {
+        return (
+            true,
+            format!("no licence configured — free tier, {FREE_TIER_MAX_AGENTS} agents per tenant"),
+        );
+    };
+    match verify_document(&doc) {
+        Err(reason) => (
+            false,
+            format!("licence present but not usable ({reason}) — free tier, {FREE_TIER_MAX_AGENTS} agents"),
+        ),
+        Ok(lic) => {
+            let days = (lic.expires_at_ms - now_ms()) / 86_400_000;
+            if days < 0 {
+                (
+                    false,
+                    format!(
+                        "licence for '{}' expired {} days ago — ceiling fell back to {}; \
+                         existing agents keep working",
+                        lic.licensee, -days, FREE_TIER_MAX_AGENTS
+                    ),
+                )
+            } else {
+                (
+                    true,
+                    format!(
+                        "licensed to '{}' — {} agents on tenant '{}', {} days left",
+                        lic.licensee, lic.max_agents, lic.tenant_id, days
+                    ),
+                )
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +377,35 @@ mod tests {
                 .collect::<String>(),
             "6e5477d4833f40a881144f54633467b832e2f6a98bca696b4524f02b98199485"
         );
+    }
+
+    /// A blank or malformed shipped constant silently puts every deployment on
+    /// the free tier — the failure mode is invisible revenue loss, not an
+    /// error, so it gets its own assertion. Rotating the issuer key means
+    /// updating the constant, and this is what tells you the new one is valid.
+    #[test]
+    fn the_shipped_issuer_key_is_a_usable_ed25519_key() {
+        assert!(
+            !DEFAULT_ISSUER_PUBKEY_B64U.trim().is_empty(),
+            "no issuer key shipped: every licence would be treated as absent"
+        );
+        let raw = URL_SAFE_NO_PAD
+            .decode(DEFAULT_ISSUER_PUBKEY_B64U)
+            .expect("shipped issuer key must be base64url");
+        let arr: [u8; 32] = raw.try_into().expect("shipped issuer key must be 32 bytes");
+        VerifyingKey::from_bytes(&arr).expect("shipped issuer key must be a valid Ed25519 point");
+    }
+
+    /// With nothing configured the deployment must report the free tier and be
+    /// healthy, not warn: running unlicensed below the revenue threshold is a
+    /// supported state, not a misconfiguration.
+    #[test]
+    fn no_licence_configured_reports_healthy_free_tier() {
+        std::env::remove_var("SAURON_LICENCE");
+        std::env::remove_var("SAURON_LICENCE_PATH");
+        let (ok, detail) = status_line();
+        assert!(ok, "an unlicensed deployment is not unhealthy");
+        assert!(detail.contains("free tier"), "must say which tier: {detail}");
     }
 
     #[test]
